@@ -1,0 +1,6 @@
+{
+  "name": "RestaurantOS - Restaurant SaaS ERP & Sales Growth Platform",
+  "description": "Integrated multi-tenant Restaurant ERP, Cashier POS, Waiter referral links & commission engine, Kitchen Display System (KDS), Customer Online Ordering Portal, Inventory & Recipe Costing, and Business Intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

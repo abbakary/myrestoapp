@@ -1,0 +1,1362 @@
+Restaurant SaaS ERP & Sales Growth Platform — Complete System Design
+What you are describing is more than a restaurant POS system. It is a Restaurant Sales, Operations, Inventory, Staff Commission, and Business Intelligence Management Platform.
+
+The main objective should be to help restaurants:
+1. Increase sales through professional online ordering, customer portals, waiter referrals, promotions, and repeat customers.
+2. Manage daily operations through waiters, receptionists, cashiers, and kitchen staff.
+3. Control stock and costs by connecting purchases, inventory, recipes, sales, and wastage.
+4. Manage employees including salaries, advances, commissions, and waiter performance.
+5. Understand profitability through accurate financial reports and business intelligence.
+6. Operate independently through a SaaS architecture where every restaurant has its own account, settings, users, menu, customer portal, and business data.
+I recommend designing it as one integrated platform with different interfaces for different users, rather than developing five independent applications.
+1. Overall system architecture
+Restaurant SaaS Platform
+Multi-tenant management and sales platform
+
+Owner / Manager
+Business control, BI, settings and reports
+
+Reception / Cashier
+Bookings, orders, billing and payments
+
+Waiter
+Customer service and personal sales tracking
+
+Kitchen
+Preparation, cooking and order completion
+
+
+Customer Portal — Unique per Restaurant
+Menu, online ordering, table selection, delivery, pickup, payment and order tracking
+Shared Business Engine
+
+Orders • Payments • Inventory • Purchasing • Recipes • Expenses • HR • Commissions • BI
+
+SaaS Core
+Tenant isolation • Subscription packages • Branches • Roles • Permissions • Audit logs • Integrations
+
+The important design decision: all interfaces must use the same backend and business data. For example, when a customer orders from a waiter's shared link, the order must immediately become visible to the waiter, cashier, kitchen, and manager according to their permissions.
+2. Multi-tenant restaurant account management
+Each restaurant should have its own workspace.
+
+For example:
+Restaurant	Customer portal
+Restaurant A	restaurantA.yourplatform.com
+Chips Restaurant B	chipsB.yourplatform.com
+Restaurant C	restaurantC.yourplatform.com
+
+Also support custom domains in higher subscription packages.
+
+Each restaurant account should have:
+- Business profile, logo, branding and contact details.
+- One or multiple branches.
+- Business operating hours.
+- Menu and categories.
+- Tables and seating configurations.
+- Delivery zones and charges.
+- Staff and role assignments.
+- Inventory and suppliers.
+- Payment methods.
+- Tax and receipt configurations.
+- Customer portal settings.
+- Commission and salary policies.
+- Reports and analytics.
+Restaurant onboarding
+The onboarding process should be configurable rather than forcing every restaurant to use every module.
+1. Create restaurant account
+   
+   Business name, type, logo, address and contact details.
+2. Choose restaurant operating model
+   
+   Restaurant, fast food/chips, café, hotel restaurant, bar/food outlet, takeaway or multi-service.
+3. Activate operating modules
+   
+   Select dine-in, pickup, delivery, table management, waiter operations, kitchen, inventory and other features.
+4. Configure menu
+   
+   Categories, meals, prices, portions, variations, availability and optional recipes.
+5. Set up employees
+   
+   Owner, manager, receptionists, cashiers, waiters, chefs and stockkeepers.
+6. Configure payments and stock
+   
+   Cash, mobile money, bank payments, suppliers, opening stock and purchasing.
+7. Publish customer portal
+   
+   Generate restaurant URL and QR codes for tables and waiters.
+
+A chips restaurant should not be forced to configure breakfast, lunch and dinner. It might simply have Chips, Chicken, Drinks and Extras.
+
+A hotel restaurant, however, might require breakfast, lunch, dinner and room-service menus.
+3. Customer portal — the main sales growth engine
+High priority module
+This is one of the most important parts of your platform because it directly helps restaurants acquire orders beyond customers who physically visit them.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+15
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Each restaurant gets a professional customer-facing website generated automatically.
+
+For example:
+
+https://restaurantname.yourplatform.com
+
+The customer portal should have:
+A. Homepage
+- Restaurant logo and branding.
+- Cover image or attractive food banner.
+- Restaurant opening/closing status.
+- Search menu.
+- Featured meals.
+- Popular meals.
+- Promotions and discounts.
+- Menu categories.
+- Contact and location information.
+B. Dynamic menu management
+Do not hardcode menu categories.
+
+The restaurant owner should be able to create categories such as:
+Category	Example items
+Breakfast	Tea, coffee, chapati, eggs
+Lunch	Rice, pilau, ugali, beef
+Dinner	Chicken, fish, biryani
+Drinks	Soda, juice, water
+Chips	Chips plain, chips mayai, chips kuku
+Extras	Extra cheese, sauce, avocado
+
+Each category can have:
+- Name and image.
+- Display order.
+- Active/inactive status.
+- Availability schedule.
+- Menu items.
+- Optional subcategories.
+Important: Support menu schedules without making them compulsory.
+
+For example, breakfast items can appear between 06:00 and 11:00, while chips remain available throughout operating hours.
+C. Menu item configuration
+Each item should support:
+- Name and description.
+- Image.
+- Selling price.
+- Different sizes and portions.
+- Add-ons and extras.
+- Optional meal combinations.
+- Preparation time.
+- Availability.
+- Tax configuration.
+- Recipe/stock linkage.
+Example:
+
+
+
+
+
+
+
+
+
+
+Chips Mayai
+ TZS 5,000
+Example menu item
+
+
+Choose your extras
+- Extra egg — TZS 1,000
+- Sausage — TZS 2,000
+- Kachumbari — TZS 500
+- Extra sauce — TZS 500
+  
+  Customer instructions
+No onions, less oil, extra spicy, etc.
+
+Add-ons must be connected to inventory where applicable, so additional ingredients are accounted for.
+4. Waiter system and personal ordering links
+Core differentiating feature
+This is where your idea becomes particularly useful.
+
+Every waiter should have a personal ordering link generated automatically.
+
+Example:
+
+restaurantname.yourplatform.com/w/john
+
+Or:
+
+restaurantname.yourplatform.com/?ref=WAITER123
+
+The second approach can also support QR codes and campaign links.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+12
+
+
+
+
+
+
+
+
+
+
+
+A. How the waiter link should work
+Suppose John is a waiter at Restaurant A.
+1. John logs into his waiter account.
+2. The system generates his unique referral link.
+3. John shares it with customers through WhatsApp, social media or directly.
+4. The customer opens the restaurant's customer portal.
+5. The customer browses the restaurant menu.
+6. The customer adds products to the cart.
+7. The system preserves John's referral attribution during the ordering session.
+8. The customer chooses dine-in, delivery or pickup.
+9. The customer submits the order.
+10. The order is automatically assigned to John.
+The customer is still ordering from the restaurant, not from a separate waiter-owned restaurant website.
+
+Critical implementation detail: Store the waiter attribution against the cart and then permanently against the order when submitted. Do not depend only on a URL parameter because customers can navigate between pages, refresh or return later.
+
+If a customer enters from John's link but later opens the general restaurant URL, the system should retain the attribution for a configurable period.
+B. Waiter dashboard
+Each waiter should see:
+
+
+
+
+
+
+
+
+orderngo.io
+
+
+Dashboard metric	Description
+My orders	Orders assigned to the waiter
+Today's sales	Value of eligible completed orders
+Pending orders	Orders requiring action
+Completed orders	Successfully served orders
+My commission	Earned commission
+Pending payment	Commission not yet settled
+Paid commission	Amount already paid
+
+Waiters should be able to:
+- View their own orders.
+- Create dine-in orders.
+- Create pickup orders.
+- Create delivery orders.
+- Share their customer portal link.
+- Generate QR codes.
+- Monitor order preparation.
+- Request customer bills.
+- View commission statements.
+- View payment history.
+They should not be allowed to edit their commission rules or manipulate completed order amounts.
+C. Commission calculation
+Do not simply calculate commission on all orders created by a waiter.
+
+Commission should be calculated based on configurable policies.
+
+For example:
+Policy	Example
+Percentage	5% of eligible net sales
+Fixed amount	TZS 500 per eligible order
+Item-based	TZS 300 per selected item
+Tiered	3% up to TZS 1m, 5% above
+Manual bonus	Manager-approved bonus
+
+For example, John generates TZS 500,000 in eligible completed orders.
+
+At 5%:
+\[
+500,000 \times 5\% = 25,000
+\]
+
+John earns TZS 25,000.
+
+But the system must define whether commission is based on:
+- Orders completed or served.
+- Amount actually paid.
+- Net sales after discounts.
+- Whether taxes are excluded.
+- Whether delivery charges are excluded.
+- Whether refunded or cancelled orders are excluded.
+My recommendation: Calculate commission on eligible net item sales from completed and sufficiently paid orders. Reverse or adjust commission when an order is refunded.
+
+Commission statements should be generated by period, with manager approval before payment.
+5. Order management — dine-in, delivery and pickup
+The system should use one central order engine with different service modes.
+Three primary order types
+
+
+
+
+
+
+
+
+
+
+Dine-in
+Table-based orders
+
+
+
+
+
+
+
+
+
+
+Pickup
+Customer collects
+
+
+
+
+
+
+
+
+
+
+Delivery
+Customer receives food
+
+
+A. Dine-in workflow
+Dine-in must support both waiter-created orders and customer self-ordering.
+
+Waiter-created order:
+1. Waiter logs in.
+2. Selects an available table.
+3. Creates an order.
+4. Adds food and drinks.
+5. Sends order to kitchen.
+6. Kitchen prepares food.
+7. Waiter receives notification.
+8. Waiter serves customer.
+9. Customer requests bill.
+10. Cashier receives the bill request or waiter collects payment if permitted.
+11. Payment is recorded and the table is released when the order is settled and closed.
+Customer QR table ordering:
+1. Customer scans the table QR code.
+2. Portal automatically identifies restaurant and table.
+3. Customer browses menu.
+4. Customer submits order.
+5. System attaches the table number.
+6. If a waiter is assigned to that table, the order is attributed to that waiter.
+7. Kitchen receives the order.
+8. Waiter is notified.
+Important: A table should have an assigned waiter optionally, not permanently. Managers should be able to reassign tables and waiters during shifts.
+
+Also support multiple orders and bills on one table, including splitting bills between customers.
+B. Pickup workflow
+1. Customer opens portal.
+2. Selects pickup.
+3. Adds menu items.
+4. Selects pickup time if scheduling is enabled.
+5. Selects payment method.
+6. Submits order.
+7. Kitchen prepares order.
+8. Cashier or reception marks it ready.
+9. Customer collects.
+10. Order is marked collected.
+C. Delivery workflow
+1. Customer chooses delivery.
+2. Enters delivery location and contact.
+3. System checks delivery zones.
+4. Calculates delivery charge.
+5. Customer places order.
+6. Kitchen prepares it.
+7. Reception assigns a delivery person or external courier.
+8. Order moves to dispatched.
+9. Customer receives tracking updates.
+10. Order is marked delivered.
+Support both online and manually created delivery orders.
+Recommended order status lifecycle
+1. Pending confirmation
+   
+   Order received; awaiting restaurant acceptance or payment verification.
+2. Confirmed
+   
+   Restaurant accepts the order.
+3. Sent to kitchen
+   
+   Items appear on kitchen display.
+4. Preparing
+   
+   Kitchen starts preparing the items.
+5. Ready
+   
+   Food is ready for service, collection or dispatch.
+6. Served / Collected / Dispatched
+   
+   Different completion paths depending on service mode.
+7. Completed
+   
+   Order fulfillment is finished.
+
+Cancelled
+Rejected
+Refunded
+
+Payment status must be tracked separately from fulfillment status.
+This separation is important. An order can be ready but unpaid, or paid but not yet prepared.
+6. Reception and cashier management
+Reception and cashier should have separate permissions, although one employee may hold both roles.
+
+
+
+
+
+
+
+
+dribbble.com
+
+
+Reception dashboard
+Reception should handle:
+- All incoming orders.
+- Online customer orders.
+- Phone and WhatsApp orders entered manually.
+- Table reservations.
+- Table allocation.
+- Customer information.
+- Order confirmation.
+- Delivery coordination.
+- Waiter assignment.
+- Customer complaints and cancellations.
+Cashier dashboard
+Cashier should handle:
+- New bills.
+- Payment collection.
+- Partial payments.
+- Multiple payment methods.
+- Split payments.
+- Receipts.
+- Refund requests.
+- Cash register opening and closing.
+- Daily cash reconciliation.
+Payment support
+For a Tanzanian market, support:
+- Cash.
+- M-Pesa.
+- Airtel Money.
+- Tigo Pesa / Mixx by Yas.
+- HaloPesa.
+- Bank transfer.
+- Card.
+- Integrated payment gateway.
+Also support multiple payment methods for one order.
+
+Example:
+Payment method	Amount
+Cash	5,000
+M-Pesa	10,000
+Total	15,000
+
+The system must distinguish payment initiated, payment confirmed, failed, reversed and refunded. A screenshot of a mobile money transaction should never automatically be treated as verified payment.
+Cashier shift management
+Each cashier should have:
+- Opening cash balance.
+- Cash sales.
+- Mobile money sales.
+- Refunds.
+- Cash expenses.
+- Cash transfers.
+- Expected closing balance.
+- Actual closing balance.
+- Variance.
+This is essential for preventing cash leakage.
+7. Kitchen management system
+Operational priority
+The kitchen needs a simple interface, not a complicated ERP dashboard.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+11
+
+
+
+
+
+
+
+
+
+
+
+Kitchen order display
+Orders should appear in a live kitchen display system.
+
+Suggested columns:
+New	Preparing	Ready
+Order #102	Order #101	Order #099
+Order #103	Order #104	Order #098
+
+Each ticket should display:
+- Order number.
+- Table number or customer name.
+- Order type.
+- Waiter name.
+- Ordered items.
+- Quantity.
+- Variations and add-ons.
+- Special instructions.
+- Order time.
+- Preparation deadline.
+Multiple kitchen stations
+Some restaurants have different preparation sections.
+
+For example:
+- Hot kitchen.
+- Grill.
+- Drinks.
+- Bakery.
+- Dessert.
+The menu item should be assigned to a preparation station.
+
+If an order contains chicken, chips and a drink, the system should route the relevant items to the appropriate stations.
+Partial preparation
+Do not require all items to be completed at once.
+
+For example, the kitchen can mark:
+- Chips — ready.
+- Chicken — preparing.
+- Juice — ready.
+The overall order becomes ready only when all required items are ready, unless a manager authorizes partial serving.
+Kitchen notifications
+When an order is submitted:
+- New order sound.
+- Visual notification.
+- Timer starts.
+- Late orders are highlighted.
+- Cancelled items are clearly communicated.
+Support printer fallback if the kitchen display is unavailable.
+
+8. Inventory, purchasing and food cost management
+This is one of the most important modules for the owner.
+
+A restaurant can have high sales but still lose money because of uncontrolled ingredient consumption, purchasing, wastage and incorrect stock records.
+
+The inventory system must connect purchases, stock, recipes and POS sales.
+
+
+
+
+
+
+
+
+marketman.com
+
+
+A. Inventory item registration
+Allow different inventory item types:
+Item	Purchase unit	Consumption unit
+Cooking oil	20-litre container	Litre / ml
+Rice	25 kg bag	Kg / grams
+Soda	Crate	Bottle
+Chicken	Whole chicken / kg	Portion
+Eggs	Tray	Piece
+Tomatoes	Kg	Grams / pieces
+
+The system must support unit conversions and purchase packaging.
+
+For example:
+- 1 crate = 24 bottles.
+- 1 tray = 30 eggs.
+- 1 bag = 25 kg.
+If a restaurant buys two soda crates, the inventory increases by 48 bottles.
+
+When a customer buys three bottles, the stock decreases by three bottles.
+B. Purchasing workflow
+1. Stockkeeper creates purchase request.
+2. Manager approves the purchase if approval is required.
+3. Purchase order is generated.
+4. Supplier delivers goods.
+5. Stockkeeper receives and checks quantity.
+6. Actual received quantity is recorded.
+7. Purchase invoice is entered.
+8. Inventory increases.
+9. Supplier payment or payable balance is recorded.
+Support partial deliveries, returns, credit purchases and multiple suppliers.
+C. Recipes and costing
+This is essential, but should be optional depending on the restaurant.
+
+Example:
+
+
+
+
+
+
+
+
+
+
+Chips Mayai
+TZS 5,000
+Example selling price
+
+
+Recipe ingredients
+Ingredient	Quantity	Cost
+Potatoes	300 g	600
+Eggs	2 pcs	800
+Cooking oil	30 ml	150
+Onions	30 g	100
+Other ingredients	—	150
+Total		1,800
+
+
+Selling price
+TZS 5,000
+
+Ingredient cost
+TZS 1,800
+
+Gross contribution before other costs
+TZS 3,200
+
+Illustrative figures, excluding labour, utilities, taxes and other operating costs.
+When an order is completed, the system should automatically deduct the ingredients according to the recipe.
+
+However, allow three operational modes:
+1. Recipe-based: Automatic ingredient deduction.
+2. Direct-stock: Sell drinks and packaged items directly from stock.
+3. Manual-stock: For small restaurants that do not want recipe configuration, stockkeepers record consumption or adjustments manually.
+Do not force small chips restaurants to configure a manufacturing or BOM process.
+D. Stock control
+Include:
+- Opening stock.
+- Purchases.
+- Sales consumption.
+- Stock transfers.
+- Wastage.
+- Damaged stock.
+- Staff meals.
+- Returns.
+- Stock adjustments.
+- Physical stock counts.
+- Closing stock.
+For multiple branches, support transfers between branches with dispatch and receiving confirmation.
+E. Food cost analysis
+Calculate:
+\[
+\text{Food Cost \%} =
+\frac{\text{Ingredient Cost}}{\text{Net Food Sales}}\times100
+\]
+
+Also calculate theoretical ingredient usage versus actual stock consumption.
+
+This helps the manager identify:
+- Over-portioning.
+- Excessive wastage.
+- Theft or stock leakage.
+- Incorrect recipes.
+- Supplier price increases.
+Use a documented costing method, such as weighted average cost, for inventory valuation. Historical completed transactions should retain their recorded costs rather than being recalculated using today's purchase prices.
+9. Employee management, salaries, advances and waiter commissions
+This should be a proper HR and staff financial management module.
+
+
+
+
+
+
+
+
+dribbble.com
+
+
+A. Employee records
+Every employee should have:
+- Employee number.
+- Full name.
+- Phone number.
+- Position.
+- Assigned branch.
+- Employment type.
+- Joining date.
+- Salary structure.
+- Payment frequency.
+- Active/inactive status.
+- Assigned system role.
+Employment types can include permanent, temporary, casual and contract employees.
+B. Salary management
+Support:
+- Fixed monthly salaries.
+- Daily wages.
+- Weekly salaries.
+- Hourly wages.
+- Commission-based earnings.
+- Bonuses.
+- Overtime.
+- Deductions.
+- Salary advances.
+C. Salary advances
+Example:
+
+An employee has a monthly salary of TZS 300,000.
+
+During the month, they request an advance of TZS 50,000.
+
+The manager approves it.
+
+At payroll time:
+Description	Amount
+Gross salary	300,000
+Salary advance	-50,000
+Other deductions	-10,000
+Net payable	240,000
+
+An advance must be recorded separately from a business expense to avoid double-counting it in profitability reports.
+D. Waiter commission and payroll integration
+This is particularly important for your idea.
+
+The waiter should have two different earning categories:
+1. Basic salary, if applicable.
+2. Sales commission.
+Example:
+Description	Amount
+Basic salary	150,000
+Eligible sales commission	45,000
+Bonus	10,000
+Gross earnings	205,000
+Advance already received	-30,000
+Net payable	175,000
+
+The system should automatically transfer approved waiter commissions into the payroll calculation.
+E. Commission settlement workflow
+1. Waiter generates orders.
+2. System calculates eligible commissions.
+3. Manager reviews order-level commission statements.
+4. Manager approves commission period.
+5. Approved commission enters payroll or standalone commission settlement.
+6. Cashier/accountant records payment.
+7. Waiter sees paid and unpaid commission statements.
+
+A waiter should never be able to change an already approved commission. Adjustments must have a reason and an audit trail.
+10. Expenses and financial management
+An owner needs to understand where the money goes, not just how much the restaurant sells.
+
+Create an expense module with categories such as:
+- Rent.
+- Electricity.
+- Water.
+- Gas.
+- Internet.
+- Transportation.
+- Repairs and maintenance.
+- Cleaning.
+- Marketing.
+- Packaging.
+- Salaries.
+- Other operating expenses.
+Each expense should have:
+- Expense number.
+- Date.
+- Category.
+- Amount.
+- Payment method.
+- Supplier/payee.
+- Description.
+- Receipt attachment.
+- Branch.
+- Recorded by.
+- Approval status.
+Cash and bank management
+Track:
+- Cash in hand.
+- Bank balances.
+- Mobile money balances.
+- Customer receivables.
+- Supplier payables.
+- Staff advances.
+- Petty cash.
+- Cash transfers.
+Support expense approvals and petty cash reconciliation.
+
+Important accounting distinction: Purchasing stock, consuming stock and paying suppliers are different events. The system must not count the same purchase twice as an expense and a cost of goods sold.
+11. Business Intelligence and owner dashboard
+Major business value
+The owner should have a dashboard that answers real business questions.
+
+Not simply a dashboard full of charts.
+
+
+
+
+
+
+
+
+wenodo.com
+
+
+A. Sales analytics
+- Total revenue.
+- Net sales.
+- Sales by day, week and month.
+- Sales by branch.
+- Sales by waiter.
+- Sales by cashier.
+- Sales by menu item.
+- Sales by category.
+- Sales by service type.
+- Average order value.
+- Number of customers.
+- Repeat customers.
+- Peak sales hours.
+B. Profitability analysis
+This should be one of the strongest features.
+Metric	Calculation
+Net sales	Sales less discounts and returns
+Cost of goods sold	Cost of items consumed/sold
+Gross profit	Net sales minus COGS
+Operating expenses	Rent, utilities, etc.
+Payroll	Salary and staff costs
+Operating profit	Gross profit minus operating expenses
+Net profit	After applicable additional expenses and adjustments
+
+Be precise about what each profit metric includes. For example, waiter commissions and payroll costs must not be double-counted.
+C. Waiter performance analytics
+The owner should be able to compare:
+Waiter	Orders	Sales	Commission
+John	120	1,500,000	75,000
+Mary	95	1,200,000	60,000
+Peter	80	900,000	45,000
+
+These are illustrative figures.
+
+Other useful measures:
+- Average order value per waiter.
+- Customer repeat rate.
+- Cancelled orders.
+- Upselling performance.
+- Commission paid versus outstanding.
+- Sales per working shift.
+D. Stock analytics
+- Current stock valuation.
+- Low-stock alerts.
+- Fast-moving items.
+- Slow-moving items.
+- Expiring items.
+- Wastage.
+- Stock adjustments.
+- Supplier price trends.
+- Theoretical versus actual food costs.
+E. Customer analytics
+- New customers.
+- Returning customers.
+- Most ordered meals.
+- Average spending.
+- Order frequency.
+- Customer lifetime value.
+- Customer acquisition sources.
+- Promotion performance.
+F. Management reports
+Every major report should have date filters, branch filters and export options.
+Report	Purpose
+Daily sales	Daily business performance
+Sales by waiter	Employee sales
+Sales by product	Menu performance
+Food cost	Ingredient profitability
+Purchasing	Supplier and purchase trends
+Stock movement	Inventory accountability
+Expenses	Operating expenditure
+Payroll	Staff payments
+Commission	Waiter earnings
+Profit and loss	Overall financial performance
+Cash reconciliation	Cash accountability
+Customer report	Retention and sales trends
+
+12. Additional features that will help increase restaurant sales
+I would add these features because your objective is not only to manage restaurants but also to help them grow.
+
+
+
+
+
+
+
+
+
+
+Customer loyalty programme
+
+Customers earn points for purchases, redeem rewards and receive special offers. Support configurable points per amount spent.
+
+
+
+
+
+
+
+
+
+
+
+
+
+Promotions and discounts
+
+Happy hours, lunch offers, buy-one-get-one, meal bundles, coupon codes and limited-time offers.
+
+
+
+
+
+
+
+
+
+
+
+
+
+WhatsApp ordering and sharing
+
+Let customers share menu items, restaurant links and order details. Support WhatsApp order notifications and customer communication.
+
+
+
+
+
+
+
+
+
+
+
+
+
+QR ordering
+
+Each table gets a unique QR code. Customers scan, order and track without waiting for a waiter.
+
+
+
+
+
+
+
+
+
+
+
+
+
+Order tracking and notifications
+
+Customers receive updates when an order is confirmed, being prepared, ready or dispatched.
+
+
+
+
+
+
+
+
+
+
+
+
+
+Sales recommendations
+
+Identify popular combinations, low-performing meals, peak ordering periods and opportunities for upselling.
+
+
+
+13. Real-world operational scenarios you must support
+A production restaurant system must handle situations beyond the normal ordering process.
+Situation	Expected system behaviour
+Customer changes order	Track modification and send kitchen updates
+Customer cancels	Apply cancellation permissions and reverse relevant stock/payment effects
+Food unavailable	Temporarily disable item across ordering channels
+Customer adds more food	Add items to existing table order or create an additional ticket
+Customer splits bill	Allocate amounts across multiple payments
+Customer pays partially	Keep outstanding balance visible
+Waiter leaves employment	Deactivate account and preserve historical sales and commission
+Waiter changes branch	Reassign without losing historical records
+Table changes waiter	Preserve original order attribution and track reassignment
+Internet fails	Support controlled offline POS operation and synchronization
+Kitchen printer fails	Allow display-based preparation and fallback printing
+Customer doesn't collect	Flag uncollected pickup orders
+Supplier delivers less stock	Record actual received quantity
+Stock is damaged	Record wastage with authorization
+Payment is reversed	Reconcile and update the relevant order financial status
+
+There is one particularly important rule for waiter attribution:
+
+The person who originally generated the order and the person who eventually served it may be different.
+
+Keep both records. This allows the owner to calculate commissions fairly and understand actual waiter performance.
+14. Recommended technical architecture
+Based on the development direction of your other SaaS applications, I recommend a unified web and mobile-friendly architecture.
+Frontend applications
+React / Next.js
+Owner, waiter, cashier, kitchen and customer portal
+Flutter
+Optional dedicated Android apps
+
+
+FastAPI backend
+
+Authentication • Business logic • REST APIs • WebSockets • Background jobs
+
+MySQL
+Transactional business database
+Redis
+Caching, queues and real-time coordination
+Analytics
+Aggregated reporting and BI
+Object storage
+Food images, receipts and documents
+
+External integrations
+
+Mobile money • Payment gateways • WhatsApp • SMS • Email • TRA EFD • Printers
+
+
+Backend module structure
+I recommend starting with a modular monolith in FastAPI rather than microservices. This will make development, testing and deployment easier while maintaining clear separation of business functions.
+restaurant_saas/
+│
+├── app/
+│   ├── core/
+│   │   ├── config.py
+│   │   ├── security.py
+│   │   ├── permissions.py
+│   │   └── tenant_context.py
+│   │
+│   ├── modules/
+│   │   ├── tenants/
+│   │   ├── subscriptions/
+│   │   ├── branches/
+│   │   ├── users/
+│   │   ├── employees/
+│   │   ├── customers/
+│   │   ├── menu/
+│   │   ├── tables/
+│   │   ├── orders/
+│   │   ├── kitchen/
+│   │   ├── payments/
+│   │   ├── waiters/
+│   │   ├── commissions/
+│   │   ├── inventory/
+│   │   ├── recipes/
+│   │   ├── purchasing/
+│   │   ├── suppliers/
+│   │   ├── expenses/
+│   │   ├── payroll/
+│   │   ├── accounting/
+│   │   ├── promotions/
+│   │   ├── loyalty/
+│   │   ├── delivery/
+│   │   ├── notifications/
+│   │   └── analytics/
+│   │
+│   ├── integrations/
+│   │   ├── payments/
+│   │   ├── whatsapp/
+│   │   ├── printers/
+│   │   └── tax/
+│   │
+│   └── main.py
+│
+├── migrations/
+├── tests/
+└── requirements.txt
+
+
+Multi-tenant database design
+Every business-owned record should carry a tenant_id.
+
+Important foundational tables:
+- tenants
+- subscriptions
+- branches
+- users
+- roles
+- permissions
+- employees
+- customers
+- waiter_referrals
+- menus
+- menu_categories
+- menu_items
+- menu_item_variants
+- modifier_groups
+- tables
+- orders
+- order_items
+- order_attributions
+- kitchen_tickets
+- payments
+- payment_allocations
+- commissions
+- commission_rules
+- commission_settlements
+- inventory_items
+- stock_movements
+- recipes
+- recipe_ingredients
+- purchase_orders
+- purchase_order_items
+- suppliers
+- expenses
+- payroll
+- salary_advances
+- shifts
+- audit_logs
+Use tenant-aware queries and authorization at the backend, not merely hidden frontend menus. Ensure all database relationships, background jobs, files and real-time events preserve tenant isolation.
+
+For critical records such as orders, payments, stock movements and commissions, use transactions, unique references, idempotency protection and audit trails.
+15. Important database and business rules
+There are several design decisions I would establish before implementation.
+Area	Recommended rule
+Order ownership	Every order belongs to one tenant and branch
+Waiter attribution	Store referral waiter and serving waiter separately
+Commission	Calculate from eligible completed sales
+Payment	Payment status separate from order status
+Stock	Record every stock movement
+Recipe	Optional, but available for restaurants needing ingredient costing
+Payroll	Separate salary, advance, commission and payment
+Refunds	Reverse financial and stock effects appropriately
+Menu	Dynamic categories and schedules
+Branches	Separate branch inventory, cash registers and staff assignments
+Historical data	Never delete completed financial transactions
+Audit	Record who performed important actions and when
+
+I would also introduce an immutable financial transaction history. If a cashier corrects a payment, the system should record a reversal and a replacement rather than silently overwriting the original transaction.
+
+For offline operation, queue POS transactions locally with unique transaction IDs and synchronize them safely when connectivity returns. Do not assume every online ordering or payment operation can be completed offline.
+16. Recommended development phases
+Do not attempt to develop every module simultaneously. Build the core business engine first, then expand.
+Phase 1 — SaaS foundation
+Start here
+
+Tenant management and access control
+- Restaurant registration and onboarding.
+- Branches and subscription management.
+- Users, roles and permissions.
+- Restaurant settings.
+- Dynamic menu management.
+
+
+Phase 2 — Ordering and sales
+
+Core operational functionality
+- Customer portal.
+- Waiter accounts and referral links.
+- Dine-in, pickup and delivery.
+- Table management.
+- Reception and cashier.
+- Payments and receipts.
+
+
+Phase 3 — Kitchen operations
+- Kitchen display system.
+- Preparation stations.
+- Order status management.
+- Notifications.
+- Printer integration.
+
+
+Phase 4 — Inventory and purchasing
+- Stock registration.
+- Units and conversions.
+- Suppliers and purchasing.
+- Recipes and costing.
+- Stock movements and wastage.
+
+
+Phase 5 — Employees and finances
+- Employee management.
+- Salary management.
+- Salary advances.
+- Waiter commissions.
+- Expenses.
+- Cash reconciliation.
+
+
+Phase 6 — Business intelligence
+- Profit and loss.
+- Waiter performance.
+- Food cost analysis.
+- Customer analytics.
+- Branch comparison.
+- Management reports.
+
+
+Phase 7 — Sales growth and expansion
+- Loyalty.
+- Promotions.
+- Customer campaigns.
+- Advanced analytics.
+- WhatsApp integrations.
+- Flutter applications.
+- Advanced integrations.
+
+
+I recommend completing Phases 1–3 as a properly tested operational product before introducing the more complex financial and inventory modules. However, design the database for all phases from the beginning.
+17. Subscription packages for your SaaS business
+Your platform itself should generate revenue through subscription packages.
+
+An example structure:
+Feature	Starter	Professional	Enterprise
+Customer website	✓	✓	✓
+POS	✓	✓	✓
+Waiter links	✓	✓	✓
+Kitchen management	✓	✓	✓
+Inventory	Basic	Advanced	Advanced
+Recipes and costing	—	✓	✓
+Employee management	Basic	✓	✓
+Commission management	✓	✓	✓
+BI analytics	Basic	Advanced	Advanced
+Multiple branches	—	Optional	✓
+Advanced integrations	—	Optional	✓
+
+Make the subscription engine configurable so you can change feature access, staff limits, branch limits and other quotas without modifying application code.
+
+18. The most important end-to-end business flow
+This is how I would connect everything into one operational process:
+CUSTOMER ACQUISITION
+
+Restaurant website • Waiter link • QR • Walk-in
+
+
+ORDER CREATION
+
+Dine-in • Pickup • Delivery
+
+
+ORDER PROCESSING
+
+Reception confirmation • Waiter assignment • Kitchen preparation
+
+
+PAYMENT AND FULFILLMENT
+
+Cashier • Mobile money • Serving • Collection • Delivery
+
+
+SALES
+Revenue, customer and waiter performance
+INVENTORY
+Ingredient consumption and stock movement
+EMPLOYEES
+Salary, commission and advances
+EXPENSES
+Purchasing, utilities and other costs
+
+
+OWNER BUSINESS INTELLIGENCE
+
+Revenue • Gross profit • Operating costs • Net profit • Stock valuation • Staff performance • Business growth
+
+
+19. My final recommendations — what will make this system exceptional
+There are five areas I would give particular attention to:
+1. Waiter attribution must be reliable. The system should know which waiter brought the customer, who handled the order and how much commission is earned, without allowing manipulation.
+2. Inventory must connect to sales. The owner should know how much food was theoretically consumed and compare it with actual stock.
+3. The customer portal must be genuinely attractive. It should feel like a professional restaurant website, not an ordinary POS ordering form.
+4. The owner must see actual profitability. Revenue alone is not enough. Purchasing, food cost, expenses, salaries, commissions, refunds and other costs must be accounted for.
+5. The system must adapt to different restaurant sizes. A small chips restaurant should be able to operate with a simple POS, while a large restaurant should have multiple kitchens, branches, stockrooms and detailed financial controls.
+20. Recommended initial product definition
+I would define the product as:
+RestaurantOS
+Proposed product positioning
+An all-in-one Restaurant Sales, Operations and Business Intelligence SaaS Platform.
+
+A multi-tenant platform that helps restaurants attract customers, manage online and physical orders, coordinate staff and kitchen operations, control inventory, calculate employee earnings and understand their actual business profitability.
+
+Core applications
+- Restaurant Owner & Manager Dashboard
+- Waiter Management App
+- Reception & Cashier POS
+- Kitchen Display System
+- Customer Ordering Website
+- Inventory & Purchasing
+- HR, Payroll & Commissions
+- Business Intelligence
+
+One additional architectural decision I strongly recommend: Keep the customer website and waiter referral system within the same restaurant domain and ordering engine. The waiter link should be an attribution mechanism, not a separate ordering platform. This will prevent duplicate menus, orders, payments and customer records.
