@@ -1,16 +1,21 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Search,
   Bell,
   Mail,
   Coins,
   ChevronDown,
-  Store,
-  Bookmark,
-  Sparkles,
+  ShoppingBag,
+  ArrowLeftRight,
+  AlertTriangle,
+  ChefHat,
+  ShieldCheck,
+  CheckCheck,
+  X,
+  ExternalLink,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { Role } from '../../types/restaurant';
+import { Role, AppNotification } from '../../types/restaurant';
 
 export const Header: React.FC = () => {
   const {
@@ -23,8 +28,31 @@ export const Header: React.FC = () => {
     toggleCurrency,
     soundAlertTriggered,
     dismissSoundAlert,
-    orders,
+    notifications,
+    unreadNotificationCount,
+    markNotificationAsRead,
+    markAllNotificationsAsRead,
+    clearNotification,
   } = useRestaurant();
+
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [notifFilter, setNotifFilter] = useState<'all' | 'order' | 'transfer_stock' | 'kitchen'>('all');
+  const notifDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (notifDropdownRef.current && !notifDropdownRef.current.contains(event.target as Node)) {
+        setIsNotifOpen(false);
+      }
+    };
+    if (isNotifOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isNotifOpen]);
 
   const roleTitles: Record<Role, { title: string; subtitle: string }> = {
     owner: { title: 'Executive BI Dashboard', subtitle: 'Overview & Profitability' },
@@ -37,6 +65,42 @@ export const Header: React.FC = () => {
   };
 
   const currentInfo = roleTitles[activeRole];
+
+  // Format relative time helper
+  const formatRelativeTime = (timestamp: string) => {
+    const diffMs = Date.now() - new Date(timestamp).getTime();
+    const diffMins = Math.floor(diffMs / (60 * 1000));
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return `${Math.floor(diffHours / 24)}d ago`;
+  };
+
+  const filteredNotifications = notifications.filter((n) => {
+    if (notifFilter === 'all') return true;
+    if (notifFilter === 'order') return n.type === 'order';
+    if (notifFilter === 'transfer_stock') return n.type === 'transfer' || n.type === 'stock';
+    if (notifFilter === 'kitchen') return n.type === 'kitchen';
+    return true;
+  });
+
+  const getNotifIcon = (type: AppNotification['type']) => {
+    switch (type) {
+      case 'order':
+        return <ShoppingBag className="w-4 h-4 text-orange-600" />;
+      case 'transfer':
+        return <ArrowLeftRight className="w-4 h-4 text-blue-600" />;
+      case 'stock':
+        return <AlertTriangle className="w-4 h-4 text-amber-600" />;
+      case 'kitchen':
+        return <ChefHat className="w-4 h-4 text-emerald-600" />;
+      case 'payroll':
+        return <ShieldCheck className="w-4 h-4 text-purple-600" />;
+      default:
+        return <Bell className="w-4 h-4 text-neutral-600" />;
+    }
+  };
 
   return (
     <header className="sticky top-0 z-30 bg-white border-b border-neutral-200/80">
@@ -57,7 +121,7 @@ export const Header: React.FC = () => {
         </div>
       )}
 
-      {/* Main Top Header Strip matching screenshot 2 layout */}
+      {/* Main Top Header Strip */}
       <div className="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
         {/* Left Side: Branch Switcher & Breadcrumb */}
         <div className="flex items-center gap-3 shrink-0">
@@ -106,7 +170,7 @@ export const Header: React.FC = () => {
           </div>
         </div>
 
-        {/* Center: Search input (Matching Screenshot 2: rounded pill search input with magnifying glass) */}
+        {/* Center: Search input */}
         <div className="flex-1 max-w-md hidden md:block">
           <div className="relative">
             <input
@@ -118,8 +182,8 @@ export const Header: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Side: Currency Toggle, Notifications, Profile (Matching Screenshot 2) */}
-        <div className="flex items-center gap-3 shrink-0">
+        {/* Right Side: Currency Toggle, Interactive Notifications, Profile */}
+        <div className="flex items-center gap-2.5 shrink-0">
           {/* Currency Toggle */}
           <button
             onClick={toggleCurrency}
@@ -130,14 +194,171 @@ export const Header: React.FC = () => {
             <span className="font-mono font-bold">{currency}</span>
           </button>
 
-          {/* Quick Notification Bell */}
-          <button
-            className="p-2 text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 rounded-full transition-colors relative"
-            title="Notifications"
-          >
-            <Bell className="w-4 h-4" />
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-orange-500 rounded-full" />
-          </button>
+          {/* Interactive Notification Bell with Dropdown */}
+          <div className="relative" ref={notifDropdownRef}>
+            <button
+              onClick={() => setIsNotifOpen((prev) => !prev)}
+              className={`p-2 rounded-full transition-all relative ${
+                isNotifOpen
+                  ? 'bg-neutral-900 text-white'
+                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
+              }`}
+              title="Activity & Alert Notifications"
+              aria-label="Notifications"
+            >
+              <Bell className="w-4 h-4" />
+
+              {/* Live Badge Counter */}
+              {unreadNotificationCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-4.5 h-4.5 px-1 bg-orange-600 text-white text-[10px] font-extrabold rounded-full flex items-center justify-center shadow-md font-mono border-2 border-white animate-pulse">
+                  {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
+                </span>
+              )}
+            </button>
+
+            {/* Dropdown Popover */}
+            {isNotifOpen && (
+              <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-neutral-200/90 z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-150">
+                {/* Header */}
+                <div className="p-3.5 bg-neutral-50/90 border-b border-neutral-200/80 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-xs text-neutral-900">Notifications</span>
+                    {unreadNotificationCount > 0 ? (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-orange-100 text-orange-800 font-bold">
+                        {unreadNotificationCount} unread
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold">
+                        All caught up
+                      </span>
+                    )}
+                  </div>
+
+                  {unreadNotificationCount > 0 && (
+                    <button
+                      onClick={markAllNotificationsAsRead}
+                      className="text-[11px] text-neutral-500 hover:text-neutral-900 flex items-center gap-1 font-semibold"
+                      title="Mark all notifications as read"
+                    >
+                      <CheckCheck className="w-3.5 h-3.5" />
+                      <span>Mark all read</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Filter Tabs */}
+                <div className="px-3 py-2 border-b border-neutral-100 flex items-center gap-1.5 overflow-x-auto text-[11px]">
+                  {[
+                    { id: 'all', label: 'All' },
+                    { id: 'transfer_stock', label: 'Stock & Transfers' },
+                    { id: 'order', label: 'Orders' },
+                    { id: 'kitchen', label: 'Kitchen' },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setNotifFilter(tab.id as any)}
+                      className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap ${
+                        notifFilter === tab.id
+                          ? 'bg-neutral-900 text-white'
+                          : 'text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Notifications List */}
+                <div className="max-h-[360px] overflow-y-auto divide-y divide-neutral-100">
+                  {filteredNotifications.length > 0 ? (
+                    filteredNotifications.map((notif) => (
+                      <div
+                        key={notif.id}
+                        className={`p-3.5 transition-colors relative flex items-start gap-3 group ${
+                          !notif.read ? 'bg-orange-50/30 hover:bg-orange-50/60' : 'hover:bg-neutral-50/70'
+                        }`}
+                      >
+                        {/* Type Icon Badge */}
+                        <div className="w-8 h-8 rounded-xl bg-neutral-100 flex items-center justify-center shrink-0 border border-neutral-200/60 mt-0.5">
+                          {getNotifIcon(notif.type)}
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 min-w-0 pr-4">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-xs text-neutral-900 leading-tight">
+                              {notif.title}
+                            </span>
+                            {!notif.read && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-orange-500 shrink-0" />
+                            )}
+                          </div>
+                          <p className="text-[11px] text-neutral-600 mt-0.5 leading-relaxed">
+                            {notif.message}
+                          </p>
+
+                          <div className="flex items-center gap-3 mt-2">
+                            <span className="text-[10px] font-mono text-neutral-400">
+                              {formatRelativeTime(notif.timestamp)}
+                            </span>
+
+                            {notif.actionRole && (
+                              <button
+                                onClick={() => {
+                                  markNotificationAsRead(notif.id);
+                                  setActiveRole(notif.actionRole!);
+                                  setIsNotifOpen(false);
+                                }}
+                                className="text-[10px] font-bold text-orange-600 hover:text-orange-700 flex items-center gap-1 transition-colors"
+                              >
+                                <span>{notif.actionLabel || 'View Details'}</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Dismiss Button */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            clearNotification(notif.id);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-neutral-400 hover:text-neutral-700 rounded transition-opacity"
+                          title="Dismiss notification"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="py-10 px-4 text-center">
+                      <div className="w-10 h-10 rounded-full bg-neutral-100 text-neutral-400 flex items-center justify-center mx-auto mb-2">
+                        <Bell className="w-5 h-5" />
+                      </div>
+                      <p className="text-xs font-semibold text-neutral-700">No notifications in this category</p>
+                      <p className="text-[11px] text-neutral-400 mt-0.5">
+                        New orders, transfers, and stock alerts will appear here
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div className="p-2.5 bg-neutral-50/90 border-t border-neutral-200/80 flex items-center justify-between text-[11px]">
+                  <span className="text-neutral-400 font-mono">
+                    {notifications.length} total alerts
+                  </span>
+                  <button
+                    onClick={() => setIsNotifOpen(false)}
+                    className="text-neutral-600 hover:text-neutral-900 font-semibold px-2 py-0.5"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Mail icon */}
           <button

@@ -14,6 +14,11 @@ import {
   Role,
   ModifierItem,
   StockMovement,
+  AppNotification,
+  BomAuditLog,
+  ProductionLog,
+  PreparedDishStock,
+  MissingStockItem,
 } from '../types/restaurant';
 import {
   INITIAL_TENANTS,
@@ -25,6 +30,10 @@ import {
   INITIAL_RECIPES,
   INITIAL_EMPLOYEES,
   INITIAL_STOCK_MOVEMENTS,
+  INITIAL_NOTIFICATIONS,
+  INITIAL_BOM_AUDIT_LOGS,
+  INITIAL_PRODUCTION_LOGS,
+  INITIAL_PREPARED_DISH_STOCKS,
 } from '../data/mockData';
 
 export interface CartItem {
@@ -55,6 +64,22 @@ interface RestaurantContextType {
   employees: Employee[];
   cart: CartItem[];
   stockMovements: StockMovement[];
+  notifications: AppNotification[];
+  unreadNotificationCount: number;
+  markNotificationAsRead: (id: string) => void;
+  markAllNotificationsAsRead: () => void;
+  clearNotification: (id: string) => void;
+  addNotification: (notification: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => void;
+  transferStock: (params: {
+    ingredientId: string;
+    quantityUnits: number;
+    fromLocation: 'main_store' | 'kitchen';
+    toLocation: 'main_store' | 'kitchen';
+    reason: string;
+    shift?: string;
+    recordedBy?: string;
+  }) => boolean;
+  returnAllKitchenStockToStore: (staffName?: string) => void;
   activeReferralCode: string | null;
   setReferralCode: (code: string | null) => void;
   addToCart: (
@@ -108,8 +133,33 @@ interface RestaurantContextType {
     supplier: string,
     invoiceRef: string
   ) => void;
-  recordWastage: (ingredientId: string, quantityUnits: number, reason: string) => void;
+  recordWastage: (
+    ingredientId: string,
+    quantityUnits: number,
+    reason: string,
+    location?: 'kitchen' | 'main_store'
+  ) => void;
   addNewIngredient: (ingredient: Omit<Ingredient, 'id'>) => Ingredient;
+  saveRecipe: (recipe: Recipe, auditLog?: Omit<BomAuditLog, 'id' | 'timestamp'>) => void;
+  deleteRecipe: (recipeId: string) => void;
+  bomAuditLogs: BomAuditLog[];
+  productionLogs: ProductionLog[];
+  preparedDishStocks: PreparedDishStock[];
+  validateBatchKitchenStock: (recipeId: string, batches: number) => {
+    canCook: boolean;
+    missingItems: MissingStockItem[];
+    totalCost: number;
+    targetYieldPlates: number;
+  };
+  cookBatchProduction: (params: {
+    recipeId: string;
+    batches: number;
+    actualPlatesProduced?: number;
+    chefName?: string;
+    managerOverride?: boolean;
+    overrideReason?: string;
+  }) => { success: boolean; error?: string; log?: ProductionLog };
+  createRequisitionForMissing: (missingItems: MissingStockItem[], shift?: string) => boolean;
   addAdvanceRequest: (employeeId: string, amount: number, reason: string) => void;
   approveAdvance: (employeeId: string, advanceId: string) => void;
   calculateWaiterStats: (waiterId: string) => {
@@ -149,11 +199,41 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [menuItems, setMenuItems] = useState<MenuItem[]>(INITIAL_MENU_ITEMS);
   const [ingredients, setIngredients] = useState<Ingredient[]>(INITIAL_INGREDIENTS);
   const [stockMovements, setStockMovements] = useState<StockMovement[]>(INITIAL_STOCK_MOVEMENTS);
-  const [recipes] = useState<Recipe[]>(INITIAL_RECIPES);
-  const [waiters] = useState<Waiter[]>(INITIAL_WAITERS);
+  const [recipes, setRecipes] = useState<Recipe[]>(INITIAL_RECIPES);
+  const [bomAuditLogs, setBomAuditLogs] = useState<BomAuditLog[]>(INITIAL_BOM_AUDIT_LOGS);
+  const [productionLogs, setProductionLogs] = useState<ProductionLog[]>(INITIAL_PRODUCTION_LOGS);
+  const [preparedDishStocks, setPreparedDishStocks] = useState<PreparedDishStock[]>(INITIAL_PREPARED_DISH_STOCKS);
+  const [waiters, setWaiters] = useState<Waiter[]>(INITIAL_WAITERS);
   const [employees, setEmployees] = useState<Employee[]>(INITIAL_EMPLOYEES);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>(INITIAL_NOTIFICATIONS);
   const [soundAlertTriggered, setSoundAlertTriggered] = useState<boolean>(false);
+
+  const unreadNotificationCount = useMemo(() => {
+    return notifications.filter((n) => !n.read).length;
+  }, [notifications]);
+
+  const markNotificationAsRead = (id: string) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+  };
+
+  const markAllNotificationsAsRead = () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  };
+
+  const clearNotification = (id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  };
+
+  const addNotification = (notif: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => {
+    const newNotif: AppNotification = {
+      ...notif,
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      read: false,
+    };
+    setNotifications((prev) => [newNotif, ...prev]);
+  };
 
   const [cashierShift, setCashierShift] = useState({
     isOpen: true,
@@ -236,24 +316,63 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setCart([]);
   };
 
-  // Deduct ingredients and record movement
+  // Deduct ingredients from kitchen stock (and store if needed)
   const deductIngredientsForOrder = (orderItems: CartItem[], orderNum: string) => {
     const newMovements: StockMovement[] = [];
+    const lowKitchenAlerts: string[] = [];
 
     setIngredients((prevIngredients) => {
       const updated = [...prevIngredients];
       orderItems.forEach((ci) => {
         const recipe = recipes.find((r) => r.menuItemId === ci.menuItem.id);
-        if (recipe) {
+        if (recipe && recipe.cookingMethod === 'batch_cooking') {
+          // Dish is cooked in advance batches: raw stock was already deducted at cooking time!
+          // Deduct from the live prepared plates pool
+          setPreparedDishStocks((prev) =>
+            prev.map((p) => {
+              if (p.menuItemId === ci.menuItem.id) {
+                const newAvailable = Math.max(0, p.preparedPlatesAvailable - ci.quantity);
+                return {
+                  ...p,
+                  preparedPlatesAvailable: newAvailable,
+                  totalSoldToday: p.totalSoldToday + ci.quantity,
+                  status: newAvailable === 0 ? 'out_of_stock' : newAvailable <= 10 ? 'low' : 'ready',
+                };
+              }
+              return p;
+            })
+          );
+        } else if (recipe) {
+          // Made-to-order: each sale deducts raw ingredients from kitchen floor stock
           recipe.ingredients.forEach((ri) => {
             const ingIndex = updated.findIndex((ing) => ing.id === ri.ingredientId);
             if (ingIndex > -1) {
               const deduction = ri.quantity * ci.quantity;
               const ing = updated[ingIndex];
               const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+
+              // Primary deduction comes from active kitchenStockUnits
+              let currentKitchen = ing.kitchenStockUnits ?? 0;
+              let currentStore = ing.storeStockUnits ?? Math.max(0, ing.currentStockUnits - currentKitchen);
+
+              let newKitchen = currentKitchen - deduction;
+              let newStore = currentStore;
+
+              if (newKitchen < 0) {
+                // Kitchen floor was short — absorb deficit from main storage
+                const deficit = -newKitchen;
+                newStore = Math.max(0, currentStore - deficit);
+                newKitchen = 0;
+                lowKitchenAlerts.push(`${ing.name} (Kitchen line ran out, drawn from Store)`);
+              } else if (newKitchen <= ing.minimumThreshold * 0.25) {
+                lowKitchenAlerts.push(`${ing.name} (${newKitchen.toLocaleString()} ${ing.consumptionUnit} left in kitchen)`);
+              }
+
               updated[ingIndex] = {
                 ...ing,
-                currentStockUnits: Math.max(0, ing.currentStockUnits - deduction),
+                kitchenStockUnits: newKitchen,
+                storeStockUnits: newStore,
+                currentStockUnits: Math.max(0, newKitchen + newStore),
               };
 
               newMovements.push({
@@ -268,6 +387,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 reference: `Order ${orderNum}`,
                 reason: `Kitchen consumption for ${ci.quantity}x ${ci.menuItem.name}`,
                 recordedBy: 'Auto Kitchen BOM Engine',
+                sourceLocation: 'kitchen',
               });
             }
           });
@@ -278,6 +398,16 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     if (newMovements.length > 0) {
       setStockMovements((prev) => [...newMovements, ...prev]);
+    }
+
+    if (lowKitchenAlerts.length > 0) {
+      addNotification({
+        title: 'Kitchen Line Stock Running Low',
+        message: `Replenishment needed: ${lowKitchenAlerts.slice(0, 2).join('; ')}. Use Transfer Module to issue from Main Store.`,
+        type: 'stock',
+        actionRole: 'manager',
+        actionLabel: 'Transfer Stock',
+      });
     }
   };
 
@@ -398,6 +528,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     clearCart();
     setSoundAlertTriggered(true);
 
+    // Trigger Notification for new order
+    addNotification({
+      title: `New Order ${nextOrderNum}`,
+      message: `${params.type === 'dine_in' ? `Table ${params.tableNumber}` : params.type.toUpperCase()} - ${items.map((i) => `${i.quantity}x ${i.name}`).join(', ')}`,
+      type: 'order',
+      actionRole: 'kitchen',
+      actionLabel: 'Open KDS Ticket',
+    });
+
     return newOrder;
   };
 
@@ -414,6 +553,17 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               status: it.status === 'pending' ? 'preparing' : it.status,
             }));
           }
+
+          if (status === 'ready' && ord.status !== 'ready') {
+            addNotification({
+              title: `Order Ready: ${ord.orderNumber}`,
+              message: `${ord.tableNumber || ord.customerName} dishes are ready on the pass!`,
+              type: 'kitchen',
+              actionRole: 'cashier',
+              actionLabel: 'View POS Counter',
+            });
+          }
+
           return {
             ...ord,
             status,
@@ -566,11 +716,21 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   // Inventory Management & Stock Intake
   const updateStock = (ingredientId: string, deltaUnits: number) => {
     setIngredients((prev) =>
-      prev.map((ing) =>
-        ing.id === ingredientId
-          ? { ...ing, currentStockUnits: Math.max(0, ing.currentStockUnits + deltaUnits) }
-          : ing
-      )
+      prev.map((ing) => {
+        if (ing.id === ingredientId) {
+          const newTotal = Math.max(0, ing.currentStockUnits + deltaUnits);
+          // By default adjust storeStockUnits
+          const currentKitchen = ing.kitchenStockUnits ?? 0;
+          const newStore = Math.max(0, newTotal - currentKitchen);
+          return {
+            ...ing,
+            currentStockUnits: newTotal,
+            storeStockUnits: newStore,
+            kitchenStockUnits: currentKitchen,
+          };
+        }
+        return ing;
+      })
     );
   };
 
@@ -584,8 +744,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const ing = ingredients.find((i) => i.id === ingredientId);
     if (!ing) return;
 
-    // Increment inventory stock
-    updateStock(ingredientId, quantityUnits);
+    // Delivery always lands into Main Store
+    setIngredients((prev) =>
+      prev.map((item) => {
+        if (item.id === ingredientId) {
+          const updatedStore = (item.storeStockUnits ?? 0) + quantityUnits;
+          const kStock = item.kitchenStockUnits ?? 0;
+          return {
+            ...item,
+            storeStockUnits: updatedStore,
+            kitchenStockUnits: kStock,
+            currentStockUnits: updatedStore + kStock,
+          };
+        }
+        return item;
+      })
+    );
 
     // Record formal Stock Movement
     const movement: StockMovement = {
@@ -598,19 +772,53 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       costImpact: cost,
       date: new Date().toISOString().split('T')[0],
       reference: invoiceRef || `PO-${Math.floor(10000 + Math.random() * 90000)}`,
-      reason: `Received from ${supplier || ing.supplier}`,
+      reason: `Received into Main Store from ${supplier || ing.supplier}`,
       recordedBy: 'David Kasambala (Manager)',
+      destinationLocation: 'main_store',
     };
 
     setStockMovements((prev) => [movement, ...prev]);
+
+    addNotification({
+      title: 'Goods Received in Main Store',
+      message: `+${quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} added to Main Storage.`,
+      type: 'stock',
+      actionRole: 'manager',
+      actionLabel: 'View Store Inventory',
+    });
   };
 
-  const recordWastage = (ingredientId: string, quantityUnits: number, reason: string) => {
+  const recordWastage = (
+    ingredientId: string,
+    quantityUnits: number,
+    reason: string,
+    location: 'kitchen' | 'main_store' = 'kitchen'
+  ) => {
     const ing = ingredients.find((i) => i.id === ingredientId);
     if (!ing) return;
 
-    // Decrement stock
-    updateStock(ingredientId, -quantityUnits);
+    setIngredients((prev) =>
+      prev.map((item) => {
+        if (item.id === ingredientId) {
+          let kStock = item.kitchenStockUnits ?? 0;
+          let sStock = item.storeStockUnits ?? 0;
+
+          if (location === 'kitchen') {
+            kStock = Math.max(0, kStock - quantityUnits);
+          } else {
+            sStock = Math.max(0, sStock - quantityUnits);
+          }
+
+          return {
+            ...item,
+            kitchenStockUnits: kStock,
+            storeStockUnits: sStock,
+            currentStockUnits: kStock + sStock,
+          };
+        }
+        return item;
+      })
+    );
 
     const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
     const movement: StockMovement = {
@@ -623,17 +831,166 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       costImpact: Math.round(unitCost * quantityUnits),
       date: new Date().toISOString().split('T')[0],
       reference: `WST-${Math.floor(1000 + Math.random() * 9000)}`,
-      reason: reason || 'Kitchen prep waste or spoilage',
+      reason: reason || `${location === 'kitchen' ? 'Kitchen prep waste or line loss' : 'Main store humidity or spoilage'}`,
       recordedBy: 'David Kasambala (Manager)',
+      sourceLocation: location,
     };
 
     setStockMovements((prev) => [movement, ...prev]);
+
+    addNotification({
+      title: 'Wastage Recorded',
+      message: `${quantityUnits.toLocaleString()} ${ing.consumptionUnit} ${ing.name} logged as waste (${reason}) from ${location === 'kitchen' ? 'Kitchen' : 'Main Store'}.`,
+      type: 'stock',
+      actionRole: 'manager',
+      actionLabel: 'View Spoilage Log',
+    });
+  };
+
+  // Stock Transfer between Main Store and Kitchen Floor
+  const transferStock = (params: {
+    ingredientId: string;
+    quantityUnits: number;
+    fromLocation: 'main_store' | 'kitchen';
+    toLocation: 'main_store' | 'kitchen';
+    reason: string;
+    shift?: string;
+    recordedBy?: string;
+  }): boolean => {
+    const ing = ingredients.find((i) => i.id === params.ingredientId);
+    if (!ing) return false;
+
+    const available =
+      params.fromLocation === 'main_store'
+        ? (ing.storeStockUnits ?? 0)
+        : (ing.kitchenStockUnits ?? 0);
+
+    if (params.quantityUnits <= 0 || params.quantityUnits > available) {
+      return false;
+    }
+
+    setIngredients((prev) =>
+      prev.map((item) => {
+        if (item.id === params.ingredientId) {
+          let sStock = item.storeStockUnits ?? Math.max(0, item.currentStockUnits - (item.kitchenStockUnits ?? 0));
+          let kStock = item.kitchenStockUnits ?? 0;
+
+          if (params.fromLocation === 'main_store' && params.toLocation === 'kitchen') {
+            sStock -= params.quantityUnits;
+            kStock += params.quantityUnits;
+          } else if (params.fromLocation === 'kitchen' && params.toLocation === 'main_store') {
+            kStock -= params.quantityUnits;
+            sStock += params.quantityUnits;
+          }
+
+          return {
+            ...item,
+            storeStockUnits: Math.max(0, sStock),
+            kitchenStockUnits: Math.max(0, kStock),
+            currentStockUnits: Math.max(0, sStock + kStock),
+          };
+        }
+        return item;
+      })
+    );
+
+    const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+    const isToKitchen = params.toLocation === 'kitchen';
+    const movement: StockMovement = {
+      id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      ingredientId: ing.id,
+      ingredientName: ing.name,
+      type: 'stock_transfer',
+      quantityDelta: isToKitchen ? params.quantityUnits : -params.quantityUnits,
+      unit: ing.consumptionUnit,
+      costImpact: Math.round(unitCost * params.quantityUnits),
+      date: new Date().toISOString().split('T')[0],
+      reference: isToKitchen
+        ? `TRF-ISSUE-${Math.floor(1000 + Math.random() * 9000)}`
+        : `TRF-RETURN-${Math.floor(1000 + Math.random() * 9000)}`,
+      reason:
+        params.reason ||
+        (isToKitchen
+          ? `Day operation prep requisition (${params.shift || 'Daily Shift'})`
+          : 'End-of-day return from kitchen line to main storage'),
+      recordedBy: params.recordedBy || 'David Kasambala (Manager)',
+      sourceLocation: params.fromLocation,
+      destinationLocation: params.toLocation,
+    };
+
+    setStockMovements((prev) => [movement, ...prev]);
+
+    addNotification({
+      title: isToKitchen ? 'Stock Issued to Kitchen' : 'Stock Returned to Store',
+      message: `${params.quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} ${isToKitchen ? 'transferred to Kitchen for day operations' : 'returned from Kitchen to Store'}.`,
+      type: 'transfer',
+      actionRole: 'manager',
+      actionLabel: 'View Stock Balances',
+    });
+
+    return true;
+  };
+
+  // End-of-day reconciliation: return all remaining kitchen stock back to store
+  const returnAllKitchenStockToStore = (staffName?: string) => {
+    const today = new Date().toISOString().split('T')[0];
+    const newMovements: StockMovement[] = [];
+    let itemsReturnedCount = 0;
+
+    setIngredients((prev) => {
+      return prev.map((ing) => {
+        const kQty = ing.kitchenStockUnits ?? 0;
+        if (kQty > 0) {
+          itemsReturnedCount++;
+          const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+          newMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            ingredientId: ing.id,
+            ingredientName: ing.name,
+            type: 'stock_transfer',
+            quantityDelta: -kQty,
+            unit: ing.consumptionUnit,
+            costImpact: Math.round(unitCost * kQty),
+            date: today,
+            reference: `TRF-CLOSE-${Math.floor(1000 + Math.random() * 9000)}`,
+            reason: 'Daily Shift Close: All kitchen prep stock returned to Main Storage Room',
+            recordedBy: staffName || 'David Kasambala (Manager)',
+            sourceLocation: 'kitchen',
+            destinationLocation: 'main_store',
+          });
+
+          return {
+            ...ing,
+            storeStockUnits: (ing.storeStockUnits ?? 0) + kQty,
+            kitchenStockUnits: 0,
+            currentStockUnits: (ing.storeStockUnits ?? 0) + kQty,
+          };
+        }
+        return ing;
+      });
+    });
+
+    if (newMovements.length > 0) {
+      setStockMovements((prev) => [...newMovements, ...prev]);
+      addNotification({
+        title: 'Daily Shift Close Completed',
+        message: `All ${itemsReturnedCount} kitchen ingredients reconciled and returned to Main Store for safe overnight storage.`,
+        type: 'transfer',
+        actionRole: 'manager',
+        actionLabel: 'View Final Stock',
+      });
+    }
   };
 
   const addNewIngredient = (ingData: Omit<Ingredient, 'id'>) => {
+    const sStock = ingData.storeStockUnits !== undefined ? ingData.storeStockUnits : ingData.currentStockUnits;
+    const kStock = ingData.kitchenStockUnits !== undefined ? ingData.kitchenStockUnits : 0;
     const newIng: Ingredient = {
       ...ingData,
       id: `ing-${Date.now()}`,
+      storeStockUnits: sStock,
+      kitchenStockUnits: kStock,
+      currentStockUnits: sStock + kStock,
     };
     setIngredients((prev) => [...prev, newIng]);
 
@@ -651,13 +1008,322 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ),
         date: new Date().toISOString().split('T')[0],
         reference: 'Initial Opening Balance',
-        reason: 'New raw ingredient catalogued',
+        reason: 'New raw ingredient catalogued into Main Storage',
         recordedBy: 'David Kasambala (Manager)',
+        destinationLocation: 'main_store',
       };
       setStockMovements((prev) => [movement, ...prev]);
     }
 
+    addNotification({
+      title: 'New Raw Ingredient Added',
+      message: `${newIng.name} catalogued with ${newIng.currentStockUnits.toLocaleString()} ${newIng.consumptionUnit} initial stock.`,
+      type: 'stock',
+      actionRole: 'manager',
+      actionLabel: 'View Stock',
+    });
+
     return newIng;
+  };
+
+  const saveRecipe = (recipe: Recipe, auditLog?: Omit<BomAuditLog, 'id' | 'timestamp'>) => {
+    setRecipes((prev) => {
+      const index = prev.findIndex((r) => r.id === recipe.id || r.menuItemId === recipe.menuItemId);
+      if (index >= 0) {
+        const updated = [...prev];
+        updated[index] = recipe;
+        return updated;
+      }
+      return [recipe, ...prev];
+    });
+
+    // Link recipe to menu item
+    if (recipe.menuItemId) {
+      setMenuItems((prev) =>
+        prev.map((item) =>
+          item.id === recipe.menuItemId ? { ...item, recipeId: recipe.id } : item
+        )
+      );
+    }
+
+    // Save audit log
+    if (auditLog) {
+      const now = new Date();
+      const dateStr = `${now.toISOString().split('T')[0]} ${now.toTimeString().substring(0, 5)}`;
+      const newLog: BomAuditLog = {
+        ...auditLog,
+        id: `bom-log-${Date.now()}`,
+        timestamp: dateStr,
+      };
+      setBomAuditLogs((prev) => [newLog, ...prev]);
+    }
+
+    addNotification({
+      title: 'BOM Recipe Approved & Saved',
+      message: `Bill of Materials for "${recipe.name || 'Menu Dish'}" saved to Master Menu (${recipe.ingredients.length} ingredients linked).`,
+      type: 'stock',
+      actionRole: 'manager',
+      actionLabel: 'View Recipe BOM',
+    });
+  };
+
+  const deleteRecipe = (recipeId: string) => {
+    setRecipes((prev) => prev.filter((r) => r.id !== recipeId));
+    setMenuItems((prev) =>
+      prev.map((item) => (item.recipeId === recipeId ? { ...item, recipeId: undefined } : item))
+    );
+  };
+
+  // ATOMIC VALIDATION: Check Kitchen Stock Availability for Batch Cooking
+  const validateBatchKitchenStock = (recipeId: string, batches: number = 1) => {
+    const recipe = recipes.find((r) => r.id === recipeId);
+    if (!recipe) {
+      return { canCook: false, missingItems: [], totalCost: 0, targetYieldPlates: 0 };
+    }
+
+    const multiplier = Math.max(0.1, batches);
+    const targetYieldPlates = Math.round((recipe.batchYieldPlates || 100) * multiplier);
+    let totalCost = 0;
+
+    const missingItems: MissingStockItem[] = recipe.ingredients.map((ri) => {
+      const ing = ingredients.find((i) => i.id === ri.ingredientId);
+      const ingredientName = ing ? ing.name : 'Unknown Ingredient';
+      const unit = ing ? ing.consumptionUnit : 'units';
+      const unitCost = ing ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
+
+      // Base quantity calculation: batchQuantity or per-plate * batchYield
+      const rawRequired = (ri.batchQuantity ?? (ri.quantity * (recipe.batchYieldPlates || 1))) * multiplier;
+      const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
+      const requiredQty = Math.round(rawRequired / yieldFactor);
+
+      const availableKitchenQty = ing?.kitchenStockUnits ?? 0;
+      const storeAvailableQty = ing?.storeStockUnits ?? 0;
+
+      totalCost += Math.round(requiredQty * unitCost);
+
+      let status: 'not_transferred' | 'insufficient' | 'ok' = 'ok';
+      let shortageQty = 0;
+
+      if (availableKitchenQty <= 0) {
+        status = 'not_transferred';
+        shortageQty = requiredQty;
+      } else if (availableKitchenQty < requiredQty) {
+        status = 'insufficient';
+        shortageQty = requiredQty - availableKitchenQty;
+      }
+
+      return {
+        ingredientId: ri.ingredientId,
+        ingredientName,
+        requiredQty,
+        availableKitchenQty,
+        storeAvailableQty,
+        unit,
+        status,
+        shortageQty,
+      };
+    });
+
+    const canCook = missingItems.every((item) => item.status === 'ok');
+
+    return {
+      canCook,
+      missingItems,
+      totalCost,
+      targetYieldPlates,
+    };
+  };
+
+  // COOK BATCH PRODUCTION: All-or-nothing atomic deduction from Kitchen Stock
+  const cookBatchProduction = (params: {
+    recipeId: string;
+    batches: number;
+    actualPlatesProduced?: number;
+    chefName?: string;
+    managerOverride?: boolean;
+    overrideReason?: string;
+  }): { success: boolean; error?: string; log?: ProductionLog } => {
+    const recipe = recipes.find((r) => r.id === params.recipeId);
+    if (!recipe) return { success: false, error: 'Recipe not found in Master Data' };
+
+    const validation = validateBatchKitchenStock(params.recipeId, params.batches);
+
+    // If validation fails and not manager override -> BLOCK ATOMICALLY
+    if (!validation.canCook && !params.managerOverride) {
+      const blockedReasons = validation.missingItems
+        .filter((m) => m.status !== 'ok')
+        .map(
+          (m) =>
+            `${m.ingredientName}: required ${m.requiredQty.toLocaleString()} ${m.unit}, available ${m.availableKitchenQty.toLocaleString()} ${m.unit} (${
+              m.status === 'not_transferred' ? 'not transferred to kitchen' : `short by ${m.shortageQty.toLocaleString()} ${m.unit}`
+            })`
+        )
+        .join('; ');
+      return {
+        success: false,
+        error: `Cannot cook ${params.batches} batch of ${recipe.name}. Missing items: ${blockedReasons}`,
+      };
+    }
+
+    const actualPlates = params.actualPlatesProduced || validation.targetYieldPlates;
+    const costPerPlate = actualPlates > 0 ? Math.round(validation.totalCost / actualPlates) : 0;
+    const today = new Date().toISOString().split('T')[0];
+    const timestampStr = `${today} ${new Date().toTimeString().substring(0, 5)}`;
+    const consumedDetails: {
+      ingredientId: string;
+      ingredientName: string;
+      quantity: number;
+      unit: string;
+      cost: number;
+    }[] = [];
+    const newMovements: StockMovement[] = [];
+
+    // All-or-nothing: deduct each required line from kitchen stock
+    setIngredients((prev) => {
+      const copy = [...prev];
+      validation.missingItems.forEach((req) => {
+        const idx = copy.findIndex((ing) => ing.id === req.ingredientId);
+        if (idx >= 0) {
+          const ing = copy[idx];
+          const kStock = Math.max(0, (ing.kitchenStockUnits ?? 0) - req.requiredQty);
+          const sStock = ing.storeStockUnits ?? 0;
+          const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+          const lineCost = Math.round(unitCost * req.requiredQty);
+
+          consumedDetails.push({
+            ingredientId: ing.id,
+            ingredientName: ing.name,
+            quantity: req.requiredQty,
+            unit: ing.consumptionUnit,
+            cost: lineCost,
+          });
+
+          copy[idx] = {
+            ...ing,
+            kitchenStockUnits: kStock,
+            currentStockUnits: kStock + sStock,
+          };
+
+          newMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            ingredientId: ing.id,
+            ingredientName: ing.name,
+            type: 'kitchen_consumption',
+            quantityDelta: -req.requiredQty,
+            unit: ing.consumptionUnit,
+            costImpact: lineCost,
+            date: today,
+            reference: `PROD-${actualPlates}P`,
+            reason: `Batch cooking ${params.batches} batch (${actualPlates} plates) of ${recipe.name || 'Dish'}`,
+            recordedBy: params.chefName || 'Executive Chef Juma',
+            sourceLocation: 'kitchen',
+          });
+        }
+      });
+      return copy;
+    });
+
+    if (newMovements.length > 0) {
+      setStockMovements((prev) => [...newMovements, ...prev]);
+    }
+
+    // Save Production Log
+    const newProdLog: ProductionLog = {
+      id: `prod-${Date.now()}`,
+      recipeId: recipe.id,
+      menuItemId: recipe.menuItemId,
+      dishName: recipe.name || 'Dish',
+      batchesCooked: params.batches,
+      targetYieldPlates: validation.targetYieldPlates,
+      actualPlatesProduced: actualPlates,
+      totalCost: validation.totalCost,
+      costPerPlate,
+      cookedBy: params.chefName || 'Executive Chef Juma',
+      timestamp: timestampStr,
+      remainingPlates: actualPlates,
+      ingredientsConsumed: consumedDetails,
+      managerOverride: params.managerOverride,
+      overrideReason: params.overrideReason,
+    };
+
+    setProductionLogs((prev) => [newProdLog, ...prev]);
+
+    // Update Prepared Dish Stock available pool
+    setPreparedDishStocks((prev) => {
+      const exists = prev.find((p) => p.menuItemId === recipe.menuItemId);
+      if (exists) {
+        return prev.map((p) =>
+          p.menuItemId === recipe.menuItemId
+            ? {
+                ...p,
+                preparedPlatesAvailable: p.preparedPlatesAvailable + actualPlates,
+                totalCookedToday: p.totalCookedToday + actualPlates,
+                lastCookedAt: timestampStr,
+                status: 'ready',
+              }
+            : p
+        );
+      }
+      return [
+        {
+          menuItemId: recipe.menuItemId,
+          dishName: recipe.name || 'Dish',
+          preparedPlatesAvailable: actualPlates,
+          totalCookedToday: actualPlates,
+          totalSoldToday: 0,
+          lastCookedAt: timestampStr,
+          status: 'ready',
+        },
+        ...prev,
+      ];
+    });
+
+    addNotification({
+      title: 'Batch Production Complete',
+      message: `Cooked ${actualPlates} plates of ${recipe.name} (Unit COGS: ${formatMoney(costPerPlate)}/plate). Stock deducted from Kitchen.`,
+      type: 'kitchen',
+      actionRole: 'kitchen',
+      actionLabel: 'View Prepared Plates',
+    });
+
+    return { success: true, log: newProdLog };
+  };
+
+  // One-Click Requisition for Missing Batch Ingredients (Store -> Kitchen)
+  const createRequisitionForMissing = (missingItems: MissingStockItem[], shift: string = 'Daily Operation Prep'): boolean => {
+    const shortages = missingItems.filter((m) => m.status !== 'ok');
+    if (shortages.length === 0) return true;
+
+    let transfersDone = 0;
+    shortages.forEach((item) => {
+      const availableInStore = item.storeAvailableQty;
+      const transferQty = Math.min(item.shortageQty, availableInStore);
+
+      if (transferQty > 0) {
+        transferStock({
+          ingredientId: item.ingredientId,
+          quantityUnits: transferQty,
+          fromLocation: 'main_store',
+          toLocation: 'kitchen',
+          reason: `Requisition for missing ${item.ingredientName} (short by ${item.shortageQty} ${item.unit})`,
+          shift,
+          recordedBy: 'Kitchen Requisition Engine',
+        });
+        transfersDone++;
+      }
+    });
+
+    if (transfersDone > 0) {
+      addNotification({
+        title: 'Requisition Issued to Kitchen',
+        message: `Transferred missing ingredients (${transfersDone} items) from Main Store to Kitchen Floor.`,
+        type: 'transfer',
+        actionRole: 'kitchen',
+        actionLabel: 'Cook Batch',
+      });
+      return true;
+    }
+    return false;
   };
 
   // Staff Advances & Waiter Stats
@@ -753,6 +1419,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         employees,
         cart,
         stockMovements,
+        notifications,
+        unreadNotificationCount,
+        markNotificationAsRead,
+        markAllNotificationsAsRead,
+        clearNotification,
+        addNotification,
+        transferStock,
+        returnAllKitchenStockToStore,
         activeReferralCode,
         setReferralCode: setActiveReferralCode,
         addToCart,
@@ -776,6 +1450,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         recordStockIntake,
         recordWastage,
         addNewIngredient,
+        saveRecipe,
+        deleteRecipe,
+        bomAuditLogs,
+        productionLogs,
+        preparedDishStocks,
+        validateBatchKitchenStock,
+        cookBatchProduction,
+        createRequisitionForMissing,
         addAdvanceRequest,
         approveAdvance,
         calculateWaiterStats,

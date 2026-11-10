@@ -8,6 +8,10 @@ import {
   Recipe,
   Order,
   StockMovement,
+  AppNotification,
+  BomAuditLog,
+  ProductionLog,
+  PreparedDishStock,
 } from '../types/restaurant';
 
 export const INITIAL_TENANTS: RestaurantTenant[] = [
@@ -76,6 +80,28 @@ export const INITIAL_WAITERS: Waiter[] = [
 ];
 
 export const INITIAL_MENU_ITEMS: MenuItem[] = [
+  {
+    id: 'menu-wali-nyama',
+    name: 'Wali Nyama (Beef Stew with Rice)',
+    category: 'Special',
+    description: 'Traditional Tanzanian slow-simmered beef tenderloin stew served with steaming white fragrant rice, kachumbari, and rich aromatic broth.',
+    price: 8000, // 8,000 TZS
+    image: '/src/assets/images/dish_burger_roastbeef_1794223269419.jpg',
+    preparationTimeMinutes: 5,
+    isAvailable: true,
+    station: 'hot_kitchen',
+    recipeId: 'rec-wali-nyama',
+    tags: ['Bestseller', 'Batch Cooked', 'Swahili Classic'],
+    portions: [
+      { name: 'Standard Plate (1 Portion)', priceDelta: 0 },
+      { name: 'Double Meat Portion', priceDelta: 4000 },
+    ],
+    modifiers: [
+      { id: 'm-wn-1', name: 'Extra Beef Chunk (100g)', price: 3000 },
+      { id: 'm-wn-2', name: 'Spicy Kachumbari Salad', price: 1000 },
+      { id: 'm-wn-3', name: 'Fried Plantain (Ndizi 2pcs)', price: 2000 },
+    ],
+  },
   {
     id: 'menu-1',
     name: 'Grilled Salmon Steak',
@@ -492,9 +518,12 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
     consumptionUnit: 'grams',
     conversionRatio: 50000, // 1 sack = 50,000 g
     costPerPurchaseUnit: 90000, // TZS 90,000 per sack -> TZS 1.8 per g
-    currentStockUnits: 85000, // 85kg in stock
+    currentStockUnits: 85000, // 85kg total
+    storeStockUnits: 65000, // 65kg in Main Store
+    kitchenStockUnits: 20000, // 20kg in Kitchen for day operation
     minimumThreshold: 20000,
     supplier: 'Mbeya Farmers Cooperative',
+    category: 'Produce',
   },
   {
     id: 'ing-eggs',
@@ -503,9 +532,12 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
     consumptionUnit: 'pcs',
     conversionRatio: 30,
     costPerPurchaseUnit: 12000, // TZS 400 per egg
-    currentStockUnits: 140, // 140 eggs
+    currentStockUnits: 140, // 140 eggs total
+    storeStockUnits: 90, // 3 trays in Main Store
+    kitchenStockUnits: 50, // Kitchen floor eggs
     minimumThreshold: 60,
     supplier: 'Kibaha Fresh Poultry',
+    category: 'Produce',
   },
   {
     id: 'ing-oil',
@@ -514,9 +546,12 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
     consumptionUnit: 'ml',
     conversionRatio: 20000,
     costPerPurchaseUnit: 70000, // TZS 3.5 per ml
-    currentStockUnits: 34000, // 34 liters
+    currentStockUnits: 34000, // 34 liters total
+    storeStockUnits: 26000, // 26L in Main Store
+    kitchenStockUnits: 8000, // 8L in kitchen fryer/line
     minimumThreshold: 10000,
     supplier: 'Kapa Oil Refineries',
+    category: 'Oils & Dairy',
   },
   {
     id: 'ing-onions',
@@ -526,8 +561,11 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
     conversionRatio: 25000,
     costPerPurchaseUnit: 45000,
     currentStockUnits: 32000,
+    storeStockUnits: 24000,
+    kitchenStockUnits: 8000,
     minimumThreshold: 8000,
     supplier: 'Kariakoo Wholesale Produce',
+    category: 'Produce',
   },
   {
     id: 'ing-salmon',
@@ -536,9 +574,12 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
     consumptionUnit: 'grams',
     conversionRatio: 10000,
     costPerPurchaseUnit: 380000, // TZS 38 per gram
-    currentStockUnits: 14500, // 14.5 kg
+    currentStockUnits: 14500, // 14.5 kg total
+    storeStockUnits: 11000, // 11kg in walk-in freezer
+    kitchenStockUnits: 3500, // 3.5kg in line prep chill drawer
     minimumThreshold: 5000,
     supplier: 'Dar Ocean Catch Coldstore',
+    category: 'Meat & Seafood',
   },
   {
     id: 'ing-beef',
@@ -548,8 +589,11 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
     conversionRatio: 20000,
     costPerPurchaseUnit: 240000, // TZS 12 per gram
     currentStockUnits: 28000,
+    storeStockUnits: 20000,
+    kitchenStockUnits: 8000,
     minimumThreshold: 8000,
     supplier: 'Kongwa Butchery Ltd',
+    category: 'Meat & Seafood',
   },
   {
     id: 'ing-shrimp',
@@ -559,8 +603,11 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
     conversionRatio: 5000,
     costPerPurchaseUnit: 160000,
     currentStockUnits: 8200,
+    storeStockUnits: 5500,
+    kitchenStockUnits: 2700,
     minimumThreshold: 3000,
     supplier: 'Indian Ocean Fishery Ltd',
+    category: 'Meat & Seafood',
   },
   {
     id: 'ing-soda',
@@ -569,49 +616,248 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
     consumptionUnit: 'bottle',
     conversionRatio: 24,
     costPerPurchaseUnit: 22000,
-    currentStockUnits: 96, // 4 crates
+    currentStockUnits: 96, // 4 crates total
+    storeStockUnits: 72, // 3 crates in back store
+    kitchenStockUnits: 24, // 1 crate in beverage cooler
     minimumThreshold: 48,
     supplier: 'Dar Bottlers Co.',
+    category: 'Beverages',
+  },
+  {
+    id: 'ing-rice',
+    name: 'Kyela Pure Basmati Rice',
+    purchaseUnit: '25kg Bag',
+    consumptionUnit: 'grams',
+    conversionRatio: 25000,
+    costPerPurchaseUnit: 75000, // TZS 3.0 per g
+    currentStockUnits: 37000, // 37 kg total
+    storeStockUnits: 25000, // 25 kg in Main Store
+    kitchenStockUnits: 12000, // 12 kg in Kitchen floor (short by 8kg for a 20kg batch)
+    minimumThreshold: 15000,
+    supplier: 'Kyela Rice Millers Ltd',
+    category: 'Dry Goods',
+  },
+  {
+    id: 'ing-tomatoes',
+    name: 'Fresh Roma Tomatoes',
+    purchaseUnit: '20kg Crate (Tenga)',
+    consumptionUnit: 'grams',
+    conversionRatio: 20000,
+    costPerPurchaseUnit: 40000, // TZS 2.0 per g
+    currentStockUnits: 18000,
+    storeStockUnits: 14000,
+    kitchenStockUnits: 4000, // 4kg in Kitchen (sufficient for 2kg batch)
+    minimumThreshold: 5000,
+    supplier: 'Kariakoo Wholesale Produce',
+    category: 'Produce',
+  },
+  {
+    id: 'ing-salt',
+    name: 'Iodized Table Salt',
+    purchaseUnit: '10kg Bale',
+    consumptionUnit: 'grams',
+    conversionRatio: 10000,
+    costPerPurchaseUnit: 9000, // TZS 0.9 per g
+    currentStockUnits: 8500,
+    storeStockUnits: 6500,
+    kitchenStockUnits: 2000, // 2kg in Kitchen (sufficient for 300g batch)
+    minimumThreshold: 2000,
+    supplier: 'Kariakoo Wholesale Produce',
+    category: 'Dry Goods',
   },
 ];
 
 export const INITIAL_RECIPES: Recipe[] = [
   {
+    id: 'rec-wali-nyama',
+    menuItemId: 'menu-wali-nyama',
+    name: 'Wali Nyama (Beef Stew with Rice)',
+    batchYieldPlates: 100, // Produces 100 plates per batch
+    version: 1,
+    cookingMethod: 'batch_cooking',
+    ingredients: [
+      {
+        ingredientId: 'ing-rice',
+        batchQuantity: 20000,
+        batchUnit: 'kg',
+        quantity: 200, // 0.200 kg per plate
+        yieldPercentage: 100,
+        notes: '20kg batch ÷ 100 plates = 0.200 kg (200g) per plate',
+      },
+      {
+        ingredientId: 'ing-beef',
+        batchQuantity: 15000,
+        batchUnit: 'kg',
+        quantity: 150, // 0.150 kg per plate
+        yieldPercentage: 90,
+        notes: '15kg batch ÷ 100 plates = 0.150 kg (150g) per plate (trimmed)',
+      },
+      {
+        ingredientId: 'ing-oil',
+        batchQuantity: 2000,
+        batchUnit: 'L',
+        quantity: 20, // 0.020 L per plate
+        yieldPercentage: 100,
+        notes: '2L batch ÷ 100 plates = 0.020 L (20ml) per plate',
+      },
+      {
+        ingredientId: 'ing-onions',
+        batchQuantity: 3000,
+        batchUnit: 'kg',
+        quantity: 30, // 0.030 kg per plate
+        yieldPercentage: 90,
+        notes: '3kg batch ÷ 100 plates = 0.030 kg (30g) per plate',
+      },
+      {
+        ingredientId: 'ing-tomatoes',
+        batchQuantity: 2000,
+        batchUnit: 'kg',
+        quantity: 20, // 0.020 kg per plate
+        yieldPercentage: 92,
+        notes: '2kg batch ÷ 100 plates = 0.020 kg (20g) per plate',
+      },
+      {
+        ingredientId: 'ing-salt',
+        batchQuantity: 300,
+        batchUnit: 'kg',
+        quantity: 3, // 0.003 kg (3g) per plate
+        yieldPercentage: 100,
+        notes: '0.3kg (300g) batch ÷ 100 plates = 0.003 kg (3g) per plate',
+      },
+    ],
+    preparationInstructions:
+      'Batch production (100 plates): Rinse 20kg rice, steam in commercial rice cooker. In 80L braising pot, brown 3kg onions in 2L oil, add 15kg diced beef, 2kg blended tomatoes, and 300g salt. Simmer 1.5 hours until rich gravy forms. Serve 1 ladle beef over 1 cup rice with kachumbari.',
+    approvedBy: 'Executive Chef Juma',
+    approvedAt: '2026-11-08 09:30',
+  },
+  {
     id: 'rec-chips-mayai',
     menuItemId: 'menu-2',
+    name: 'Classic Chips Mayai Deluxe',
+    batchYieldPlates: 1,
+    version: 1,
+    cookingMethod: 'on_sale_order',
     ingredients: [
-      { ingredientId: 'ing-potatoes', quantity: 300 }, // 300g potatoes (~TZS 540)
-      { ingredientId: 'ing-eggs', quantity: 2 }, // 2 eggs (~TZS 800)
-      { ingredientId: 'ing-oil', quantity: 35 }, // 35ml oil (~TZS 122)
-      { ingredientId: 'ing-onions', quantity: 40 }, // 40g onions (~TZS 72)
+      { ingredientId: 'ing-potatoes', batchQuantity: 300, batchUnit: 'g', quantity: 300, yieldPercentage: 85 }, // 300g potatoes
+      { ingredientId: 'ing-eggs', batchQuantity: 2, batchUnit: 'pcs', quantity: 2, yieldPercentage: 100 }, // 2 eggs
+      { ingredientId: 'ing-oil', batchQuantity: 35, batchUnit: 'ml', quantity: 35, yieldPercentage: 100 }, // 35ml oil
+      { ingredientId: 'ing-onions', batchQuantity: 40, batchUnit: 'g', quantity: 40, yieldPercentage: 90 }, // 40g onions
     ],
     preparationInstructions: 'Slice potatoes, fry in oil until crispy golden, pour whisked seasoned eggs with onions, flip once and serve with kachumbari.',
+    approvedBy: 'Executive Chef Juma',
+    approvedAt: '2026-11-07 14:00',
   },
   {
     id: 'rec-salmon',
     menuItemId: 'menu-1',
+    name: 'Grilled Salmon Steak',
+    batchYieldPlates: 1,
+    version: 1,
+    cookingMethod: 'on_sale_order',
     ingredients: [
-      { ingredientId: 'ing-salmon', quantity: 250 }, // 250g salmon (~TZS 9,500)
-      { ingredientId: 'ing-oil', quantity: 20 }, // 20ml oil (~TZS 70)
-      { ingredientId: 'ing-onions', quantity: 30 },
+      { ingredientId: 'ing-salmon', batchQuantity: 250, batchUnit: 'g', quantity: 250, yieldPercentage: 95 },
+      { ingredientId: 'ing-oil', batchQuantity: 20, batchUnit: 'ml', quantity: 20, yieldPercentage: 100 },
+      { ingredientId: 'ing-onions', batchQuantity: 30, batchUnit: 'g', quantity: 30, yieldPercentage: 90 },
     ],
+    approvedBy: 'David Kasambala',
+    approvedAt: '2026-11-07 10:45',
   },
   {
     id: 'rec-pasta-beef',
     menuItemId: 'menu-3',
+    name: 'Pasta with Roast Beef',
+    batchYieldPlates: 1,
+    version: 1,
+    cookingMethod: 'on_sale_order',
     ingredients: [
-      { ingredientId: 'ing-beef', quantity: 200 }, // 200g tenderloin (~TZS 2,400)
-      { ingredientId: 'ing-oil', quantity: 25 },
-      { ingredientId: 'ing-onions', quantity: 50 },
+      { ingredientId: 'ing-beef', batchQuantity: 200, batchUnit: 'g', quantity: 200, yieldPercentage: 90 },
+      { ingredientId: 'ing-oil', batchQuantity: 25, batchUnit: 'ml', quantity: 25, yieldPercentage: 100 },
+      { ingredientId: 'ing-onions', batchQuantity: 50, batchUnit: 'g', quantity: 50, yieldPercentage: 90 },
     ],
+    approvedBy: 'David Kasambala',
+    approvedAt: '2026-11-06 16:30',
   },
   {
     id: 'rec-seafood',
     menuItemId: 'menu-4',
+    name: 'Seafood Mix Wooden Bowl',
+    batchYieldPlates: 1,
+    version: 1,
+    cookingMethod: 'on_sale_order',
     ingredients: [
-      { ingredientId: 'ing-shrimp', quantity: 200 }, // 200g prawns (~TZS 6,400)
-      { ingredientId: 'ing-oil', quantity: 30 },
-      { ingredientId: 'ing-onions', quantity: 40 },
+      { ingredientId: 'ing-shrimp', batchQuantity: 200, batchUnit: 'g', quantity: 200, yieldPercentage: 65 },
+      { ingredientId: 'ing-oil', batchQuantity: 30, batchUnit: 'ml', quantity: 30, yieldPercentage: 100 },
+      { ingredientId: 'ing-onions', batchQuantity: 40, batchUnit: 'g', quantity: 40, yieldPercentage: 90 },
+    ],
+    approvedBy: 'David Kasambala',
+    approvedAt: '2026-11-06 11:15',
+  },
+];
+
+export const INITIAL_BOM_AUDIT_LOGS: BomAuditLog[] = [
+  {
+    id: 'bom-log-1',
+    recipeId: 'rec-chips-mayai',
+    dishName: 'Classic Chips Mayai Deluxe',
+    rawInputText: 'chips mayai sahani 4: viazi kilo 1.2, mayai 8, mafuta 140ml, kitunguu 1 kikubwa',
+    suggestedIngredientsCount: 4,
+    approvedIngredientsCount: 4,
+    avgConfidence: 96,
+    anomaliesDetected: [],
+    approvedBy: 'Executive Chef Juma & David Kasambala',
+    timestamp: '2026-11-08 14:20',
+    totalCostPerPlate: 1534,
+    foodCostPercentage: 11.8,
+  },
+  {
+    id: 'bom-log-2',
+    recipeId: 'rec-salmon',
+    dishName: 'Grilled Salmon Steak',
+    rawInputText: 'Salmon steak: 250g fresh salmon fillet, 20ml sunflower oil, 30g red onions, herb butter',
+    suggestedIngredientsCount: 3,
+    approvedIngredientsCount: 3,
+    avgConfidence: 94,
+    anomaliesDetected: ['Herb butter not in raw inventory - mapped as direct prep'],
+    approvedBy: 'David Kasambala (Manager)',
+    timestamp: '2026-11-07 10:45',
+    totalCostPerPlate: 9624,
+    foodCostPercentage: 24.7,
+  },
+];
+
+export const INITIAL_PREPARED_DISH_STOCKS: PreparedDishStock[] = [
+  {
+    menuItemId: 'menu-wali-nyama',
+    dishName: 'Wali Nyama (Beef Stew with Rice)',
+    preparedPlatesAvailable: 45,
+    totalCookedToday: 100,
+    totalSoldToday: 55,
+    lastCookedAt: '2026-11-09 11:30',
+    status: 'ready',
+  },
+];
+
+export const INITIAL_PRODUCTION_LOGS: ProductionLog[] = [
+  {
+    id: 'prod-001',
+    recipeId: 'rec-wali-nyama',
+    menuItemId: 'menu-wali-nyama',
+    dishName: 'Wali Nyama (Beef Stew with Rice)',
+    batchesCooked: 1.0,
+    targetYieldPlates: 100,
+    actualPlatesProduced: 100,
+    totalCost: 268500,
+    costPerPlate: 2685,
+    cookedBy: 'Executive Chef Juma',
+    timestamp: '2026-11-09 11:30',
+    remainingPlates: 45,
+    ingredientsConsumed: [
+      { ingredientId: 'ing-rice', ingredientName: 'Kyela Pure Basmati Rice', quantity: 20000, unit: 'grams', cost: 60000 },
+      { ingredientId: 'ing-beef', ingredientName: 'Prime Beef Tenderloin', quantity: 15000, unit: 'grams', cost: 180000 },
+      { ingredientId: 'ing-oil', ingredientName: 'Pure Sunflower Cooking Oil', quantity: 2000, unit: 'ml', cost: 7000 },
+      { ingredientId: 'ing-onions', ingredientName: 'Red Cooking Onions', quantity: 3000, unit: 'grams', cost: 5400 },
+      { ingredientId: 'ing-tomatoes', ingredientName: 'Fresh Roma Tomatoes', quantity: 2000, unit: 'grams', cost: 4000 },
+      { ingredientId: 'ing-salt', ingredientName: 'Iodized Table Salt', quantity: 300, unit: 'grams', cost: 270 },
     ],
   },
 ];
@@ -852,5 +1098,103 @@ export const INITIAL_STOCK_MOVEMENTS: StockMovement[] = [
     reference: 'Physical Stocktake Audit #ST-09',
     reason: 'Thawing moisture weight variance reconciliation',
     recordedBy: 'David Kasambala (Manager)',
+  },
+  {
+    id: 'sm-111',
+    ingredientId: 'ing-potatoes',
+    ingredientName: 'Irish Potatoes (Mbeya Highgrade)',
+    type: 'stock_transfer',
+    quantityDelta: 20000, // 20kg issued to kitchen
+    unit: 'grams',
+    costImpact: 36000,
+    date: new Date().toISOString().split('T')[0],
+    reference: 'TRF-KITCHEN-0801',
+    reason: 'Morning breakfast & lunch prep daily requisition',
+    recordedBy: 'David Kasambala (Manager)',
+    sourceLocation: 'main_store',
+    destinationLocation: 'kitchen',
+  },
+  {
+    id: 'sm-112',
+    ingredientId: 'ing-eggs',
+    ingredientName: 'Farm Fresh Organic Eggs',
+    type: 'stock_transfer',
+    quantityDelta: 60, // 2 trays issued
+    unit: 'pcs',
+    costImpact: 24000,
+    date: new Date().toISOString().split('T')[0],
+    reference: 'TRF-KITCHEN-0802',
+    reason: 'Daily omelette and pastry line stock',
+    recordedBy: 'David Kasambala (Manager)',
+    sourceLocation: 'main_store',
+    destinationLocation: 'kitchen',
+  },
+  {
+    id: 'sm-113',
+    ingredientId: 'ing-oil',
+    ingredientName: 'Pure Sunflower Cooking Oil',
+    type: 'stock_transfer',
+    quantityDelta: 8000, // 8 liters issued
+    unit: 'ml',
+    costImpact: 28000,
+    date: new Date().toISOString().split('T')[0],
+    reference: 'TRF-KITCHEN-0803',
+    reason: 'Fryer line setup for lunch shift',
+    recordedBy: 'Chef Hamisi Juma',
+    sourceLocation: 'main_store',
+    destinationLocation: 'kitchen',
+  },
+];
+
+export const INITIAL_NOTIFICATIONS: AppNotification[] = [
+  {
+    id: 'notif-1',
+    title: 'Daily Stock Requisition Issued',
+    message: '20kg Potatoes & 60 Farm Eggs transferred from Main Store to Kitchen for Day Operations.',
+    type: 'transfer',
+    timestamp: new Date(Date.now() - 35 * 60 * 1000).toISOString(),
+    read: false,
+    actionRole: 'manager',
+    actionLabel: 'View Stock Balances',
+  },
+  {
+    id: 'notif-2',
+    title: 'New Order #F0027 - Table 03',
+    message: '2x Grilled Salmon Steak & 2x Passion Mojito dispatched to Kitchen Line.',
+    type: 'order',
+    timestamp: new Date(Date.now() - 14 * 60 * 1000).toISOString(),
+    read: false,
+    actionRole: 'kitchen',
+    actionLabel: 'Open KDS Ticket',
+  },
+  {
+    id: 'notif-3',
+    title: 'Dish Ready for Service!',
+    message: 'Order #F0029 (Table 06) is ready on the kitchen pass. Waiter Peter notified.',
+    type: 'kitchen',
+    timestamp: new Date(Date.now() - 6 * 60 * 1000).toISOString(),
+    read: false,
+    actionRole: 'cashier',
+    actionLabel: 'View POS',
+  },
+  {
+    id: 'notif-4',
+    title: 'Online Order via John Mwamba Link',
+    message: 'Customer Amina placed TZS 114,740 Delivery order via waiter John referral link.',
+    type: 'order',
+    timestamp: new Date(Date.now() - 32 * 60 * 1000).toISOString(),
+    read: true,
+    actionRole: 'waiter',
+    actionLabel: 'View Commission',
+  },
+  {
+    id: 'notif-5',
+    title: 'Low Stock Reorder Alert',
+    message: 'Atlantic Salmon Fillet is approaching minimum threshold (14.5kg remaining).',
+    type: 'stock',
+    timestamp: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+    read: true,
+    actionRole: 'manager',
+    actionLabel: 'Purchase Order',
   },
 ];

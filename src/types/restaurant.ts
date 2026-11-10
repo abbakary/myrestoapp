@@ -128,13 +128,20 @@ export interface Ingredient {
   consumptionUnit: string; // e.g. "ml", "grams", "bottle"
   conversionRatio: number; // 1 purchaseUnit = X consumptionUnits
   costPerPurchaseUnit: number;
-  currentStockUnits: number; // in consumption units
+  currentStockUnits: number; // total = storeStockUnits + kitchenStockUnits
+  storeStockUnits: number; // Main warehouse / store stock
+  kitchenStockUnits: number; // Kitchen floor / daily operations stock
   minimumThreshold: number;
   supplier: string;
   category?: 'Produce' | 'Meat & Seafood' | 'Dry Goods' | 'Oils & Dairy' | 'Beverages';
 }
 
-export type MovementType = 'purchase_intake' | 'kitchen_consumption' | 'wastage_spoilage' | 'manual_adjustment';
+export type MovementType =
+  | 'purchase_intake'
+  | 'kitchen_consumption'
+  | 'wastage_spoilage'
+  | 'manual_adjustment'
+  | 'stock_transfer';
 
 export interface StockMovement {
   id: string;
@@ -145,21 +152,130 @@ export interface StockMovement {
   unit: string;
   costImpact: number;
   date: string;
-  reference?: string; // e.g. "PO-8819", "Order #F0027", "Manager Audit"
+  reference?: string; // e.g. "PO-8819", "Order #F0027", "Manager Audit", "TRF-KITCHEN-01"
   reason?: string;
   recordedBy: string;
+  sourceLocation?: 'main_store' | 'kitchen';
+  destinationLocation?: 'main_store' | 'kitchen';
+}
+
+export interface AppNotification {
+  id: string;
+  title: string;
+  message: string;
+  type: 'order' | 'stock' | 'transfer' | 'kitchen' | 'payroll';
+  timestamp: string;
+  read: boolean;
+  actionRole?: Role;
+  actionLabel?: string;
 }
 
 export interface RecipeIngredient {
   ingredientId: string;
-  quantity: number; // in consumption units
+  quantity: number; // in consumption units per single plate (auto: batchQuantity / batchYieldPlates)
+  batchQuantity?: number; // e.g. 20,000g for 20kg batch
+  batchUnit?: string; // e.g. "kg", "L", "pcs", "g"
+  yieldPercentage?: number; // e.g. 90% for onions, 55% for whole fish
+  notes?: string;
 }
 
 export interface Recipe {
   id: string;
   menuItemId: string;
+  name?: string;
+  batchYieldPlates: number; // Mandatory: Number of plates batch produces (e.g. 100 plates for Wali Nyama)
+  version: number; // Recipe versioning (v1, v2)
+  cookingMethod: 'batch_cooking' | 'on_sale_order'; // Batch pot/buffet vs made-to-order
   ingredients: RecipeIngredient[];
   preparationInstructions?: string;
+  isAiGenerated?: boolean;
+  aiConfidence?: number;
+  approvedBy?: string;
+  approvedAt?: string;
+}
+
+export interface MissingStockItem {
+  ingredientId: string;
+  ingredientName: string;
+  requiredQty: number; // in consumption units
+  availableKitchenQty: number;
+  storeAvailableQty: number;
+  unit: string;
+  status: 'not_transferred' | 'insufficient' | 'ok';
+  shortageQty: number;
+}
+
+export interface ProductionLog {
+  id: string;
+  recipeId: string;
+  menuItemId: string;
+  dishName: string;
+  batchesCooked: number; // e.g. 1 batch or 0.5 batch
+  targetYieldPlates: number; // e.g. 100
+  actualPlatesProduced: number; // e.g. 90 plates (allows real yield variance)
+  totalCost: number;
+  costPerPlate: number;
+  cookedBy: string;
+  timestamp: string;
+  remainingPlates: number;
+  ingredientsConsumed: {
+    ingredientId: string;
+    ingredientName: string;
+    quantity: number;
+    unit: string;
+    cost: number;
+  }[];
+  managerOverride?: boolean;
+  overrideReason?: string;
+}
+
+export interface PreparedDishStock {
+  menuItemId: string;
+  dishName: string;
+  preparedPlatesAvailable: number;
+  totalCookedToday: number;
+  totalSoldToday: number;
+  lastCookedAt: string;
+  status: 'ready' | 'low' | 'out_of_stock';
+}
+
+export interface BomAuditLog {
+  id: string;
+  recipeId: string;
+  dishName: string;
+  rawInputText: string;
+  suggestedIngredientsCount: number;
+  approvedIngredientsCount: number;
+  avgConfidence: number;
+  anomaliesDetected: string[];
+  approvedBy: string;
+  timestamp: string;
+  totalCostPerPlate: number;
+  foodCostPercentage: number;
+}
+
+export interface AiParsedLineItem {
+  rawText: string;
+  rawIngredientName: string;
+  matchedIngredientId: string | null;
+  matchedIngredientName: string;
+  confidence: number; // 0 - 100
+  quantityPerBatch: number;
+  rawUnit: string;
+  normalizedBaseQuantity: number; // consumption unit per 1 plate
+  baseUnit: string;
+  typicalYieldPercentage: number; // e.g. 90%
+  notes?: string;
+  isAnomaly: boolean;
+  anomalyReason?: string;
+}
+
+export interface AiParsedBOMResult {
+  recipeName: string;
+  batchPortions: number;
+  prepInstructions?: string;
+  lines: AiParsedLineItem[];
+  anomalies: string[];
 }
 
 export interface RestaurantTenant {

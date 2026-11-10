@@ -22,6 +22,7 @@ import {
   Truck,
   Package,
   Utensils,
+  Flame,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { MenuItem, Order, PaymentMethod, OrderType } from '../../types/restaurant';
@@ -42,6 +43,8 @@ export const PosView: React.FC = () => {
     processPayment,
     formatMoney,
     cashierShift,
+    preparedDishStocks,
+    recipes,
   } = useRestaurant();
 
   const [selectedCategory, setSelectedCategory] = useState<string>('All Menu');
@@ -344,15 +347,47 @@ export const PosView: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Title */}
+                  {/* Title & Batch Prep Stock Badge */}
                   <div className="text-center mt-2">
                     <h3 className="text-sm font-bold text-neutral-900 leading-snug line-clamp-1">
                       {item.name}
                     </h3>
+                    {(() => {
+                      const recipe = recipes.find((r) => r.menuItemId === item.id);
+                      const prepStock = preparedDishStocks.find((p) => p.menuItemId === item.id);
+                      const isBatchCook = item.cookingMethod === 'batch_cooking' || recipe?.cookingMethod === 'batch_cooking';
+
+                      if (isBatchCook) {
+                        const count = prepStock?.preparedPlatesAvailable ?? 0;
+                        return (
+                          <div className="mt-1 flex items-center justify-center">
+                            <span
+                              className={`text-[10px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold ${
+                                count > 10
+                                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                  : count > 0
+                                  ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                  : 'bg-rose-50 text-rose-800 border border-rose-200'
+                              }`}
+                            >
+                              <Flame className="w-2.5 h-2.5 text-orange-500" />
+                              <span>{count > 0 ? `${count} plates ready` : '0 ready (Batch cook needed)'}</span>
+                            </span>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="mt-1 flex items-center justify-center">
+                          <span className="text-[10px] text-neutral-400 font-medium">
+                            Made to order
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Price & Quantity Stepper (Emerald Accent) */}
-                  <div className="flex items-center justify-between mt-4 pt-3 border-t border-neutral-100">
+                  <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-neutral-100">
                     <div className="text-sm font-bold text-neutral-900 tabular-nums">
                       {formatMoney(item.price)}
                     </div>

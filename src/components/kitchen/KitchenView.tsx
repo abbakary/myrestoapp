@@ -10,6 +10,10 @@ import {
   Sparkles,
   Volume2,
   VolumeX,
+  Boxes,
+  ArrowLeftRight,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { KitchenStation, OrderStatus } from '../../types/restaurant';
@@ -22,10 +26,14 @@ export const KitchenView: React.FC = () => {
     soundAlertTriggered,
     dismissSoundAlert,
     waiters,
+    ingredients,
+    transferStock,
+    addNotification,
   } = useRestaurant();
 
   const [selectedStation, setSelectedStation] = useState<KitchenStation | 'all'>('all');
   const [audioEnabled, setAudioEnabled] = useState(true);
+  const [showStockBar, setShowStockBar] = useState(false);
 
   // Filter orders relevant to kitchen
   const kitchenOrders = orders.filter(
@@ -70,8 +78,21 @@ export const KitchenView: React.FC = () => {
           </div>
         </div>
 
-        {/* Station Filter Pills & Sound Toggle */}
+        {/* Station Filter Pills, Prep Stock Bar Toggle & Sound Toggle */}
         <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setShowStockBar(!showStockBar)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+              showStockBar
+                ? 'bg-blue-600 text-white border-blue-500'
+                : 'bg-neutral-800 text-blue-300 border-neutral-700 hover:bg-neutral-700'
+            }`}
+          >
+            <Boxes className="w-3.5 h-3.5" />
+            <span>Kitchen Prep Stock</span>
+            {showStockBar ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+
           {stations.map((st) => {
             const Icon = st.icon;
             const isSelected = selectedStation === st.id;
@@ -100,6 +121,79 @@ export const KitchenView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Collapsible Kitchen Prep Stock Bar */}
+      {showStockBar && (
+        <div className="bg-neutral-800/90 border border-neutral-700 rounded-2xl p-4 animate-in slide-in-from-top-2 duration-150 space-y-3">
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2">
+              <Boxes className="w-4 h-4 text-blue-400" />
+              <span className="font-bold text-white">Active Kitchen Floor Prep Stock</span>
+              <span className="text-[11px] text-neutral-400">
+                (Deducted automatically as dishes are cooked)
+              </span>
+            </div>
+            <span className="text-[11px] text-neutral-400">
+              Need restock? Click "+ Issue from Store" to requisition raw stock immediately.
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-2">
+            {ingredients.map((ing) => {
+              const kQty = ing.kitchenStockUnits ?? 0;
+              const sQty = ing.storeStockUnits ?? 0;
+              const isLow = kQty <= Math.max(1, ing.minimumThreshold * 0.25);
+
+              return (
+                <div
+                  key={ing.id}
+                  className={`p-2 rounded-xl border text-xs flex flex-col justify-between ${
+                    isLow ? 'bg-amber-950/40 border-amber-600/70' : 'bg-neutral-900 border-neutral-700'
+                  }`}
+                >
+                  <div>
+                    <div className="font-bold text-neutral-200 truncate text-[11px]">{ing.name}</div>
+                    <div className="font-mono text-xs font-bold text-white mt-1">
+                      {kQty.toLocaleString()} {ing.consumptionUnit}
+                    </div>
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      onClick={() => {
+                        const issueAmount = Math.min(sQty, Math.round(ing.conversionRatio * 0.2) || 10);
+                        if (issueAmount > 0) {
+                          transferStock({
+                            ingredientId: ing.id,
+                            quantityUnits: issueAmount,
+                            fromLocation: 'main_store',
+                            toLocation: 'kitchen',
+                            reason: 'Kitchen line chef live restock request',
+                            shift: 'Kitchen Live Requisition',
+                            recordedBy: 'Chef Hamisi Juma',
+                          });
+                        } else {
+                          alert(`Main Store has no reserve stock for ${ing.name}. Please contact manager to place a purchase order.`);
+                        }
+                      }}
+                      disabled={sQty <= 0}
+                      className={`w-full py-1 text-[9px] font-bold rounded-lg transition-colors flex items-center justify-center gap-1 ${
+                        sQty > 0
+                          ? 'bg-blue-600 hover:bg-blue-500 text-white'
+                          : 'bg-neutral-800 text-neutral-500 cursor-not-allowed'
+                      }`}
+                      title={`Store reserve: ${sQty.toLocaleString()} ${ing.consumptionUnit}`}
+                    >
+                      <ArrowLeftRight className="w-2.5 h-2.5" />
+                      <span>+ Restock</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* 3 Columns Kanban: New Incoming -> Preparing -> Ready */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
