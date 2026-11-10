@@ -19,6 +19,9 @@ import {
   ProductionLog,
   PreparedDishStock,
   MissingStockItem,
+  BlockedCookingAttempt,
+  DailyReconciliationItem,
+  RecipeVersionHistoryItem,
 } from '../types/restaurant';
 import {
   INITIAL_TENANTS,
@@ -34,6 +37,8 @@ import {
   INITIAL_BOM_AUDIT_LOGS,
   INITIAL_PRODUCTION_LOGS,
   INITIAL_PREPARED_DISH_STOCKS,
+  INITIAL_BLOCKED_ATTEMPTS,
+  INITIAL_DAILY_RECONCILIATION,
 } from '../data/mockData';
 
 export interface CartItem {
@@ -78,7 +83,10 @@ interface RestaurantContextType {
     reason: string;
     shift?: string;
     recordedBy?: string;
+    requireKitchenConfirmation?: boolean;
   }) => boolean;
+  confirmStockTransferReceipt: (movementId: string, receivedBy?: string) => boolean;
+  rejectStockTransfer: (movementId: string, reason?: string) => boolean;
   returnAllKitchenStockToStore: (staffName?: string) => void;
   activeReferralCode: string | null;
   setReferralCode: (code: string | null) => void;
@@ -145,6 +153,17 @@ interface RestaurantContextType {
   bomAuditLogs: BomAuditLog[];
   productionLogs: ProductionLog[];
   preparedDishStocks: PreparedDishStock[];
+  blockedCookingAttempts: BlockedCookingAttempt[];
+  logBlockedCookingAttempt: (attempt: Omit<BlockedCookingAttempt, 'id' | 'timestamp'>) => void;
+  dailyReconciliations: DailyReconciliationItem[];
+  updateDailyReconciliationCount: (ingredientId: string, actualCount: number, notes?: string) => void;
+  commitDailyReconciliation: (staffName?: string) => { success: boolean; totalVarianceCost: number };
+  handleLeftoverPreparedPlates: (
+    menuItemId: string,
+    platesCount: number,
+    action: 'return_to_store' | 'log_as_waste',
+    reason?: string
+  ) => boolean;
   validateBatchKitchenStock: (recipeId: string, batches: number) => {
     canCook: boolean;
     missingItems: MissingStockItem[];
@@ -203,6 +222,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [bomAuditLogs, setBomAuditLogs] = useState<BomAuditLog[]>(INITIAL_BOM_AUDIT_LOGS);
   const [productionLogs, setProductionLogs] = useState<ProductionLog[]>(INITIAL_PRODUCTION_LOGS);
   const [preparedDishStocks, setPreparedDishStocks] = useState<PreparedDishStock[]>(INITIAL_PREPARED_DISH_STOCKS);
+  const [blockedCookingAttempts, setBlockedCookingAttempts] = useState<BlockedCookingAttempt[]>(INITIAL_BLOCKED_ATTEMPTS);
+  const [dailyReconciliations, setDailyReconciliations] = useState<DailyReconciliationItem[]>(INITIAL_DAILY_RECONCILIATION);
   const [waiters, setWaiters] = useState<Waiter[]>(INITIAL_WAITERS);
   const [employees, setEmployees] = useState<Employee[]>(INITIAL_EMPLOYEES);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -856,6 +877,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     reason: string;
     shift?: string;
     recordedBy?: string;
+    requireKitchenConfirmation?: boolean;
   }): boolean => {
     const ing = ingredients.find((i) => i.id === params.ingredientId);
     if (!ing) return false;
@@ -869,15 +891,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       return false;
     }
 
+    const isToKitchen = params.toLocation === 'kitchen' && params.fromLocation === 'main_store';
+    // If transferring from Main Store to Kitchen, if requireKitchenConfirmation is set or true, treat as in_transit
+    const needsConfirmation = isToKitchen && (params.requireKitchenConfirmation ?? false);
+
     setIngredients((prev) =>
       prev.map((item) => {
         if (item.id === params.ingredientId) {
           let sStock = item.storeStockUnits ?? Math.max(0, item.currentStockUnits - (item.kitchenStockUnits ?? 0));
           let kStock = item.kitchenStockUnits ?? 0;
 
-          if (params.fromLocation === 'main_store' && params.toLocation === 'kitchen') {
+          if (isToKitchen) {
             sStock -= params.quantityUnits;
-            kStock += params.quantityUnits;
+            // Only add to kitchen stock if confirmation is not required
+            if (!needsConfirmation) {
+              kStock += params.quantityUnits;
+            }
           } else if (params.fromLocation === 'kitchen' && params.toLocation === 'main_store') {
             kStock -= params.quantityUnits;
             sStock += params.quantityUnits;
@@ -895,7 +924,6 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     );
 
     const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
-    const isToKitchen = params.toLocation === 'kitchen';
     const movement: StockMovement = {
       id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
       ingredientId: ing.id,
@@ -916,17 +944,113 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       recordedBy: params.recordedBy || 'David Kasambala (Manager)',
       sourceLocation: params.fromLocation,
       destinationLocation: params.toLocation,
+      transferStatus: needsConfirmation ? 'in_transit' : 'received',
+      receivedAt: needsConfirmation ? undefined : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      receivedBy: needsConfirmation ? undefined : 'Kitchen Floor Staff',
     };
 
     setStockMovements((prev) => [movement, ...prev]);
 
     addNotification({
-      title: isToKitchen ? 'Stock Issued to Kitchen' : 'Stock Returned to Store',
-      message: `${params.quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} ${isToKitchen ? 'transferred to Kitchen for day operations' : 'returned from Kitchen to Store'}.`,
+      title: needsConfirmation
+        ? 'Requisition Dispatched (In Transit)'
+        : isToKitchen
+        ? 'Stock Issued to Kitchen'
+        : 'Stock Returned to Store',
+      message: needsConfirmation
+        ? `${params.quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} is in transit to Kitchen. Awaiting kitchen receipt confirmation.`
+        : `${params.quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} ${isToKitchen ? 'transferred to Kitchen for day operations' : 'returned from Kitchen to Store'}.`,
+      type: 'transfer',
+      actionRole: needsConfirmation ? 'kitchen' : 'manager',
+      actionLabel: needsConfirmation ? 'Confirm Kitchen Receipt' : 'View Stock Balances',
+    });
+
+    return true;
+  };
+
+  // Kitchen Receipt Confirmation: Stock only counts once kitchen confirms receiving it!
+  const confirmStockTransferReceipt = (movementId: string, receivedBy: string = 'Chef Hamisi Juma'): boolean => {
+    const movement = stockMovements.find((m) => m.id === movementId);
+    if (!movement || movement.transferStatus !== 'in_transit') return false;
+
+    const ing = ingredients.find((i) => i.id === movement.ingredientId);
+    if (!ing) return false;
+
+    const transferQty = Math.abs(movement.quantityDelta);
+
+    setIngredients((prev) =>
+      prev.map((item) => {
+        if (item.id === movement.ingredientId) {
+          const newKitchen = (item.kitchenStockUnits ?? 0) + transferQty;
+          const sStock = item.storeStockUnits ?? 0;
+          return {
+            ...item,
+            kitchenStockUnits: newKitchen,
+            currentStockUnits: sStock + newKitchen,
+          };
+        }
+        return item;
+      })
+    );
+
+    const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    setStockMovements((prev) =>
+      prev.map((m) =>
+        m.id === movementId
+          ? {
+              ...m,
+              transferStatus: 'received',
+              receivedAt: nowTime,
+              receivedBy,
+            }
+          : m
+      )
+    );
+
+    addNotification({
+      title: 'Kitchen Confirmed Stock Receipt',
+      message: `${receivedBy} verified and accepted ${transferQty.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} onto Kitchen cooking line.`,
       type: 'transfer',
       actionRole: 'manager',
-      actionLabel: 'View Stock Balances',
+      actionLabel: 'View Stock',
     });
+
+    return true;
+  };
+
+  const rejectStockTransfer = (movementId: string, reason: string = 'Kitchen refused delivery or wrong specification'): boolean => {
+    const movement = stockMovements.find((m) => m.id === movementId);
+    if (!movement || movement.transferStatus !== 'in_transit') return false;
+
+    const transferQty = Math.abs(movement.quantityDelta);
+
+    // Revert back to main store
+    setIngredients((prev) =>
+      prev.map((item) => {
+        if (item.id === movement.ingredientId) {
+          const newStore = (item.storeStockUnits ?? 0) + transferQty;
+          const kStock = item.kitchenStockUnits ?? 0;
+          return {
+            ...item,
+            storeStockUnits: newStore,
+            currentStockUnits: newStore + kStock,
+          };
+        }
+        return item;
+      })
+    );
+
+    setStockMovements((prev) =>
+      prev.map((m) =>
+        m.id === movementId
+          ? {
+              ...m,
+              transferStatus: 'rejected',
+              reason: `${m.reason} [REJECTED: ${reason}]`,
+            }
+          : m
+      )
+    );
 
     return true;
   };
@@ -1028,13 +1152,36 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const saveRecipe = (recipe: Recipe, auditLog?: Omit<BomAuditLog, 'id' | 'timestamp'>) => {
     setRecipes((prev) => {
-      const index = prev.findIndex((r) => r.id === recipe.id || r.menuItemId === recipe.menuItemId);
+      const index = prev.findIndex((r) => r.id === recipe.id || (recipe.menuItemId && r.menuItemId === recipe.menuItemId));
+      let updatedRecipe = { ...recipe };
+
       if (index >= 0) {
+        const existing = prev[index];
+        // Archive existing version to history
+        const historyItem: RecipeVersionHistoryItem = {
+          version: existing.version || 1,
+          changedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
+          changedBy: recipe.approvedBy || 'Executive Chef Juma',
+          changeSummary: `Version ${existing.version || 1} archived upon update (${existing.ingredients?.length || 0} ingredients, ${existing.batchYieldPlates || 100} plates batch)`,
+          batchYieldPlates: existing.batchYieldPlates || 100,
+          ingredients: existing.ingredients || [],
+          totalBatchCost: (existing.ingredients || []).reduce((s, ri) => {
+            const ing = ingredients.find((i) => i.id === ri.ingredientId);
+            const c = ing ? (ing.costPerPurchaseUnit / ing.conversionRatio) * (ri.batchQuantity ?? (ri.quantity * (existing.batchYieldPlates || 1))) : 0;
+            return s + c;
+          }, 0),
+          costPerPlate: 0,
+          foodCostPercentage: 0,
+        };
+        const prevHistory = existing.history || [];
+        updatedRecipe.history = [historyItem, ...prevHistory];
+        updatedRecipe.version = (existing.version || 1) + 1;
+
         const updated = [...prev];
-        updated[index] = recipe;
+        updated[index] = updatedRecipe;
         return updated;
       }
-      return [recipe, ...prev];
+      return [updatedRecipe, ...prev];
     });
 
     // Link recipe to menu item
@@ -1060,7 +1207,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     addNotification({
       title: 'BOM Recipe Approved & Saved',
-      message: `Bill of Materials for "${recipe.name || 'Menu Dish'}" saved to Master Menu (${recipe.ingredients.length} ingredients linked).`,
+      message: `Bill of Materials for "${recipe.name || 'Menu Dish'}" saved (v${recipe.version || 1}) with ${recipe.ingredients.length} ingredients linked.`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'View Recipe BOM',
@@ -1099,6 +1246,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const availableKitchenQty = ing?.kitchenStockUnits ?? 0;
       const storeAvailableQty = ing?.storeStockUnits ?? 0;
 
+      // Calculate in-transit quantity awaiting kitchen receipt confirmation
+      const inTransitQty = stockMovements
+        .filter((m) => m.ingredientId === ri.ingredientId && m.transferStatus === 'in_transit')
+        .reduce((sum, m) => sum + Math.abs(m.quantityDelta), 0);
+
       totalCost += Math.round(requiredQty * unitCost);
 
       let status: 'not_transferred' | 'insufficient' | 'ok' = 'ok';
@@ -1118,6 +1270,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         requiredQty,
         availableKitchenQty,
         storeAvailableQty,
+        inTransitQty,
         unit,
         status,
         shortageQty,
@@ -1148,7 +1301,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     const validation = validateBatchKitchenStock(params.recipeId, params.batches);
 
-    // If validation fails and not manager override -> BLOCK ATOMICALLY
+    // If validation fails and not manager override -> BLOCK ATOMICALLY & LOG PROCESS AUDIT
     if (!validation.canCook && !params.managerOverride) {
       const blockedReasons = validation.missingItems
         .filter((m) => m.status !== 'ok')
@@ -1159,6 +1312,29 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             })`
         )
         .join('; ');
+
+      const timestampStr = `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`;
+      const blockedAttempt: BlockedCookingAttempt = {
+        id: `block-${Date.now()}`,
+        recipeId: recipe.id,
+        dishName: recipe.name || 'Dish',
+        batches: params.batches,
+        attemptedBy: params.chefName || 'Executive Chef Juma',
+        timestamp: timestampStr,
+        missingItems: validation.missingItems.filter((m) => m.status !== 'ok'),
+        reason: `Cannot cook ${params.batches} batch of ${recipe.name}. Missing items: ${blockedReasons}`,
+        resolution: 'requisition_created',
+      };
+      setBlockedCookingAttempts((prev) => [blockedAttempt, ...prev]);
+
+      addNotification({
+        title: 'Batch Cooking Blocked',
+        message: `Attempt to cook ${recipe.name} blocked: raw ingredients not transferred to kitchen floor.`,
+        type: 'kitchen',
+        actionRole: 'manager',
+        actionLabel: 'View Blocked Logs',
+      });
+
       return {
         success: false,
         error: `Cannot cook ${params.batches} batch of ${recipe.name}. Missing items: ${blockedReasons}`,
@@ -1326,6 +1502,151 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return false;
   };
 
+  const logBlockedCookingAttempt = (attempt: Omit<BlockedCookingAttempt, 'id' | 'timestamp'>) => {
+    const newAttempt: BlockedCookingAttempt = {
+      ...attempt,
+      id: `block-${Date.now()}`,
+      timestamp: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
+    };
+    setBlockedCookingAttempts((prev) => [newAttempt, ...prev]);
+  };
+
+  const handleLeftoverPreparedPlates = (
+    menuItemId: string,
+    platesCount: number,
+    action: 'return_to_store' | 'log_as_waste',
+    reason?: string
+  ): boolean => {
+    const dish = preparedDishStocks.find((p) => p.menuItemId === menuItemId);
+    if (!dish || platesCount <= 0 || platesCount > dish.preparedPlatesAvailable) {
+      return false;
+    }
+
+    const recipe = recipes.find((r) => r.menuItemId === menuItemId);
+    const cogsPerPlate = 2685;
+    const totalImpact = Math.round(platesCount * cogsPerPlate);
+    const today = new Date().toISOString().split('T')[0];
+
+    setPreparedDishStocks((prev) =>
+      prev.map((p) =>
+        p.menuItemId === menuItemId
+          ? {
+              ...p,
+              preparedPlatesAvailable: Math.max(0, p.preparedPlatesAvailable - platesCount),
+              status: p.preparedPlatesAvailable - platesCount === 0 ? 'out_of_stock' : p.status,
+            }
+          : p
+      )
+    );
+
+    if (action === 'log_as_waste') {
+      const wasteMovement: StockMovement = {
+        id: `sm-${Date.now()}-leftover`,
+        ingredientId: recipe?.ingredients[0]?.ingredientId || 'ing-rice',
+        ingredientName: `${dish.dishName} (Prepared Batch Food)`,
+        type: 'wastage_spoilage',
+        quantityDelta: -platesCount,
+        unit: 'plates',
+        costImpact: totalImpact,
+        date: today,
+        reference: `WST-LEFTOVER-${platesCount}P`,
+        reason: reason || 'End-of-day unsold batch leftover discard',
+        recordedBy: 'Executive Chef Juma',
+        sourceLocation: 'kitchen',
+      };
+      setStockMovements((prev) => [wasteMovement, ...prev]);
+
+      addNotification({
+        title: 'Leftovers Logged as Waste',
+        message: `${platesCount} unsold plates of ${dish.dishName} logged as waste (${formatMoney(totalImpact)} impact).`,
+        type: 'stock',
+        actionRole: 'manager',
+        actionLabel: 'View Spoilage',
+      });
+    } else {
+      addNotification({
+        title: 'Leftovers Returned to Store',
+        message: `${platesCount} plates of ${dish.dishName} chilled and returned to cold room buffer storage.`,
+        type: 'transfer',
+        actionRole: 'kitchen',
+        actionLabel: 'View Prepared Plates',
+      });
+    }
+
+    return true;
+  };
+
+  const updateDailyReconciliationCount = (ingredientId: string, actualCount: number, notes?: string) => {
+    setDailyReconciliations((prev) =>
+      prev.map((item) => {
+        if (item.ingredientId === ingredientId) {
+          const varianceQty = actualCount - item.expectedClosingStock;
+          const ing = ingredients.find((i) => i.id === ingredientId);
+          const unitCost = ing ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
+          const varianceCost = Math.round(Math.abs(varianceQty) * unitCost);
+          let varianceType: DailyReconciliationItem['varianceType'] = 'match';
+          if (varianceQty < 0) {
+            varianceType = Math.abs(varianceQty) > item.expectedClosingStock * 0.1 ? 'unaccounted_loss' : 'over_portioning';
+          } else if (varianceQty > 0) {
+            varianceType = 'surplus';
+          }
+          return {
+            ...item,
+            actualCountedStock: actualCount,
+            varianceQty,
+            varianceCost,
+            varianceType,
+            notes: notes !== undefined ? notes : item.notes,
+          };
+        }
+        return item;
+      })
+    );
+  };
+
+  const commitDailyReconciliation = (staffName: string = 'David Kasambala (Manager)') => {
+    let totalVariance = 0;
+    const newMovements: StockMovement[] = [];
+    const today = new Date().toISOString().split('T')[0];
+
+    setDailyReconciliations((prev) =>
+      prev.map((item) => {
+        totalVariance += item.varianceCost;
+        if (item.varianceQty < 0) {
+          newMovements.push({
+            id: `sm-${Date.now()}-${item.ingredientId}`,
+            ingredientId: item.ingredientId,
+            ingredientName: item.ingredientName,
+            type: 'wastage_spoilage',
+            quantityDelta: item.varianceQty,
+            unit: item.unit,
+            costImpact: item.varianceCost,
+            date: today,
+            reference: `RECON-${today}`,
+            reason: `Daily Kitchen Reconciliation: ${item.varianceType.replace(/_/g, ' ')} (${item.notes || 'Physical stock count variance'})`,
+            recordedBy: staffName,
+            sourceLocation: 'kitchen',
+          });
+        }
+        return { ...item, status: 'reconciled' };
+      })
+    );
+
+    if (newMovements.length > 0) {
+      setStockMovements((prev) => [...newMovements, ...prev]);
+    }
+
+    addNotification({
+      title: 'Daily Stock Reconciliation Committed',
+      message: `Reconciliation audit finalized by ${staffName}. Variance impact: ${formatMoney(totalVariance)}.`,
+      type: 'stock',
+      actionRole: 'manager',
+      actionLabel: 'View Audit Ledger',
+    });
+
+    return { success: true, totalVarianceCost: totalVariance };
+  };
+
   // Staff Advances & Waiter Stats
   const addAdvanceRequest = (employeeId: string, amount: number, reason: string) => {
     setEmployees((prev) =>
@@ -1426,6 +1747,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         clearNotification,
         addNotification,
         transferStock,
+        confirmStockTransferReceipt,
+        rejectStockTransfer,
         returnAllKitchenStockToStore,
         activeReferralCode,
         setReferralCode: setActiveReferralCode,
@@ -1455,6 +1778,12 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         bomAuditLogs,
         productionLogs,
         preparedDishStocks,
+        blockedCookingAttempts,
+        logBlockedCookingAttempt,
+        dailyReconciliations,
+        updateDailyReconciliationCount,
+        commitDailyReconciliation,
+        handleLeftoverPreparedPlates,
         validateBatchKitchenStock,
         cookBatchProduction,
         createRequisitionForMissing,

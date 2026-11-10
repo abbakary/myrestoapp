@@ -157,6 +157,9 @@ export interface StockMovement {
   recordedBy: string;
   sourceLocation?: 'main_store' | 'kitchen';
   destinationLocation?: 'main_store' | 'kitchen';
+  transferStatus?: 'in_transit' | 'received' | 'rejected';
+  receivedAt?: string;
+  receivedBy?: string;
 }
 
 export interface AppNotification {
@@ -177,6 +180,20 @@ export interface RecipeIngredient {
   batchUnit?: string; // e.g. "kg", "L", "pcs", "g"
   yieldPercentage?: number; // e.g. 90% for onions, 55% for whole fish
   notes?: string;
+  isSubRecipe?: boolean; // sub-recipe flag (e.g. Beef stew base used inside Wali Nyama, Ugali Nyama)
+  subRecipeId?: string;
+}
+
+export interface RecipeVersionHistoryItem {
+  version: number;
+  changedAt: string;
+  changedBy: string;
+  changeSummary: string;
+  batchYieldPlates: number;
+  ingredients: RecipeIngredient[];
+  totalBatchCost: number;
+  costPerPlate: number;
+  foodCostPercentage: number;
 }
 
 export interface Recipe {
@@ -188,10 +205,40 @@ export interface Recipe {
   cookingMethod: 'batch_cooking' | 'on_sale_order'; // Batch pot/buffet vs made-to-order
   ingredients: RecipeIngredient[];
   preparationInstructions?: string;
+  isSubRecipe?: boolean; // allow sub-recipes (e.g. "Beef Stew Base" used in Wali Nyama, Ugali Nyama)
+  history?: RecipeVersionHistoryItem[]; // Recipe version history
   isAiGenerated?: boolean;
   aiConfidence?: number;
   approvedBy?: string;
   approvedAt?: string;
+}
+
+export interface BlockedCookingAttempt {
+  id: string;
+  recipeId: string;
+  dishName: string;
+  batches: number;
+  attemptedBy: string;
+  timestamp: string;
+  missingItems: MissingStockItem[];
+  reason: string;
+  resolution?: 'requisition_created' | 'manager_override' | 'cancelled';
+}
+
+export interface DailyReconciliationItem {
+  ingredientId: string;
+  ingredientName: string;
+  unit: string;
+  openingKitchenStock: number;
+  transferredToKitchen: number;
+  theoreticalUsage: number;
+  expectedClosingStock: number;
+  actualCountedStock: number;
+  varianceQty: number;
+  varianceCost: number;
+  varianceType: 'match' | 'over_portioning' | 'unaccounted_loss' | 'surplus';
+  status: 'pending' | 'reconciled';
+  notes?: string;
 }
 
 export interface MissingStockItem {
@@ -200,6 +247,7 @@ export interface MissingStockItem {
   requiredQty: number; // in consumption units
   availableKitchenQty: number;
   storeAvailableQty: number;
+  inTransitQty?: number; // Stock currently in transit from store awaiting kitchen confirmation
   unit: string;
   status: 'not_transferred' | 'insufficient' | 'ok';
   shortageQty: number;

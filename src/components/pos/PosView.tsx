@@ -355,7 +355,7 @@ export const PosView: React.FC = () => {
                     {(() => {
                       const recipe = recipes.find((r) => r.menuItemId === item.id);
                       const prepStock = preparedDishStocks.find((p) => p.menuItemId === item.id);
-                      const isBatchCook = item.cookingMethod === 'batch_cooking' || recipe?.cookingMethod === 'batch_cooking';
+                      const isBatchCook = recipe?.cookingMethod === 'batch_cooking';
 
                       if (isBatchCook) {
                         const count = prepStock?.preparedPlatesAvailable ?? 0;

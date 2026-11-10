@@ -33,6 +33,7 @@ import {
   History,
   ShieldCheck,
   Percent,
+  Scale,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { Ingredient, Recipe, StockMovement, MovementType } from '../../types/restaurant';
@@ -63,6 +64,13 @@ export const InventoryRecipesView: React.FC = () => {
     preparedDishStocks,
     validateBatchKitchenStock,
     createRequisitionForMissing,
+    blockedCookingAttempts,
+    dailyReconciliations,
+    confirmStockTransferReceipt,
+    rejectStockTransfer,
+    handleLeftoverPreparedPlates,
+    updateDailyReconciliationCount,
+    commitDailyReconciliation,
   } = useRestaurant();
 
   const [activeTab, setActiveTab] = useState<
@@ -1949,7 +1957,6 @@ export const InventoryRecipesView: React.FC = () => {
             </div>
           </div>
         </div>
-      </div>
     )}
 
       {/* TAB 6: Menu Creator & Pricing */}

@@ -37,6 +37,8 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
     validateBatchKitchenStock,
     cookBatchProduction,
     createRequisitionForMissing,
+    confirmStockTransferReceipt,
+    stockMovements,
   } = useRestaurant();
 
   const [batchMultiplier, setBatchMultiplier] = useState<number>(1.0);
@@ -181,31 +183,64 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
                   const displayAvail = item.unit === 'grams' ? `${item.availableKitchenQty / 1000} kg` : item.unit === 'ml' ? `${item.availableKitchenQty / 1000} L` : `${item.availableKitchenQty} ${item.unit}`;
                   const displayShort = item.unit === 'grams' ? `${item.shortageQty / 1000} kg` : item.unit === 'ml' ? `${item.shortageQty / 1000} L` : `${item.shortageQty} ${item.unit}`;
                   const displayStore = item.unit === 'grams' ? `${item.storeAvailableQty / 1000} kg` : item.unit === 'ml' ? `${item.storeAvailableQty / 1000} L` : `${item.storeAvailableQty} ${item.unit}`;
+                  const displayInTransit = item.inTransitQty ? (item.unit === 'grams' ? `${item.inTransitQty / 1000} kg` : item.unit === 'ml' ? `${item.inTransitQty / 1000} L` : `${item.inTransitQty} ${item.unit}`) : null;
+
+                  const matchingInTransitMovement = item.inTransitQty
+                    ? stockMovements.find((m) => m.ingredientId === item.ingredientId && m.transferStatus === 'in_transit')
+                    : null;
 
                   return (
-                    <div key={idx} className="py-2 first:pt-0 last:pb-0 flex items-center justify-between">
-                      <div className="font-semibold text-neutral-900 flex items-center gap-1.5">
-                        <span className={`w-2 h-2 rounded-full ${isOk ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                        <span>{item.ingredientName}</span>
+                    <div key={idx} className="py-2.5 first:pt-0 last:pb-0 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                      <div className="font-semibold text-neutral-900 flex items-center gap-2">
+                        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isOk ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                        <div>
+                          <div className="font-bold text-xs">{item.ingredientName}</div>
+                          <div className="text-[10px] text-neutral-500">
+                            Store Room Stock: <strong>{displayStore}</strong>
+                          </div>
+                        </div>
                       </div>
 
-                      <div className="font-mono text-xs">
+                      <div className="flex items-center gap-2 flex-wrap font-mono text-xs">
                         {isNotTransferred && (
-                          <span className="text-red-700 font-bold">
-                            required {displayReq}, available {displayAvail} <span className="bg-red-100 text-red-800 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold">(Not transferred to Kitchen)</span>
-                          </span>
+                          <div className="text-right">
+                            <span className="text-red-700 font-bold block">
+                              Required: {displayReq} · Available in Kitchen: 0 {item.unit === 'grams' ? 'kg' : item.unit}
+                            </span>
+                            <span className="bg-red-100 text-red-800 px-2 py-0.5 rounded text-[10px] uppercase font-bold inline-block mt-0.5">
+                              ❌ Not transferred to Kitchen
+                            </span>
+                          </div>
                         )}
 
                         {isInsufficient && (
-                          <span className="text-amber-800 font-bold">
-                            required {displayReq}, available {displayAvail} <span className="bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold">(Short by {displayShort})</span>
-                          </span>
+                          <div className="text-right">
+                            <span className="text-amber-800 font-bold block">
+                              Required: {displayReq} · Available: {displayAvail}
+                            </span>
+                            <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-[10px] uppercase font-bold inline-block mt-0.5">
+                              ❌ Short by {displayShort}
+                            </span>
+                          </div>
                         )}
 
                         {isOk && (
-                          <span className="text-emerald-700 font-semibold">
-                            OK (available {displayAvail} in Kitchen)
+                          <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded">
+                            ✓ OK (available {displayAvail} in Kitchen)
                           </span>
+                        )}
+
+                        {/* In-Transit Receipt Button */}
+                        {matchingInTransitMovement && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              confirmStockTransferReceipt(matchingInTransitMovement.id, chefName);
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-xs transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <span>Confirm Receipt ({displayInTransit})</span>
+                          </button>
                         )}
                       </div>
                     </div>

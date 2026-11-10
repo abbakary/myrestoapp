@@ -12,6 +12,8 @@ import {
   BomAuditLog,
   ProductionLog,
   PreparedDishStock,
+  BlockedCookingAttempt,
+  DailyReconciliationItem,
 } from '../types/restaurant';
 
 export const INITIAL_TENANTS: RestaurantTenant[] = [
@@ -669,11 +671,66 @@ export const INITIAL_INGREDIENTS: Ingredient[] = [
 
 export const INITIAL_RECIPES: Recipe[] = [
   {
+    id: 'rec-sub-beef-stew',
+    menuItemId: '',
+    name: 'Beef Stew Base (Sub-Recipe)',
+    batchYieldPlates: 100, // 100 portions of stew
+    version: 1,
+    cookingMethod: 'batch_cooking',
+    isSubRecipe: true,
+    ingredients: [
+      {
+        ingredientId: 'ing-beef',
+        batchQuantity: 15000,
+        batchUnit: 'kg',
+        quantity: 150, // 0.150 kg per plate
+        yieldPercentage: 90,
+        notes: '15kg diced tenderloin ÷ 100 portions = 150g per plate (trimmed)',
+      },
+      {
+        ingredientId: 'ing-oil',
+        batchQuantity: 2000,
+        batchUnit: 'L',
+        quantity: 20, // 0.020 L per plate
+        yieldPercentage: 100,
+        notes: '2L oil ÷ 100 portions = 20ml per plate',
+      },
+      {
+        ingredientId: 'ing-onions',
+        batchQuantity: 3000,
+        batchUnit: 'kg',
+        quantity: 30, // 0.030 kg per plate
+        yieldPercentage: 90,
+        notes: '3kg onions ÷ 100 portions = 30g per plate',
+      },
+      {
+        ingredientId: 'ing-tomatoes',
+        batchQuantity: 2000,
+        batchUnit: 'kg',
+        quantity: 20, // 0.020 kg per plate
+        yieldPercentage: 92,
+        notes: '2kg tomatoes ÷ 100 portions = 20g per plate',
+      },
+      {
+        ingredientId: 'ing-salt',
+        batchQuantity: 300,
+        batchUnit: 'kg',
+        quantity: 3, // 0.003 kg (3g) per plate
+        yieldPercentage: 100,
+        notes: '300g salt ÷ 100 portions = 3g per plate',
+      },
+    ],
+    preparationInstructions:
+      'Sub-recipe batch (100 portions): In 80L braising pot, brown 3kg onions in 2L oil, add 15kg diced beef, 2kg blended tomatoes, and 300g salt. Simmer 1.5 hours until thick gravy forms. Shared base for Wali Nyama & Ugali Nyama.',
+    approvedBy: 'Executive Chef Juma',
+    approvedAt: '2026-11-08 09:30',
+  },
+  {
     id: 'rec-wali-nyama',
     menuItemId: 'menu-wali-nyama',
     name: 'Wali Nyama (Beef Stew with Rice)',
     batchYieldPlates: 100, // Produces 100 plates per batch
-    version: 1,
+    version: 2,
     cookingMethod: 'batch_cooking',
     ingredients: [
       {
@@ -728,7 +785,27 @@ export const INITIAL_RECIPES: Recipe[] = [
     preparationInstructions:
       'Batch production (100 plates): Rinse 20kg rice, steam in commercial rice cooker. In 80L braising pot, brown 3kg onions in 2L oil, add 15kg diced beef, 2kg blended tomatoes, and 300g salt. Simmer 1.5 hours until rich gravy forms. Serve 1 ladle beef over 1 cup rice with kachumbari.',
     approvedBy: 'Executive Chef Juma',
-    approvedAt: '2026-11-08 09:30',
+    approvedAt: '2026-11-09 10:15',
+    history: [
+      {
+        version: 1,
+        changedAt: '2026-11-05 14:00',
+        changedBy: 'Executive Chef Juma',
+        changeSummary: 'Initial recipe card: 22kg rice for 100 plates (220g/plate)',
+        batchYieldPlates: 100,
+        ingredients: [
+          { ingredientId: 'ing-rice', batchQuantity: 22000, batchUnit: 'kg', quantity: 220, yieldPercentage: 100 },
+          { ingredientId: 'ing-beef', batchQuantity: 15000, batchUnit: 'kg', quantity: 150, yieldPercentage: 90 },
+          { ingredientId: 'ing-oil', batchQuantity: 2000, batchUnit: 'L', quantity: 20, yieldPercentage: 100 },
+          { ingredientId: 'ing-onions', batchQuantity: 3000, batchUnit: 'kg', quantity: 30, yieldPercentage: 90 },
+          { ingredientId: 'ing-tomatoes', batchQuantity: 2000, batchUnit: 'kg', quantity: 20, yieldPercentage: 92 },
+          { ingredientId: 'ing-salt', batchQuantity: 300, batchUnit: 'kg', quantity: 3, yieldPercentage: 100 },
+        ],
+        totalBatchCost: 274500,
+        costPerPlate: 2745,
+        foodCostPercentage: 34.3,
+      },
+    ],
   },
   {
     id: 'rec-chips-mayai',
@@ -1113,6 +1190,9 @@ export const INITIAL_STOCK_MOVEMENTS: StockMovement[] = [
     recordedBy: 'David Kasambala (Manager)',
     sourceLocation: 'main_store',
     destinationLocation: 'kitchen',
+    transferStatus: 'received',
+    receivedAt: '08:15 AM',
+    receivedBy: 'Chef Hamisi Juma',
   },
   {
     id: 'sm-112',
@@ -1128,6 +1208,9 @@ export const INITIAL_STOCK_MOVEMENTS: StockMovement[] = [
     recordedBy: 'David Kasambala (Manager)',
     sourceLocation: 'main_store',
     destinationLocation: 'kitchen',
+    transferStatus: 'received',
+    receivedAt: '08:20 AM',
+    receivedBy: 'Chef Hamisi Juma',
   },
   {
     id: 'sm-113',
@@ -1143,6 +1226,25 @@ export const INITIAL_STOCK_MOVEMENTS: StockMovement[] = [
     recordedBy: 'Chef Hamisi Juma',
     sourceLocation: 'main_store',
     destinationLocation: 'kitchen',
+    transferStatus: 'received',
+    receivedAt: '08:30 AM',
+    receivedBy: 'Chef Hamisi Juma',
+  },
+  {
+    id: 'sm-114',
+    ingredientId: 'ing-beef',
+    ingredientName: 'Prime Beef Tenderloin',
+    type: 'stock_transfer',
+    quantityDelta: 10000, // 10kg issued from store, waiting kitchen receipt confirmation
+    unit: 'grams',
+    costImpact: 120000,
+    date: new Date().toISOString().split('T')[0],
+    reference: 'TRF-KITCHEN-0804',
+    reason: 'Store Requisition: Prime Beef Tenderloin for dinner batch cooking',
+    recordedBy: 'David Kasambala (Store Manager)',
+    sourceLocation: 'main_store',
+    destinationLocation: 'kitchen',
+    transferStatus: 'in_transit', // In transit until kitchen confirms receipt
   },
 ];
 
@@ -1196,5 +1298,88 @@ export const INITIAL_NOTIFICATIONS: AppNotification[] = [
     read: true,
     actionRole: 'manager',
     actionLabel: 'Purchase Order',
+  },
+];
+
+export const INITIAL_BLOCKED_ATTEMPTS: BlockedCookingAttempt[] = [
+  {
+    id: 'block-001',
+    recipeId: 'rec-wali-nyama',
+    dishName: 'Wali Nyama (Beef Stew with Rice)',
+    batches: 1.0,
+    attemptedBy: 'Chef Hamisi Juma',
+    timestamp: '2026-11-09 09:15',
+    missingItems: [
+      {
+        ingredientId: 'ing-beef',
+        ingredientName: 'Prime Beef Tenderloin',
+        requiredQty: 16667,
+        availableKitchenQty: 0,
+        storeAvailableQty: 20000,
+        unit: 'grams',
+        status: 'not_transferred',
+        shortageQty: 16667,
+      },
+      {
+        ingredientId: 'ing-rice',
+        ingredientName: 'Kyela Pure Basmati Rice',
+        requiredQty: 20000,
+        availableKitchenQty: 12000,
+        storeAvailableQty: 25000,
+        unit: 'grams',
+        status: 'insufficient',
+        shortageQty: 8000,
+      },
+    ],
+    reason: 'System blocked cook batch attempt: Prime Beef Tenderloin had 0 transferred to kitchen, and Basmati Rice was short by 8kg.',
+    resolution: 'requisition_created',
+  },
+];
+
+export const INITIAL_DAILY_RECONCILIATION: DailyReconciliationItem[] = [
+  {
+    ingredientId: 'ing-rice',
+    ingredientName: 'Kyela Pure Basmati Rice',
+    unit: 'grams',
+    openingKitchenStock: 0,
+    transferredToKitchen: 20000,
+    theoreticalUsage: 11000, // 55 plates sold * 200g
+    expectedClosingStock: 9000,
+    actualCountedStock: 8600, // 400g difference
+    varianceQty: -400,
+    varianceCost: 1200,
+    varianceType: 'over_portioning',
+    status: 'pending',
+    notes: 'Slight ladle over-portioning during lunch peak rush',
+  },
+  {
+    ingredientId: 'ing-beef',
+    ingredientName: 'Prime Beef Tenderloin',
+    unit: 'grams',
+    openingKitchenStock: 0,
+    transferredToKitchen: 16667,
+    theoreticalUsage: 9167, // 55 plates sold * 166.7g
+    expectedClosingStock: 7500,
+    actualCountedStock: 7500,
+    varianceQty: 0,
+    varianceCost: 0,
+    varianceType: 'match',
+    status: 'reconciled',
+    notes: 'Exact match with chef portion scales',
+  },
+  {
+    ingredientId: 'ing-oil',
+    ingredientName: 'Pure Sunflower Cooking Oil',
+    unit: 'ml',
+    openingKitchenStock: 2000,
+    transferredToKitchen: 8000,
+    theoreticalUsage: 3100,
+    expectedClosingStock: 6900,
+    actualCountedStock: 6500,
+    varianceQty: -400,
+    varianceCost: 1400,
+    varianceType: 'unaccounted_loss',
+    status: 'pending',
+    notes: 'Wok pan residue and seasoning coating loss',
   },
 ];
