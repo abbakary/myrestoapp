@@ -232,8 +232,8 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
   // Restore past version from history
   const handleRestoreVersion = (historyItem: RecipeVersionHistoryItem) => {
     setBatchYieldPlates(historyItem.batchYieldPlates);
-    setRecipeName(historyItem.name);
-    setCookingMethod(historyItem.cookingMethod);
+    setRecipeName(historyItem.name || '');
+    setCookingMethod(historyItem.cookingMethod || 'on_sale_order');
     setPrepInstructions(historyItem.preparationInstructions || '');
 
     const restoredRows: EditableIngredientRow[] = historyItem.ingredients.map((ri) => {
@@ -916,7 +916,7 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
                           Yield: {hist.batchYieldPlates} plates
                         </span>
                         <span className="text-[11px] text-neutral-400">
-                          {new Date(hist.archivedAt).toLocaleDateString()} by {hist.archivedBy}
+                          {new Date(hist.archivedAt || hist.changedAt || Date.now()).toLocaleDateString()} by {hist.archivedBy || hist.changedBy || 'Chef'}
                         </span>
                       </div>
 
@@ -938,7 +938,7 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
                       <div>
                         <span className="text-neutral-400">Plate Cost: </span>
                         <span className="font-mono font-bold text-blue-900">
-                          {formatMoney(hist.totalCostPerPlate)}
+                          {formatMoney(hist.totalCostPerPlate ?? hist.costPerPlate ?? 0)}
                         </span>
                       </div>
                       <div>

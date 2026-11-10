@@ -82,6 +82,228 @@ export const INITIAL_WAITERS: Waiter[] = [
 ];
 
 export const INITIAL_MENU_ITEMS: MenuItem[] = [
+  // POS Reference Photo Items (Sweets, Breakfast, Fruits, Drinks, Savory)
+  {
+    id: 'pos-cherry-cake',
+    name: 'Cherry cake',
+    category: 'Sweets',
+    description: 'Layered chocolate sponge cake with cream frosting, dark cherries, and chocolate shavings.',
+    price: 10374, // $3.99 USD
+    image: '/src/assets/images/pos_cherry_cake_1794302892353.jpg',
+    preparationTimeMinutes: 5,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-chocolate-sausage',
+    name: 'Chocolate sausage',
+    category: 'Sweets',
+    description: 'Rich dark chocolate roll pastry with crushed biscuits, pistachios, and strawberry garnish.',
+    price: 9074, // $3.49 USD
+    image: '/src/assets/images/pos_chocolate_pastry_1794302893990.jpg',
+    preparationTimeMinutes: 3,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-mango-dessert',
+    name: 'Mango dessert',
+    category: 'Sweets',
+    description: 'Chilled tropical mango mousse topped with passionfruit glaze and mint sprig.',
+    price: 26000, // $10.00 USD
+    image: '/src/assets/images/pos_mango_dessert_1794302893909.jpg',
+    preparationTimeMinutes: 5,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-fairy-cake',
+    name: 'Fairy cake',
+    category: 'Sweets',
+    description: 'Delicate vanilla sponge cupcake topped with whipped sweet butter glaze and candied sprinkles.',
+    price: 7514, // $2.89 USD
+    image: '/src/assets/images/pos_cherry_cake_1794302892353.jpg',
+    preparationTimeMinutes: 2,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-grated-apple-pie',
+    name: 'Grated apple pie',
+    category: 'Sweets',
+    description: 'Spiced Granny Smith grated apple tart baked in flaky golden pastry crust with dusting of cinnamon.',
+    price: 11700, // $4.50 USD
+    image: '/src/assets/images/pos_fruit_tart_pie_1794302894327.jpg',
+    preparationTimeMinutes: 6,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-cookies',
+    name: 'Cookies',
+    category: 'Sweets',
+    description: 'Oven-baked chocolate chip cookies with sea salt flakes and roasted walnuts.',
+    price: 5174, // $1.99 USD
+    image: '/src/assets/images/pos_chocolate_pastry_1794302893990.jpg',
+    preparationTimeMinutes: 2,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-honey-cake',
+    name: 'Honey cake',
+    category: 'Sweets',
+    description: 'Traditional layered honey cake with sour cream caramel filling and biscuit crumb coating.',
+    price: 10920, // $4.20 USD
+    image: '/src/assets/images/pos_tiramisu_cake_1794302894514.jpg',
+    preparationTimeMinutes: 4,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-ice-cream-sandwich',
+    name: 'Ice Cream Sandwich Des...',
+    category: 'Sweets',
+    description: 'Vanilla bean gelato pressed between rich chocolate wafers and drizzled with warm fudge sauce.',
+    price: 12480, // $4.80 USD
+    image: '/src/assets/images/pos_tiramisu_cake_1794302894514.jpg',
+    preparationTimeMinutes: 4,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-raspberry-pie',
+    name: 'Raspberry pie',
+    category: 'Sweets',
+    description: 'Wild ruby raspberry compote baked in butter shortcrust with lattice top and powdered sugar.',
+    price: 11700, // $4.50 USD
+    image: '/src/assets/images/pos_fruit_tart_pie_1794302894327.jpg',
+    preparationTimeMinutes: 5,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-fruit-dessert',
+    name: 'Fruit dessert',
+    category: 'Sweets',
+    description: 'Glazed fresh seasonal fruits over chilled Madagascar vanilla custard tart.',
+    price: 13520, // $5.20 USD
+    image: '/src/assets/images/pos_fruit_tart_pie_1794302894327.jpg',
+    preparationTimeMinutes: 4,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-strawberry-cream',
+    name: 'Strawberry cream dessert',
+    category: 'Sweets',
+    description: 'Fresh sliced strawberries folded in mascarpone Chantilly cream and sponge layers.',
+    price: 12480, // $4.80 USD
+    image: '/src/assets/images/pos_cherry_cake_1794302892353.jpg',
+    preparationTimeMinutes: 4,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-tiramisu-cake',
+    name: 'Tiramisu cake',
+    category: 'Sweets',
+    description: 'Authentic Italian espresso-soaked savoiardi layered with whipped mascarpone and dark cocoa.',
+    price: 14300, // $5.50 USD
+    image: '/src/assets/images/pos_tiramisu_cake_1794302894514.jpg',
+    preparationTimeMinutes: 5,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-banana-cake',
+    name: 'Banana cake',
+    category: 'Sweets',
+    description: 'Caramelized banana sponge loaf with cream cheese frosting and toasted pecan crumbs.',
+    price: 10140, // $3.90 USD
+    image: '/src/assets/images/pos_mango_dessert_1794302893909.jpg',
+    preparationTimeMinutes: 4,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-berry-cake',
+    name: 'Berry cake',
+    category: 'Sweets',
+    description: 'Mixed blueberries, blackberries, and strawberries over velvet white cake layers.',
+    price: 11960, // $4.60 USD
+    image: '/src/assets/images/pos_fruit_tart_pie_1794302894327.jpg',
+    preparationTimeMinutes: 4,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  {
+    id: 'pos-cream-fantasy',
+    name: 'Cream fantasy',
+    category: 'Sweets',
+    description: 'Meringue cloud nest filled with passionfruit curd and fresh whipped vanilla cream.',
+    price: 10920, // $4.20 USD
+    image: '/src/assets/images/pos_cherry_cake_1794302892353.jpg',
+    preparationTimeMinutes: 4,
+    isAvailable: true,
+    station: 'pastry',
+  },
+  // Ticket reference items
+  {
+    id: 'pos-pepperoni-pizza',
+    name: 'Pepperoni Pizza',
+    category: 'Breakfast',
+    description: 'Crisp stone-baked dough, san marzano tomato sauce, mozzarella, and spicy beef pepperoni.',
+    price: 14794, // $5.69 USD
+    image: '/src/assets/images/dish_burger_roastbeef_1794223269419.jpg',
+    preparationTimeMinutes: 12,
+    isAvailable: true,
+    station: 'hot_kitchen',
+  },
+  {
+    id: 'pos-caesar-salad',
+    name: 'Caesar Salad',
+    category: 'Fruits',
+    description: 'Crisp romaine lettuce hearts, garlic herb croutons, parmesan crisps, and classic Caesar dressing.',
+    price: 36400, // $14.00 USD (x2 = $28.00 in ticket)
+    image: '/src/assets/images/dish_grilled_salmon_1794223268825.jpg',
+    preparationTimeMinutes: 7,
+    isAvailable: true,
+    station: 'cold_prep',
+  },
+  {
+    id: 'pos-orange-juice',
+    name: 'Orange Juice',
+    category: 'Coffee & Tea',
+    description: 'Freshly squeezed sweet Valencia oranges served chilled with pulp.',
+    price: 10374, // $3.99 USD
+    image: '/src/assets/images/pos_mango_dessert_1794302893909.jpg',
+    preparationTimeMinutes: 2,
+    isAvailable: true,
+    station: 'beverage',
+  },
+  {
+    id: 'pos-black-tea',
+    name: 'Black Tea',
+    category: 'Coffee & Tea',
+    description: 'Steaming freshly brewed Tanzanian single-origin black tea infused with cardamom and ginger.',
+    price: 6214, // $2.39 USD
+    image: '/src/assets/images/pos_cherry_cake_1794302892353.jpg',
+    preparationTimeMinutes: 3,
+    isAvailable: true,
+    station: 'beverage',
+  },
+  {
+    id: 'pos-sandwich',
+    name: 'Sandwich',
+    category: 'Breakfast',
+    description: 'Toasted artisan sourdough with smoked turkey breast, aged cheddar, butter lettuce, and honey mustard.',
+    price: 16874, // $6.49 USD
+    image: '/src/assets/images/dish_burger_roastbeef_1794223269419.jpg',
+    preparationTimeMinutes: 8,
+    isAvailable: true,
+    station: 'cold_prep',
+  },
   {
     id: 'menu-wali-nyama',
     name: 'Wali Nyama (Beef Stew with Rice)',

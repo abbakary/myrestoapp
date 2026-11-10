@@ -31,8 +31,8 @@ export const SidebarNav: React.FC = () => {
   }[] = [
     {
       role: 'owner',
-      label: 'Executive BI',
-      description: 'Analytics, revenue & P&L',
+      label: 'Sales Reports & BI',
+      description: 'Loyverse Sales Summary & Analytics',
       icon: LayoutGrid, // Matching the orange 4-tile icon in image_c2d80d86.png
     },
     {

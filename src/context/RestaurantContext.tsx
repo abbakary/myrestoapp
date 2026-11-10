@@ -208,9 +208,9 @@ const RestaurantContext = createContext<RestaurantContextType | undefined>(undef
 export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [tenants] = useState<RestaurantTenant[]>(INITIAL_TENANTS);
   const [currentTenantId, setCurrentTenantId] = useState<string>('tenant-savanna');
-  const [activeRole, setActiveRole] = useState<Role>('owner');
+  const [activeRole, setActiveRole] = useState<Role>('cashier');
   const [activeWaiterId, setActiveWaiterId] = useState<string>('waiter-john');
-  const [currency, setCurrency] = useState<'TZS' | 'USD'>('TZS');
+  const [currency, setCurrency] = useState<'TZS' | 'USD'>('USD');
   const [activeReferralCode, setActiveReferralCode] = useState<string | null>('WAITER_JOHN');
 
   const [orders, setOrders] = useState<Order[]>(INITIAL_ORDERS);
@@ -226,7 +226,20 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [dailyReconciliations, setDailyReconciliations] = useState<DailyReconciliationItem[]>(INITIAL_DAILY_RECONCILIATION);
   const [waiters, setWaiters] = useState<Waiter[]>(INITIAL_WAITERS);
   const [employees, setEmployees] = useState<Employee[]>(INITIAL_EMPLOYEES);
-  const [cart, setCart] = useState<CartItem[]>([]);
+
+  // Initialize cart with the exact demo ticket from the Loyverse tablet POS photo
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    const findItem = (id: string, fallbackIdx: number) =>
+      INITIAL_MENU_ITEMS.find((i) => i.id === id) || INITIAL_MENU_ITEMS[fallbackIdx];
+    return [
+      { menuItem: findItem('pos-pepperoni-pizza', 15), quantity: 1, selectedModifiers: [] },
+      { menuItem: findItem('pos-caesar-salad', 16), quantity: 2, selectedModifiers: [] },
+      { menuItem: findItem('pos-orange-juice', 17), quantity: 1, selectedModifiers: [] },
+      { menuItem: findItem('pos-black-tea', 18), quantity: 1, selectedModifiers: [] },
+      { menuItem: findItem('pos-sandwich', 19), quantity: 1, selectedModifiers: [] },
+      { menuItem: findItem('pos-mango-dessert', 2), quantity: 2, selectedModifiers: [] },
+    ];
+  });
   const [notifications, setNotifications] = useState<AppNotification[]>(INITIAL_NOTIFICATIONS);
   const [soundAlertTriggered, setSoundAlertTriggered] = useState<boolean>(false);
 
@@ -1404,10 +1417,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
 
     // Save Production Log
+    const targetMenuItemId = recipe.menuItemId || recipe.id;
     const newProdLog: ProductionLog = {
       id: `prod-${Date.now()}`,
       recipeId: recipe.id,
-      menuItemId: recipe.menuItemId,
+      menuItemId: targetMenuItemId,
       dishName: recipe.name || 'Dish',
       batchesCooked: params.batches,
       targetYieldPlates: validation.targetYieldPlates,
@@ -1426,10 +1440,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     // Update Prepared Dish Stock available pool
     setPreparedDishStocks((prev) => {
-      const exists = prev.find((p) => p.menuItemId === recipe.menuItemId);
+      const exists = prev.find((p) => p.menuItemId === targetMenuItemId);
       if (exists) {
         return prev.map((p) =>
-          p.menuItemId === recipe.menuItemId
+          p.menuItemId === targetMenuItemId
             ? {
                 ...p,
                 preparedPlatesAvailable: p.preparedPlatesAvailable + actualPlates,
@@ -1442,7 +1456,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
       return [
         {
-          menuItemId: recipe.menuItemId,
+          menuItemId: targetMenuItemId,
           dishName: recipe.name || 'Dish',
           preparedPlatesAvailable: actualPlates,
           totalCookedToday: actualPlates,

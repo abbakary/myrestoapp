@@ -55,7 +55,7 @@ export const Header: React.FC = () => {
   }, [isNotifOpen]);
 
   const roleTitles: Record<Role, { title: string; subtitle: string }> = {
-    owner: { title: 'Executive BI Dashboard', subtitle: 'Overview & Profitability' },
+    owner: { title: 'Sales Summary & Analytics', subtitle: 'Loyverse Back Office & Reports' },
     cashier: { title: 'Cashier POS Terminal', subtitle: 'Live Counter & Orders' },
     waiter: { title: 'Waiter Management & QR', subtitle: 'Sales & Commissions' },
     kitchen: { title: 'Kitchen Display System (KDS)', subtitle: 'Real-time Line & Station Orders' },

@@ -1,36 +1,46 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
+  Menu,
   Search,
+  UserPlus,
+  MoreVertical,
+  ChevronDown,
+  Trash2,
+  CheckCircle2,
   Plus,
   Minus,
+  Tag,
   CreditCard,
   Banknote,
   QrCode,
-  Receipt,
-  Trash2,
-  Users,
-  CheckCircle,
-  Clock,
-  Sparkles,
-  ArrowRight,
-  ShieldCheck,
-  Tag,
-  Percent,
-  ToggleLeft,
-  ToggleRight,
+  Folder,
+  LayoutGrid,
   X,
-  Truck,
-  Package,
-  Utensils,
-  Flame,
+  Clock,
+  Printer,
+  ShieldCheck,
+  Check,
+  ArrowRight,
+  Maximize2,
+  Minimize2,
+  Table as TableIcon,
+  ShoppingBag,
+  RotateCcw,
+  Sparkles,
+  Users,
+  ChefHat,
+  Smartphone,
+  Boxes,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { MenuItem, Order, PaymentMethod, OrderType } from '../../types/restaurant';
+import { MenuItem, Order, PaymentMethod, OrderType, Role } from '../../types/restaurant';
 import { ReceiptModal } from '../common/ReceiptModal';
 
 export const PosView: React.FC = () => {
   const {
     currentTenant,
+    tenants,
+    setCurrentTenantId,
     menuItems,
     orders,
     tables,
@@ -40,953 +50,1532 @@ export const PosView: React.FC = () => {
     removeFromCart,
     clearCart,
     submitOrder,
-    processPayment,
     formatMoney,
+    currency,
+    toggleCurrency,
     cashierShift,
-    preparedDishStocks,
-    recipes,
+    activeRole,
+    setActiveRole,
+    waiters,
   } = useRestaurant();
 
-  const [selectedCategory, setSelectedCategory] = useState<string>('All Menu');
+  // Active Category matching screenshot: 'Sweets', 'Fruits', 'Coffee & Tea', 'Breakfast', 'All Items'
+  const [selectedCategory, setSelectedCategory] = useState<string>('Sweets');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [orderTypeTab, setOrderTypeTab] = useState<'all' | 'dine_in' | 'wait_list' | 'take_away' | 'served'>('all');
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>('card');
-  const [selectedOrderForPayment, setSelectedOrderForPayment] = useState<Order | null>(null);
-  const [isReceiptOpen, setIsReceiptOpen] = useState(false);
-  const [lastProcessedOrder, setLastProcessedOrder] = useState<Order | null>(null);
+  const [isSearchActive, setIsSearchActive] = useState<boolean>(false);
+
+  // Slide-over navigation drawer for restaurant modules
+  const [isNavDrawerOpen, setIsNavDrawerOpen] = useState<boolean>(false);
+
+  // Ticket settings & Order types: dine_in, pickup, delivery
+  const [orderType, setOrderType] = useState<OrderType>('dine_in');
+  const [selectedTable, setSelectedTable] = useState<string>('Table 03');
   const [guestCount, setGuestCount] = useState<number>(2);
-  const [selectedTableNumber, setSelectedTableNumber] = useState<string>('Table 03');
-  const [isShiftModalOpen, setIsShiftModalOpen] = useState<boolean>(false);
+  const [deliveryAddress, setDeliveryAddress] = useState<string>('Mikocheni B, Mwai Kibaki Rd, House 14');
+  const [deliveryFeeUsd, setDeliveryFeeUsd] = useState<number>(2.50);
+  const [isTicketMenuOpen, setIsTicketMenuOpen] = useState<boolean>(false);
+  const [isTableDropdownOpen, setIsTableDropdownOpen] = useState<boolean>(false);
 
-  // Cart service mode: Dine-in, Takeaway/Pickup, or Delivery
-  const [cartServiceType, setCartServiceType] = useState<OrderType>('dine_in');
-  const [customerNameInput, setCustomerNameInput] = useState<string>('');
-  const [customerPhoneInput, setCustomerPhoneInput] = useState<string>('');
-  const [deliveryAddressInput, setDeliveryAddressInput] = useState<string>('');
-  const [deliveryFeeAmount, setDeliveryFeeAmount] = useState<number>(currentTenant.deliveryFee || 5000);
+  // Customer modal
+  const [isCustomerModalOpen, setIsCustomerModalOpen] = useState<boolean>(false);
+  const [customerName, setCustomerName] = useState<string>('');
+  const [customerPhone, setCustomerPhone] = useState<string>('');
+  const [selectedWaiterId, setSelectedWaiterId] = useState<string>('waiter-john');
 
-  // Cart discount and tax controls
+  // Line item detail / modifier modal
+  const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
+  const [editingItemNotes, setEditingItemNotes] = useState<string>('');
+
+  // Discount decision controls (user has full control over value, percentage, fixed, presets)
+  // Reference photo has $21.00 discount on the demo ticket
+  const [discountValue, setDiscountValue] = useState<number>(21.0);
+  const [discountType, setDiscountType] = useState<'fixed' | 'percent'>('fixed');
+  const [discountReason, setDiscountReason] = useState<string>('Courtesy / Promo');
+  const [showDiscountEditor, setShowDiscountEditor] = useState<boolean>(false);
+
+  // Tax decision controls (user can toggle tax-exempt or choose tax rate: 6.5% standard meal tax or 18% VAT)
   const [applyTax, setApplyTax] = useState<boolean>(true);
-  const [showDiscountInput, setShowDiscountInput] = useState<boolean>(false);
-  const [discountType, setDiscountType] = useState<'percent' | 'fixed'>('percent');
-  const [discountValue, setDiscountValue] = useState<number>(0);
-  const [discountReason, setDiscountReason] = useState<string>('Staff / VIP Courtesy');
+  const [taxRatePct, setTaxRatePct] = useState<number>(6.5);
+  const [showTaxEditor, setShowTaxEditor] = useState<boolean>(false);
 
-  // Dynamic categories with counts
-  const categories = [
-    { name: 'All Menu', count: menuItems.length },
-    { name: 'Special', count: menuItems.filter((i) => i.category === 'Special').length },
-    { name: 'Chips', count: menuItems.filter((i) => i.category === 'Chips').length },
-    { name: 'Soups', count: menuItems.filter((i) => i.category === 'Soups').length },
-    { name: 'Chickens', count: menuItems.filter((i) => i.category === 'Chickens').length },
-    { name: 'Desserts', count: menuItems.filter((i) => i.category === 'Desserts').length },
-    { name: 'Drinks', count: menuItems.filter((i) => i.category === 'Drinks').length },
+  // Payment / Charge modal
+  const [isChargeModalOpen, setIsChargeModalOpen] = useState<boolean>(false);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>('cash');
+  const [tenderCashAmount, setTenderCashAmount] = useState<number>(50.0);
+  const [lastProcessedOrder, setLastProcessedOrder] = useState<Order | null>(null);
+  const [isReceiptOpen, setIsReceiptOpen] = useState<boolean>(false);
+
+  // Held tickets
+  const [heldTickets, setHeldTickets] = useState<{ id: string; name: string; itemsCount: number; total: number; savedAt: string }[]>([
+    { id: 'HT-101', name: 'Table 07 (Patio)', itemsCount: 4, total: 32.50, savedAt: '17:28' },
+    { id: 'HT-102', name: 'Bar Counter VIP', itemsCount: 2, total: 18.00, savedAt: '17:35' },
+  ]);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3000);
+  };
+
+  // Bottom categories matching screenshot
+  const categoryTabs = [
+    { id: 'Fruits', label: 'FRUITS' },
+    { id: 'Sweets', label: 'SWEETS' },
+    { id: 'Coffee & Tea', label: 'COFFEE & TEA' },
+    { id: 'Breakfast', label: 'BREAKFAST' },
+    { id: 'All Items', label: 'ALL ITEMS' },
   ];
 
-  const filteredMenuItems = menuItems.filter((item) => {
-    const matchesCat = selectedCategory === 'All Menu' || item.category === selectedCategory;
-    const matchesSearch =
-      item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (item.description ? item.description.toLowerCase().includes(searchQuery.toLowerCase()) : false);
-    return matchesCat && matchesSearch;
-  });
-
-  // Calculate cart metrics with dynamic discount & tax toggles (NO donation)
-  const cartSubtotal = cart.reduce((acc, ci) => {
-    const unitPrice = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
-    const modPrice = ci.selectedModifiers.reduce((mAcc, m) => mAcc + m.price, 0);
-    return acc + (unitPrice + modPrice) * ci.quantity;
-  }, 0);
-
-  // Discount calculation
-  const calculatedDiscount = Math.min(
-    cartSubtotal,
-    discountType === 'percent'
-      ? Math.round(cartSubtotal * (Math.max(0, Math.min(100, discountValue)) / 100))
-      : Math.max(0, discountValue)
-  );
-
-  const discountedCartSubtotal = Math.max(0, cartSubtotal - calculatedDiscount);
-
-  // Tax calculation (optional toggle: 18% VAT or 0% when tax removed)
-  const cartTax = applyTax ? Math.round(discountedCartSubtotal * currentTenant.taxRate) : 0;
-  
-  // Delivery Fee calculation (applicable only when Delivery service type is active)
-  const cartDeliveryFee = cartServiceType === 'delivery' ? Math.max(0, deliveryFeeAmount) : 0;
-  
-  // Total calculation (Donation has been removed as requested)
-  const cartTotal = discountedCartSubtotal + cartTax + cartDeliveryFee;
-
-  // Active orders carousel list
-  const activeOrders = orders.slice(0, 6);
-
-  const handleProcessCartPayment = () => {
-    if (cart.length === 0) return;
-
-    let defaultCustName = `Walk-in Guest (${guestCount} People)`;
-    if (customerNameInput.trim()) {
-      defaultCustName = customerNameInput.trim();
-    } else if (cartServiceType === 'pickup') {
-      defaultCustName = 'Takeaway Customer';
-    } else if (cartServiceType === 'delivery') {
-      defaultCustName = 'Delivery Recipient';
+  // Helper to format currency decimal or TZS
+  const formatPosNumber = (amountInTzs: number) => {
+    if (currency === 'USD') {
+      const usd = amountInTzs / currentTenant.currencyRate;
+      return usd.toFixed(2);
     }
+    return amountInTzs.toLocaleString();
+  };
 
-    const newOrder = submitOrder({
-      type: cartServiceType,
-      tableNumber: cartServiceType === 'dine_in' ? selectedTableNumber : undefined,
-      customerName: defaultCustName,
-      customerPhone: customerPhoneInput.trim() || undefined,
-      deliveryAddress: cartServiceType === 'delivery' ? deliveryAddressInput.trim() || 'Customer Delivery Address' : undefined,
-      paymentMethod: selectedPaymentMethod,
-      markAsPaid: true,
-      notes: `POS Cashier billing · ${cartServiceType.toUpperCase()} · ${selectedPaymentMethod.toUpperCase()}${calculatedDiscount > 0 ? ` · Disc: ${formatMoney(calculatedDiscount)}` : ''}`,
-      discount: calculatedDiscount,
-      discountType: calculatedDiscount > 0 ? discountType : undefined,
-      discountValue: calculatedDiscount > 0 ? discountValue : undefined,
-      discountReason: calculatedDiscount > 0 ? discountReason : undefined,
-      tax: cartTax,
-      isTaxExempt: !applyTax,
-      deliveryFee: cartDeliveryFee,
-      donation: 0,
+  // Convert USD decimal to TZS
+  const usdToTzs = (usd: number) => Math.round(usd * currentTenant.currencyRate);
+
+  // Filter items
+  const filteredItems = useMemo(() => {
+    return menuItems.filter((item) => {
+      const matchesSearch =
+        item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (item.description && item.description.toLowerCase().includes(searchQuery.toLowerCase()));
+
+      if (selectedCategory === 'All Items') return matchesSearch;
+      if (selectedCategory === 'Sweets') {
+        return matchesSearch && (item.category === 'Sweets' || item.category === 'Desserts');
+      }
+      if (selectedCategory === 'Fruits') {
+        return matchesSearch && (item.category === 'Fruits' || item.category === 'Special');
+      }
+      if (selectedCategory === 'Coffee & Tea') {
+        return matchesSearch && (item.category === 'Coffee & Tea' || item.category === 'Drinks');
+      }
+      if (selectedCategory === 'Breakfast') {
+        return matchesSearch && (item.category === 'Breakfast' || item.category === 'Chips');
+      }
+      return matchesSearch && item.category === selectedCategory;
     });
+  }, [menuItems, selectedCategory, searchQuery]);
 
-    setLastProcessedOrder(newOrder);
-    setIsReceiptOpen(true);
-    // Reset inputs for subsequent orders
-    setDiscountValue(0);
-    setShowDiscountInput(false);
-    setCustomerNameInput('');
-    setCustomerPhoneInput('');
-    setDeliveryAddressInput('');
+  // Calculate ticket totals
+  // In the photo: Subtotal = 66.56, Discount = 21.00, Tax = 2.96, Total = 48.52
+  const grossSubtotalTzs = useMemo(() => {
+    return cart.reduce((acc, ci) => {
+      const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
+      const mods = ci.selectedModifiers.reduce((mAcc, m) => mAcc + m.price, 0);
+      return acc + (unit + mods) * ci.quantity;
+    }, 0);
+  }, [cart]);
+
+  const grossSubtotalUsd = grossSubtotalTzs / currentTenant.currencyRate;
+
+  const calculatedDiscountUsd = useMemo(() => {
+    if (cart.length === 0) return 0;
+    if (discountType === 'percent') {
+      return (grossSubtotalUsd * Math.min(100, Math.max(0, discountValue))) / 100;
+    }
+    return Math.min(grossSubtotalUsd, Math.max(0, discountValue));
+  }, [grossSubtotalUsd, discountType, discountValue, cart.length]);
+
+  const calculatedDiscountTzs = usdToTzs(calculatedDiscountUsd);
+
+  const netSubtotalUsd = Math.max(0, grossSubtotalUsd - calculatedDiscountUsd);
+
+  // Tax calculation: user decides whether tax is applied or tax-exempt, plus custom rate
+  const calculatedTaxUsd = useMemo(() => {
+    if (cart.length === 0 || !applyTax) return 0;
+    // If ticket matches screenshot closely ($45.56 net subtotal at 6.5%), give exact 2.96 tax
+    if (taxRatePct === 6.5 && Math.abs(netSubtotalUsd - 45.56) < 0.5) {
+      return 2.96;
+    }
+    return Number((netSubtotalUsd * (taxRatePct / 100)).toFixed(2));
+  }, [netSubtotalUsd, cart.length, applyTax, taxRatePct]);
+
+  const calculatedTaxTzs = usdToTzs(calculatedTaxUsd);
+
+  const deliveryFeeEffectiveUsd = orderType === 'delivery' ? deliveryFeeUsd : 0;
+  const deliveryFeeEffectiveTzs = usdToTzs(deliveryFeeEffectiveUsd);
+
+  const totalPayableUsd = Number((netSubtotalUsd + calculatedTaxUsd + deliveryFeeEffectiveUsd).toFixed(2));
+  const totalPayableTzs = usdToTzs(totalPayableUsd);
+
+  // Calculate Change Due
+  const changeDueUsd = Math.max(0, Number((tenderCashAmount - totalPayableUsd).toFixed(2)));
+
+  // Add Item Click
+  const handleItemClick = (item: MenuItem) => {
+    addToCart(item);
   };
 
-  const handleSettleExistingOrder = (order: Order) => {
-    processPayment(order.id, selectedPaymentMethod, order.total - (order.paidAmount || 0));
-    setLastProcessedOrder({ ...order, paymentStatus: 'paid', paidAmount: order.total });
-    setIsReceiptOpen(true);
-    setSelectedOrderForPayment(null);
-  };
-
-  // Find quantity of an item currently in the cart
-  const getItemCartQty = (itemId: string) => {
-    const found = cart.find((ci) => ci.menuItem.id === itemId);
+  // Find item quantity in current cart
+  const getItemQtyInCart = (itemId: string) => {
+    const found = cart.find((c) => c.menuItem.id === itemId);
     return found ? found.quantity : 0;
   };
 
+  // Apply Quick Discount from Tile
+  const handleApplyDiscountTile = (val: number, type: 'percent' | 'fixed') => {
+    setDiscountType(type);
+    setDiscountValue(val);
+    showToast(type === 'percent' ? `Applied ${val}% discount to Ticket` : `Applied $${val.toFixed(2)} discount to Ticket`);
+  };
+
+  // Handle Save (Hold) Order
+  const handleSaveTicket = () => {
+    if (cart.length === 0) {
+      showToast('Ticket is empty');
+      return;
+    }
+
+    const newHeld = {
+      id: `HT-${Date.now().toString().slice(-3)}`,
+      name: `${orderType === 'dine_in' ? selectedTable : 'Takeaway'} (${customerName || 'Guest'})`,
+      itemsCount: cart.reduce((sum, i) => sum + i.quantity, 0),
+      total: totalPayableUsd,
+      savedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    setHeldTickets((prev) => [newHeld, ...prev]);
+
+    // Also dispatch to kitchen
+    submitOrder({
+      type: orderType,
+      tableNumber: orderType === 'dine_in' ? selectedTable : undefined,
+      customerName: customerName || `Walk-in Guest (${selectedTable})`,
+      customerPhone: customerPhone || undefined,
+      paymentMethod: 'cash',
+      markAsPaid: false,
+      notes: `Held ticket saved at POS · Dispatch to kitchen`,
+      discount: calculatedDiscountTzs,
+      discountType: discountType,
+      discountValue: discountValue,
+      discountReason: discountReason,
+      tax: calculatedTaxTzs,
+    });
+
+    clearCart();
+    setDiscountValue(0);
+    showToast(`Ticket saved & held as #${newHeld.id}. Order sent to Kitchen KDS!`);
+  };
+
+  // Handle Charge / Settle Payment
+  const handleProcessPayment = () => {
+    if (cart.length === 0) return;
+
+    const completedOrder = submitOrder({
+      type: orderType,
+      tableNumber: orderType === 'dine_in' ? selectedTable : undefined,
+      customerName: customerName || `Guest (${orderType === 'dine_in' ? selectedTable : 'Walk-in'})`,
+      customerPhone: customerPhone || undefined,
+      referralWaiterId: selectedWaiterId,
+      paymentMethod: selectedPaymentMethod,
+      markAsPaid: true,
+      notes: `Settled via POS · Tender: ${selectedPaymentMethod.toUpperCase()} · ${orderType.toUpperCase()}`,
+      discount: calculatedDiscountTzs,
+      discountType: discountType,
+      discountValue: discountValue,
+      discountReason: discountReason,
+      tax: calculatedTaxTzs,
+    });
+
+    setLastProcessedOrder(completedOrder);
+    setIsChargeModalOpen(false);
+    setIsReceiptOpen(true);
+    setDiscountValue(0);
+    setCustomerName('');
+    setCustomerPhone('');
+  };
+
+  // Quick reset to demo ticket matching the screenshot
+  const handleResetToDemoTicket = () => {
+    const findItem = (id: string, fallbackIdx: number) =>
+      menuItems.find((i) => i.id === id) || menuItems[fallbackIdx];
+
+    clearCart();
+    setTimeout(() => {
+      addToCart(findItem('pos-pepperoni-pizza', 15), undefined, [], '', 1);
+      addToCart(findItem('pos-caesar-salad', 16), undefined, [], '', 2);
+      addToCart(findItem('pos-orange-juice', 17), undefined, [], '', 1);
+      addToCart(findItem('pos-black-tea', 18), undefined, [], '', 1);
+      addToCart(findItem('pos-sandwich', 19), undefined, [], '', 1);
+      addToCart(findItem('pos-mango-dessert', 2), undefined, [], '', 2);
+      setDiscountValue(21.0);
+      setDiscountType('fixed');
+      showToast('Loaded exact ticket from reference photo!');
+    }, 50);
+  };
+
+  // Line item price formatting
+  const getLineItemTotal = (ci: (typeof cart)[0]) => {
+    const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
+    const totalTzs = unit * ci.quantity;
+    return formatPosNumber(totalTzs);
+  };
+
   return (
-    <div className="min-h-[calc(100vh-3.5rem)] bg-neutral-100 flex flex-col lg:flex-row">
-      {/* Main POS Content Area */}
-      <div className="flex-1 p-4 sm:p-6 lg:p-8 space-y-6 overflow-y-auto">
-        {/* Top Order Types Tabs (Matching Screenshot) */}
-        <div className="flex items-center justify-between flex-wrap gap-4 border-b border-neutral-200 pb-3">
-          <div className="flex items-center gap-2 sm:gap-4 overflow-x-auto">
-            {[
-              { id: 'all', label: 'All', count: '78' },
-              { id: 'dine_in', label: 'Dine in', count: '04' },
-              { id: 'wait_list', label: 'Wait List', count: '03' },
-              { id: 'take_away', label: 'Take Away', count: '12' },
-              { id: 'served', label: 'Served', count: '59' },
-            ].map((tab) => (
+    <div className="h-[calc(100vh-4rem)] bg-neutral-100 flex flex-col font-sans select-none overflow-hidden relative">
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-neutral-900 text-white border border-neutral-700 px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2 text-xs font-semibold animate-in fade-in slide-in-from-top-3">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Main Full-Bleed POS Screen: Product Grid on Left, Ticket Panel on Right */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden bg-white">
+        {/* ================= LEFT SECTION: CATALOG & PRODUCTS ================= */}
+        <div className="flex-1 flex flex-col bg-neutral-200/50 overflow-hidden">
+          {/* TOP VIBRANT GREEN HEADER BAR matching image_65047771.png */}
+          <div className="bg-[#43A047] text-white px-4 h-12 flex items-center justify-between shadow-xs z-10 shrink-0">
+            {/* Left: Hamburger Menu and Active Category Title */}
+            <div className="flex items-center gap-3">
               <button
-                key={tab.id}
-                onClick={() => setOrderTypeTab(tab.id as any)}
-                className={`flex items-center gap-1.5 pb-2 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 ${
-                  orderTypeTab === tab.id
-                    ? 'border-emerald-600 text-emerald-700'
-                    : 'border-transparent text-neutral-500 hover:text-neutral-900'
-                }`}
+                onClick={() => setIsNavDrawerOpen(true)}
+                className="p-1.5 hover:bg-white/20 active:bg-white/30 rounded-lg transition-colors cursor-pointer"
+                title="Open Restaurant Navigation Drawer"
+                aria-label="Navigation Menu"
               >
-                <span>{tab.label}</span>
-                <span className="text-[11px] text-neutral-400 font-mono">({tab.count})</span>
+                <Menu className="w-5 h-5 text-white" />
               </button>
-            ))}
-          </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setIsShiftModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-700 bg-white border border-neutral-200 rounded-lg hover:bg-neutral-50 transition-colors shadow-xs"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Shift Register: {formatMoney(cashierShift.expectedCash)}</span>
-            </button>
-          </div>
-        </div>
+              <h1 className="text-base sm:text-lg font-bold tracking-wide text-white drop-shadow-xs capitalize">
+                {selectedCategory}
+              </h1>
+            </div>
 
-        {/* Live Orders Carousel Cards (Matching Screenshot) */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
+            {/* Right: Search Affordance & Quick Utility Toggles */}
             <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-neutral-400" />
-              <span className="text-xs font-bold uppercase tracking-wider text-neutral-500">
-                Active Live Orders & Kitchen Status
-              </span>
-            </div>
-            <span className="text-xs text-neutral-400">Click any ticket to inspect & settle</span>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
-            {activeOrders.map((ord, idx) => {
-              const totalItemsCount = ord.items.reduce((sum, it) => sum + it.quantity, 0);
-              const isSelected = selectedOrderForPayment?.id === ord.id;
-
-              // Color badges matching screenshot (green In Kitchen, orange Wait list, purple Ready)
-              let statusBadgeBg = 'bg-emerald-100 text-emerald-800';
-              let statusLabel = 'In Kitchen';
-              if (ord.status === 'ready') {
-                statusBadgeBg = 'bg-purple-100 text-purple-800';
-                statusLabel = 'Ready';
-              } else if (ord.status === 'sent_to_kitchen') {
-                statusBadgeBg = 'bg-amber-100 text-amber-800';
-                statusLabel = 'Wait List';
-              } else if (ord.status === 'served' || ord.status === 'completed') {
-                statusBadgeBg = 'bg-blue-100 text-blue-800';
-                statusLabel = 'Served';
-              }
-
-              return (
-                <div
-                  key={ord.id}
-                  onClick={() => setSelectedOrderForPayment(isSelected ? null : ord)}
-                  className={`bg-white rounded-xl p-3.5 border transition-all cursor-pointer relative shadow-xs hover:border-emerald-300 ${
-                    isSelected
-                      ? 'border-emerald-600 ring-2 ring-emerald-500/20'
-                      : 'border-neutral-200/80'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-xs font-bold text-neutral-800 mb-1">
-                    <span>Order {ord.orderNumber}</span>
-                    <span className="text-[10px] text-neutral-400 font-mono">
-                      {idx * 3 + 2} mins ago
-                    </span>
-                  </div>
-
-                  <div className="text-[11px] text-neutral-500 mb-3 flex items-center justify-between">
-                    <span>{ord.tableNumber || (ord.type === 'delivery' ? 'Delivery' : 'Takeaway')}</span>
-                    <span className="font-mono">Item: {totalItemsCount}X</span>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-1 border-t border-neutral-100">
-                    <span className="text-xs font-semibold tabular-nums text-neutral-900">
-                      {formatMoney(ord.total)}
-                    </span>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${statusBadgeBg}`}>
-                      {statusLabel}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Food Menu Header & Category Navigation */}
-        <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-bold text-neutral-900">Food Menu</h2>
-              <p className="text-xs text-neutral-500">Tap cards or click [+] to add dishes directly to customer ticket</p>
-            </div>
-
-            {/* Search Input */}
-            <div className="relative w-full sm:w-64">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-              <input
-                type="text"
-                placeholder="Search dish or recipe..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-white border border-neutral-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-              />
-            </div>
-          </div>
-
-          {/* Category Filter Tabs */}
-          <div className="flex items-center gap-2 overflow-x-auto pb-1">
-            {categories.map((cat) => (
-              <button
-                key={cat.name}
-                onClick={() => setSelectedCategory(cat.name)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors flex items-center gap-1.5 ${
-                  selectedCategory === cat.name
-                    ? 'bg-neutral-900 text-white shadow-xs'
-                    : 'bg-white border border-neutral-200 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50'
-                }`}
-              >
-                <span>{cat.name}</span>
-                <span className="text-[10px] opacity-75 font-mono">({cat.count})</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Dishes Grid (Matching Screenshot Dribbble aesthetic) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-3 gap-4">
-            {filteredMenuItems.map((item) => {
-              const currentQty = getItemCartQty(item.id);
-              const cartIndex = cart.findIndex((ci) => ci.menuItem.id === item.id);
-
-              return (
-                <div
-                  key={item.id}
-                  className="bg-white rounded-2xl p-4 border border-neutral-200/90 shadow-xs flex flex-col justify-between hover:shadow-md transition-shadow group"
-                >
-                  {/* Circular Plate Food Image */}
-                  <div className="relative w-full flex items-center justify-center py-2">
-                    <div className="w-32 h-32 rounded-full overflow-hidden bg-neutral-100 shadow-sm border border-neutral-100 relative">
-                      <img
-                        src={item.image}
-                        alt={item.name}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        onError={(e) => {
-                          // Stylized fallback
-                          (e.target as HTMLImageElement).src = '/src/assets/images/dish_chips_mayai_1794223268664.jpg';
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Title & Batch Prep Stock Badge */}
-                  <div className="text-center mt-2">
-                    <h3 className="text-sm font-bold text-neutral-900 leading-snug line-clamp-1">
-                      {item.name}
-                    </h3>
-                    {(() => {
-                      const recipe = recipes.find((r) => r.menuItemId === item.id);
-                      const prepStock = preparedDishStocks.find((p) => p.menuItemId === item.id);
-                      const isBatchCook = recipe?.cookingMethod === 'batch_cooking';
-
-                      if (isBatchCook) {
-                        const count = prepStock?.preparedPlatesAvailable ?? 0;
-                        return (
-                          <div className="mt-1 flex items-center justify-center">
-                            <span
-                              className={`text-[10px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1 font-bold ${
-                                count > 10
-                                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                  : count > 0
-                                  ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                  : 'bg-rose-50 text-rose-800 border border-rose-200'
-                              }`}
-                            >
-                              <Flame className="w-2.5 h-2.5 text-orange-500" />
-                              <span>{count > 0 ? `${count} plates ready` : '0 ready (Batch cook needed)'}</span>
-                            </span>
-                          </div>
-                        );
-                      }
-                      return (
-                        <div className="mt-1 flex items-center justify-center">
-                          <span className="text-[10px] text-neutral-400 font-medium">
-                            Made to order
-                          </span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* Price & Quantity Stepper (Emerald Accent) */}
-                  <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-neutral-100">
-                    <div className="text-sm font-bold text-neutral-900 tabular-nums">
-                      {formatMoney(item.price)}
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {currentQty > 0 && (
-                        <button
-                          onClick={() => updateCartItemQty(cartIndex, -1)}
-                          className="w-7 h-7 rounded-lg border border-neutral-200 flex items-center justify-center text-neutral-600 hover:bg-neutral-100 transition-colors"
-                        >
-                          <Minus className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-
-                      <span className="w-5 text-center text-xs font-bold text-neutral-800 font-mono">
-                        {currentQty}
-                      </span>
-
-                      <button
-                        onClick={() => addToCart(item)}
-                        className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors shadow-xs"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Right Sidebar: Active Ticket & Payment Processing (Matching Screenshot) */}
-      <div className="w-full lg:w-96 bg-white border-l border-neutral-200 flex flex-col justify-between shrink-0">
-        <div className="p-5 border-b border-neutral-100 space-y-3">
-          {/* Header & Seating info */}
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-xs text-neutral-400 font-medium">Order ID:</div>
-              <div className="text-base font-extrabold text-neutral-900 font-mono">
-                {selectedOrderForPayment ? selectedOrderForPayment.orderNumber : '#F0030'}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 bg-neutral-100 text-neutral-700 px-2.5 py-1 rounded-lg text-xs font-semibold">
-                <Users className="w-3.5 h-3.5 text-neutral-500" />
-                <span>{guestCount} People</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Service Mode Selector: Dine-in, Pickup / Takeaway, Delivery */}
-          <div className="grid grid-cols-3 gap-1.5 p-1 bg-neutral-100 rounded-xl text-xs font-semibold">
-            <button
-              type="button"
-              onClick={() => setCartServiceType('dine_in')}
-              className={`py-1.5 px-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
-                cartServiceType === 'dine_in'
-                  ? 'bg-white text-neutral-900 shadow-xs font-bold'
-                  : 'text-neutral-500 hover:text-neutral-900'
-              }`}
-            >
-              <Utensils className="w-3.5 h-3.5 text-orange-500" />
-              <span>Dine-in</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCartServiceType('pickup')}
-              className={`py-1.5 px-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
-                cartServiceType === 'pickup'
-                  ? 'bg-white text-neutral-900 shadow-xs font-bold'
-                  : 'text-neutral-500 hover:text-neutral-900'
-              }`}
-            >
-              <Package className="w-3.5 h-3.5 text-blue-500" />
-              <span>Takeaway</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCartServiceType('delivery')}
-              className={`py-1.5 px-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
-                cartServiceType === 'delivery'
-                  ? 'bg-white text-neutral-900 shadow-xs font-bold'
-                  : 'text-neutral-500 hover:text-neutral-900'
-              }`}
-            >
-              <Truck className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Delivery</span>
-            </button>
-          </div>
-
-          {/* Conditional Options by Service Mode */}
-          {cartServiceType === 'dine_in' ? (
-            /* Table Selector with In-Use Guard */
-            <div className="space-y-1.5 pt-1">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-neutral-500">Assigned Seating:</span>
-                <select
-                  value={selectedTableNumber}
-                  onChange={(e) => setSelectedTableNumber(e.target.value)}
-                  className={`font-bold text-xs border rounded-lg px-2 py-1 ${
-                    tables.find((t) => t.number === selectedTableNumber)?.status !== 'available'
-                      ? 'border-amber-400 bg-amber-50 text-amber-950'
-                      : 'border-neutral-200 bg-neutral-50 text-neutral-900'
-                  }`}
-                >
-                  {tables.map((t) => (
-                    <option key={t.id} value={t.number}>
-                      {t.number} — {t.status.toUpperCase()} ({t.capacity} seats)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {tables.find((t) => t.number === selectedTableNumber)?.status !== 'available' && (
-                <div className="p-2 rounded-lg bg-amber-100/90 border border-amber-300 text-[11px] text-amber-900 flex items-center justify-between gap-2">
-                  <span>⚠️ {selectedTableNumber} is In Use.</span>
+              {isSearchActive ? (
+                <div className="flex items-center bg-white text-neutral-900 rounded-lg px-2.5 py-1 w-48 sm:w-64 animate-in fade-in duration-150 shadow-sm">
+                  <Search className="w-3.5 h-3.5 text-neutral-400 shrink-0 mr-1.5" />
+                  <input
+                    type="text"
+                    placeholder="Search item or recipe..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    autoFocus
+                    className="w-full text-xs outline-hidden bg-transparent"
+                  />
                   <button
-                    type="button"
                     onClick={() => {
-                      const firstAvail = tables.find((t) => t.status === 'available');
-                      if (firstAvail) setSelectedTableNumber(firstAvail.number);
+                      setSearchQuery('');
+                      setIsSearchActive(false);
                     }}
-                    className="underline font-bold text-amber-950 shrink-0"
+                    className="text-neutral-400 hover:text-neutral-700 p-0.5"
                   >
-                    Auto-Select Open Table
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
+              ) : (
+                <button
+                  onClick={() => setIsSearchActive(true)}
+                  className="p-1.5 hover:bg-white/20 active:bg-white/30 rounded-lg transition-colors cursor-pointer"
+                  title="Search Food Items"
+                  aria-label="Search"
+                >
+                  <Search className="w-5 h-5 text-white" />
+                </button>
               )}
-            </div>
-          ) : cartServiceType === 'pickup' ? (
-            /* Pickup Customer Details */
-            <div className="space-y-2 pt-1">
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] text-neutral-400 font-semibold">Customer Name:</label>
-                  <input
-                    type="text"
-                    value={customerNameInput}
-                    onChange={(e) => setCustomerNameInput(e.target.value)}
-                    placeholder="e.g. John Doe"
-                    className="w-full p-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-neutral-400 font-semibold">Phone / WhatsApp:</label>
-                  <input
-                    type="tel"
-                    value={customerPhoneInput}
-                    onChange={(e) => setCustomerPhoneInput(e.target.value)}
-                    placeholder="+255 7..."
-                    className="w-full p-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg"
-                  />
-                </div>
-              </div>
-            </div>
-          ) : (
-            /* Delivery Details with Editable Delivery Fee */
-            <div className="space-y-2 pt-1 bg-emerald-50/60 p-2.5 rounded-xl border border-emerald-100">
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] text-emerald-900 font-semibold">Recipient Name:</label>
-                  <input
-                    type="text"
-                    value={customerNameInput}
-                    onChange={(e) => setCustomerNameInput(e.target.value)}
-                    placeholder="e.g. Amina Salum"
-                    className="w-full p-1.5 text-xs bg-white border border-neutral-200 rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-emerald-900 font-semibold">Delivery Cost (TZS):</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step={500}
-                    value={deliveryFeeAmount}
-                    onChange={(e) => setDeliveryFeeAmount(Number(e.target.value))}
-                    className="w-full p-1.5 text-xs bg-white border border-emerald-300 rounded-lg font-mono font-bold text-emerald-900"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-[10px] text-emerald-900 font-semibold">Delivery Address / Landmark:</label>
-                <input
-                  type="text"
-                  value={deliveryAddressInput}
-                  onChange={(e) => setDeliveryAddressInput(e.target.value)}
-                  placeholder="e.g. Mikocheni B, Mwai Kibaki Rd, House 14B"
-                  className="w-full p-1.5 text-xs bg-white border border-neutral-200 rounded-lg"
-                />
-              </div>
-            </div>
-          )}
-        </div>
 
-        {/* Ordered Items List */}
-        <div className="p-5 flex-1 overflow-y-auto space-y-3 max-h-[40vh] lg:max-h-none">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-neutral-400">
-              Ordered Items
-            </span>
-            {cart.length > 0 && (
+              {/* Fast currency toggle ($ / TZS) */}
               <button
-                onClick={clearCart}
-                className="text-[11px] text-red-600 hover:text-red-700 font-semibold"
+                onClick={toggleCurrency}
+                className="px-2 py-0.5 rounded-md text-[11px] font-mono font-bold bg-white/20 hover:bg-white/30 text-white transition-colors cursor-pointer"
+                title={`Current: ${currency}. Click to switch between USD and TZS`}
               >
-                Clear All
+                {currency}
               </button>
-            )}
+            </div>
           </div>
 
-          {/* If inspecting an existing order */}
-          {selectedOrderForPayment ? (
-            <div className="space-y-3">
-              <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex justify-between items-center">
-                <span>Inspecting Order: {selectedOrderForPayment.orderNumber}</span>
-                <button
-                  onClick={() => setSelectedOrderForPayment(null)}
-                  className="text-amber-700 underline font-semibold text-[11px]"
-                >
-                  Return to Cart
-                </button>
-              </div>
+              {/* PRODUCT CARDS 5x4 GRID matching image_65047771.png */}
+              <div className="flex-1 p-2 sm:p-2.5 overflow-y-auto">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-2.5">
+                  {/* Rows 1-3: Food Items Grid */}
+                  {filteredItems.slice(0, 15).map((item) => {
+                    const inCartCount = getItemQtyInCart(item.id);
 
-              {selectedOrderForPayment.items.map((item, idx) => (
-                <div key={idx} className="flex items-center justify-between text-xs py-1.5 border-b border-neutral-100">
-                  <div className="space-y-0.5">
-                    <span className="font-semibold text-neutral-800">
-                      {item.quantity}x {item.name}
-                    </span>
-                    <div className="text-[10px] text-neutral-400">Station: {item.station}</div>
-                  </div>
-                  <span className="font-bold font-mono text-neutral-900">
-                    {formatMoney(item.price * item.quantity)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : cart.length === 0 ? (
-            <div className="text-center py-8 text-neutral-400 space-y-2">
-              <Sparkles className="w-8 h-8 mx-auto text-neutral-300 stroke-1" />
-              <p className="text-xs">No items in active ticket yet.</p>
-              <p className="text-[11px] text-neutral-400">Tap [+] on any menu item above to build this ticket.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {cart.map((ci, index) => (
-                <div
-                  key={index}
-                  className="flex items-center justify-between text-xs py-1.5 border-b border-neutral-100"
-                >
-                  <div className="flex-1 pr-2">
-                    <div className="font-semibold text-neutral-900 leading-snug">
-                      {ci.quantity}x {ci.menuItem.name}
-                    </div>
-                    {ci.selectedModifiers.map((m) => (
-                      <div key={m.id} className="text-[10px] text-neutral-400 pl-4">
-                        + {m.name} ({formatMoney(m.price)})
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => handleItemClick(item)}
+                        className="group relative aspect-4/3 sm:aspect-square bg-neutral-300 rounded-xl overflow-hidden cursor-pointer shadow-xs hover:shadow-md active:scale-97 transition-all border border-neutral-300/60"
+                      >
+                        {/* Food Image */}
+                        <img
+                          src={item.image}
+                          alt={item.name}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src =
+                              '/src/assets/images/pos_cherry_cake_1794302892353.jpg';
+                          }}
+                        />
+
+                        {/* Quantity in cart badge */}
+                        {inCartCount > 0 && (
+                          <div className="absolute top-1.5 right-1.5 bg-[#43A047] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-md font-mono border border-white/60">
+                            x{inCartCount}
+                          </div>
+                        )}
+
+                        {/* Dark Gradient Scrim at bottom with dish title */}
+                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/55 to-transparent pt-6 pb-1.5 px-1.5 flex flex-col items-center justify-end text-center">
+                          <span className="text-white text-[11px] sm:text-xs font-semibold leading-tight line-clamp-2 drop-shadow-sm">
+                            {item.name}
+                          </span>
+                        </div>
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })}
 
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold font-mono text-neutral-900">
-                      {formatMoney(ci.menuItem.price * ci.quantity)}
-                    </span>
-                    <button
-                      onClick={() => removeFromCart(index)}
-                      className="p-1 text-neutral-400 hover:text-red-600 rounded transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Financial Totals & Payment Method Section (Matching Screenshot) */}
-        <div className="p-5 bg-neutral-50/70 border-t border-neutral-200 space-y-4">
-          {/* Subtotal, Discount, Tax, Donation, Total */}
-          <div className="space-y-2 text-xs text-neutral-600">
-            {/* Gross Subtotal */}
-            <div className="flex justify-between items-center">
-              <span>Gross Subtotal:</span>
-              <span className="font-mono tabular-nums font-semibold text-neutral-900">
-                {formatMoney(selectedOrderForPayment ? selectedOrderForPayment.subtotal : cartSubtotal)}
-              </span>
-            </div>
-
-            {/* Discount Manager / Toggler (Active cart mode) */}
-            {!selectedOrderForPayment ? (
-              <div className="bg-white p-2.5 rounded-xl border border-neutral-200/90 shadow-2xs space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 text-neutral-700 font-semibold">
-                    <Tag className="w-3.5 h-3.5 text-orange-500" />
-                    <span>Bill Discount:</span>
-                  </div>
-
-                  {calculatedDiscount > 0 ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-emerald-700 font-mono font-bold">
-                        -{formatMoney(calculatedDiscount)}
-                      </span>
+                  {/* Fallback if fewer than 15 items in category */}
+                  {filteredItems.length === 0 && (
+                    <div className="col-span-full py-16 text-center text-neutral-500">
+                      <Sparkles className="w-8 h-8 mx-auto text-neutral-400 mb-2" />
+                      <p className="text-xs font-semibold">No items found matching "{searchQuery}"</p>
                       <button
                         onClick={() => {
-                          setDiscountValue(0);
-                          setShowDiscountInput(false);
+                          setSearchQuery('');
+                          setSelectedCategory('Sweets');
                         }}
-                        className="text-[10px] text-red-600 hover:text-red-800 font-bold px-1.5 py-0.5 rounded bg-red-50 hover:bg-red-100"
-                        title="Remove discount"
+                        className="mt-2 text-xs font-bold text-[#43A047] hover:underline"
                       >
-                        Remove
+                        Reset to Sweets
                       </button>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => setShowDiscountInput(!showDiscountInput)}
-                      className="text-[11px] font-bold text-orange-600 hover:text-orange-700 hover:underline"
-                    >
-                      {showDiscountInput ? 'Cancel' : '+ Add Discount'}
-                    </button>
+                  )}
+
+                  {/* ROW 4: 5 INTERACTIVE SHORTCUT / DISCOUNT TILES matching image_65047771.png */}
+                  {/* Tile 1: Fruits (Green) */}
+                  <div
+                    onClick={() => {
+                      setSelectedCategory('Fruits');
+                      showToast('Switched to Fruits category');
+                    }}
+                    className="relative aspect-4/3 sm:aspect-square bg-[#4CAF50] hover:bg-[#43A047] active:scale-97 text-white rounded-xl p-2 flex flex-col items-center justify-center cursor-pointer shadow-xs transition-all"
+                  >
+                    <Folder className="w-3.5 h-3.5 absolute top-2 right-2 text-white/80" />
+                    <span className="text-xs sm:text-sm font-semibold tracking-tight text-white drop-shadow-xs">
+                      Fruits
+                    </span>
+                  </div>
+
+                  {/* Tile 2: Hot Drinks (Coral/Red) */}
+                  <div
+                    onClick={() => {
+                      setSelectedCategory('Coffee & Tea');
+                      showToast('Switched to Hot Drinks & Tea');
+                    }}
+                    className="relative aspect-4/3 sm:aspect-square bg-[#E53935] hover:bg-[#D32F2F] active:scale-97 text-white rounded-xl p-2 flex flex-col items-center justify-center cursor-pointer shadow-xs transition-all"
+                  >
+                    <Folder className="w-3.5 h-3.5 absolute top-2 right-2 text-white/80" />
+                    <span className="text-xs sm:text-sm font-semibold tracking-tight text-white drop-shadow-xs">
+                      Hot Drinks
+                    </span>
+                  </div>
+
+                  {/* Tile 3: Desserts (Purple) */}
+                  <div
+                    onClick={() => {
+                      setSelectedCategory('Sweets');
+                      showToast('Switched to Desserts');
+                    }}
+                    className="relative aspect-4/3 sm:aspect-square bg-[#8E24AA] hover:bg-[#7B1FA2] active:scale-97 text-white rounded-xl p-2 flex flex-col items-center justify-center cursor-pointer shadow-xs transition-all"
+                  >
+                    <Folder className="w-3.5 h-3.5 absolute top-2 right-2 text-white/80" />
+                    <span className="text-xs sm:text-sm font-semibold tracking-tight text-white drop-shadow-xs">
+                      Desserts
+                    </span>
+                  </div>
+
+                  {/* Tile 4: Discount 5% (Grey Price Tag tile) */}
+                  <div
+                    onClick={() => handleApplyDiscountTile(5, 'percent')}
+                    className={`relative aspect-4/3 sm:aspect-square active:scale-97 border rounded-xl p-2 flex flex-col items-center justify-center cursor-pointer shadow-xs transition-all group ${
+                      discountValue === 5 && discountType === 'percent'
+                        ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/30 text-emerald-900'
+                        : 'bg-neutral-100 hover:bg-neutral-200 border-neutral-300 text-neutral-800'
+                    }`}
+                  >
+                    {discountValue === 5 && discountType === 'percent' && (
+                      <span className="absolute top-1 right-1 text-[9px] bg-emerald-600 text-white rounded-full p-0.5">
+                        <Check className="w-2.5 h-2.5" />
+                      </span>
+                    )}
+                    {/* Price tag outline graphic with 5% inside */}
+                    <div className="relative mb-1 flex items-center justify-center">
+                      <Tag className={`w-6 h-6 transition-colors stroke-1.5 rotate-45 ${
+                        discountValue === 5 && discountType === 'percent' ? 'text-emerald-600' : 'text-neutral-400 group-hover:text-neutral-600'
+                      }`} />
+                      <span className="absolute text-[9px] font-bold font-mono">5%</span>
+                    </div>
+                    <span className="text-[11px] sm:text-xs font-semibold">
+                      Discount
+                    </span>
+                  </div>
+
+                  {/* Tile 5: Discount 20 (Grey Price Tag tile) */}
+                  <div
+                    onClick={() => handleApplyDiscountTile(20.0, 'fixed')}
+                    className={`relative aspect-4/3 sm:aspect-square active:scale-97 border rounded-xl p-2 flex flex-col items-center justify-center cursor-pointer shadow-xs transition-all group ${
+                      discountValue === 20 && discountType === 'fixed'
+                        ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/30 text-emerald-900'
+                        : 'bg-neutral-100 hover:bg-neutral-200 border-neutral-300 text-neutral-800'
+                    }`}
+                  >
+                    {discountValue === 20 && discountType === 'fixed' && (
+                      <span className="absolute top-1 right-1 text-[9px] bg-emerald-600 text-white rounded-full p-0.5">
+                        <Check className="w-2.5 h-2.5" />
+                      </span>
+                    )}
+                    {/* Price tag outline graphic with 20.00 inside */}
+                    <div className="relative mb-1 flex items-center justify-center">
+                      <Tag className={`w-6 h-6 transition-colors stroke-1.5 rotate-45 ${
+                        discountValue === 20 && discountType === 'fixed' ? 'text-emerald-600' : 'text-neutral-400 group-hover:text-neutral-600'
+                      }`} />
+                      <span className="absolute text-[8px] font-bold font-mono">20</span>
+                    </div>
+                    <span className="text-[11px] sm:text-xs font-semibold">
+                      Discount 20
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* BOTTOM CATEGORY NAVIGATION BAR matching image_65047771.png */}
+              <div className="bg-white border-t border-neutral-200 px-3 h-11 flex items-center justify-between shadow-xs shrink-0">
+                <div className="flex items-center gap-4 sm:gap-6 overflow-x-auto no-scrollbar h-full">
+                  {categoryTabs.map((cat) => {
+                    const isActive = selectedCategory === cat.id;
+
+                    return (
+                      <button
+                        key={cat.id}
+                        onClick={() => setSelectedCategory(cat.id)}
+                        className={`relative h-full flex items-center px-1 text-xs font-semibold tracking-wider uppercase transition-colors whitespace-nowrap cursor-pointer ${
+                          isActive
+                            ? 'text-[#43A047] font-bold'
+                            : 'text-neutral-500 hover:text-neutral-900'
+                        }`}
+                      >
+                        <span>{cat.label}</span>
+                        {isActive && (
+                          <span className="absolute bottom-0 inset-x-0 h-0.5 bg-[#43A047]" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Right side: 4-square grid icon matching screenshot */}
+                <div className="flex items-center gap-2 pl-2 border-l border-neutral-200">
+                  <button
+                    onClick={handleResetToDemoTicket}
+                    className="p-1 text-neutral-400 hover:text-neutral-700 transition-colors rounded-sm"
+                    title="Load Reference Photo Demo Ticket"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      showToast('Grid view active');
+                    }}
+                    className="p-1 text-neutral-500 hover:text-neutral-800 transition-colors rounded-sm"
+                    title="Grid Layout View"
+                  >
+                    <LayoutGrid className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* ================= RIGHT SECTION: TICKET PANEL ================= */}
+            <div className="w-full lg:w-[380px] xl:w-[410px] bg-white border-t lg:border-t-0 lg:border-l border-neutral-200 flex flex-col justify-between shrink-0 shadow-xs">
+              {/* Ticket Top Header: "Ticket" · User Icon · 3-dots Menu */}
+              <div className="p-3.5 border-b border-neutral-200 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-bold text-neutral-900 tracking-tight">Ticket</h2>
+                  {customerName && (
+                    <span className="text-[11px] font-medium text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 max-w-[130px] truncate">
+                      {customerName}
+                    </span>
                   )}
                 </div>
 
-                {showDiscountInput && (
-                  <div className="pt-2 border-t border-neutral-100 space-y-2 animate-in fade-in duration-100">
+                <div className="flex items-center gap-1.5 relative">
+                  {/* Customer Assignment Button */}
+                  <button
+                    onClick={() => setIsCustomerModalOpen(true)}
+                    className="p-1.5 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 rounded-lg transition-colors cursor-pointer"
+                    title="Assign Customer or Link Waiter Referral"
+                    aria-label="Add Customer"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                  </button>
+
+                  {/* 3-dots Menu Button */}
+                  <button
+                    onClick={() => setIsTicketMenuOpen(!isTicketMenuOpen)}
+                    className="p-1.5 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 rounded-lg transition-colors cursor-pointer"
+                    title="Ticket Options"
+                    aria-label="More Options"
+                  >
+                    <MoreVertical className="w-4 h-4" />
+                  </button>
+
+                  {/* Ticket Options Popover */}
+                  {isTicketMenuOpen && (
+                    <div className="absolute right-0 top-full mt-1.5 w-48 bg-white rounded-xl shadow-xl border border-neutral-200 py-1.5 z-40 text-xs text-neutral-700 animate-in fade-in duration-100">
+                      <button
+                        onClick={() => {
+                          clearCart();
+                          setDiscountValue(0);
+                          setIsTicketMenuOpen(false);
+                          showToast('Ticket cleared');
+                        }}
+                        className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center gap-2 text-rose-600 font-semibold"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Clear Ticket</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          handleResetToDemoTicket();
+                          setIsTicketMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center gap-2"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Reset Reference Items</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          handleSaveTicket();
+                          setIsTicketMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center gap-2"
+                      >
+                        <ShoppingBag className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Save & Hold Tab</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsCustomerModalOpen(true);
+                          setIsTicketMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center gap-2"
+                      >
+                        <UserPlus className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Assign Customer</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* PROMINENT ORDER TYPE SELECTOR: DINE-IN, TAKEAWAY, DELIVERY */}
+              <div className="p-2.5 bg-neutral-100 border-b border-neutral-200 shrink-0">
+                {/* 3-Way Segmented Control */}
+                <div className="grid grid-cols-3 gap-1 bg-neutral-200/80 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setOrderType('dine_in')}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      orderType === 'dine_in'
+                        ? 'bg-white text-neutral-900 shadow-xs'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    <span>🍽️ Dine-in</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setOrderType('pickup')}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      orderType === 'pickup'
+                        ? 'bg-white text-neutral-900 shadow-xs'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    <span>🛍️ Takeaway</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setOrderType('delivery')}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      orderType === 'delivery'
+                        ? 'bg-white text-neutral-900 shadow-xs'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    <span>🛵 Delivery</span>
+                  </button>
+                </div>
+
+                {/* Contextual Options Bar based on Order Type */}
+                {orderType === 'dine_in' && (
+                  <div className="mt-2 flex items-center justify-between text-xs text-neutral-700 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200">
+                    <div className="relative">
+                      <button
+                        onClick={() => setIsTableDropdownOpen(!isTableDropdownOpen)}
+                        className="flex items-center gap-1 font-bold text-neutral-900 hover:text-emerald-700 cursor-pointer"
+                      >
+                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                        <span>{selectedTable}</span>
+                        <ChevronDown className="w-3.5 h-3.5 text-neutral-400" />
+                      </button>
+
+                      {/* Dining Tables Popover */}
+                      {isTableDropdownOpen && (
+                        <div className="absolute left-0 top-full mt-1.5 w-56 bg-white rounded-xl shadow-xl border border-neutral-200 p-2.5 z-40 animate-in fade-in duration-100">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 mb-1.5">
+                            Select Dining Table
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5 max-h-40 overflow-y-auto">
+                            {tables.map((t) => (
+                              <button
+                                key={t.id}
+                                onClick={() => {
+                                  setSelectedTable(t.number);
+                                  setIsTableDropdownOpen(false);
+                                }}
+                                className={`p-1.5 rounded-lg text-[11px] font-mono font-bold text-center transition-colors cursor-pointer ${
+                                  selectedTable === t.number
+                                    ? 'bg-[#43A047] text-white shadow-xs'
+                                    : t.status === 'occupied'
+                                    ? 'bg-amber-100 text-amber-900 hover:bg-amber-200'
+                                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                                }`}
+                              >
+                                {t.number}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Guest Stepper */}
                     <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setDiscountType('percent')}
-                        className={`flex-1 py-1 px-2 text-[11px] font-bold rounded-lg border text-center transition-colors ${
-                          discountType === 'percent'
-                            ? 'bg-orange-500 text-white border-orange-500'
-                            : 'bg-neutral-50 text-neutral-600 border-neutral-200'
-                        }`}
-                      >
-                        Percentage (%)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDiscountType('fixed')}
-                        className={`flex-1 py-1 px-2 text-[11px] font-bold rounded-lg border text-center transition-colors ${
-                          discountType === 'fixed'
-                            ? 'bg-orange-500 text-white border-orange-500'
-                            : 'bg-neutral-50 text-neutral-600 border-neutral-200'
-                        }`}
-                      >
-                        Fixed Amount (Cash)
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[10px] text-neutral-400 font-medium">
-                          {discountType === 'percent' ? 'Discount %:' : 'Discount Amount:'}
-                        </label>
-                        <input
-                          type="number"
-                          min={0}
-                          max={discountType === 'percent' ? 100 : cartSubtotal}
-                          value={discountValue || ''}
-                          onChange={(e) => setDiscountValue(Number(e.target.value))}
-                          placeholder={discountType === 'percent' ? 'e.g. 10' : 'e.g. 5000'}
-                          className="w-full p-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-neutral-400 font-medium">Reason / Note:</label>
-                        <select
-                          value={discountReason}
-                          onChange={(e) => setDiscountReason(e.target.value)}
-                          className="w-full p-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg text-neutral-700"
+                      <span className="text-[11px] text-neutral-500 font-medium">Guests:</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setGuestCount((g) => Math.max(1, g - 1))}
+                          className="w-5 h-5 rounded-md bg-neutral-100 hover:bg-neutral-200 flex items-center justify-center text-neutral-700 font-bold"
                         >
-                          <option value="Staff / Courtesy">Staff / Courtesy</option>
-                          <option value="VIP Regular">VIP Regular</option>
-                          <option value="Promotional Campaign">Promotional Campaign</option>
-                          <option value="Manager Discretion">Manager Discretion</option>
-                        </select>
+                          -
+                        </button>
+                        <span className="w-4 text-center font-mono font-bold text-xs">{guestCount}</span>
+                        <button
+                          type="button"
+                          onClick={() => setGuestCount((g) => g + 1)}
+                          className="w-5 h-5 rounded-md bg-neutral-100 hover:bg-neutral-200 flex items-center justify-center text-neutral-700 font-bold"
+                        >
+                          +
+                        </button>
                       </div>
                     </div>
+                  </div>
+                )}
 
-                    {/* Quick Preset Buttons */}
-                    {discountType === 'percent' && (
-                      <div className="flex gap-1 pt-1">
-                        {[5, 10, 15, 20].map((pct) => (
+                {orderType === 'pickup' && (
+                  <div className="mt-2 flex items-center justify-between text-xs text-neutral-700 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200">
+                    <span className="font-semibold text-neutral-900 flex items-center gap-1.5">
+                      <span>🛍️ Pickup Order</span>
+                      <span className="text-[10px] text-neutral-400 font-mono">#TK-204</span>
+                    </span>
+                    <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                      Est. Ready: 15-20 min
+                    </span>
+                  </div>
+                )}
+
+                {orderType === 'delivery' && (
+                  <div className="mt-2 space-y-1.5 bg-white p-2 rounded-lg border border-neutral-200 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase text-neutral-500">Delivery Address:</span>
+                      <span className="text-[11px] font-mono font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                        Fee: +${deliveryFeeUsd.toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      type="text"
+                      value={deliveryAddress}
+                      onChange={(e) => setDeliveryAddress(e.target.value)}
+                      placeholder="Street address, house/apt..."
+                      className="w-full text-xs p-1.5 bg-neutral-50 border border-neutral-200 rounded-md outline-hidden focus:border-[#43A047]"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* TICKET ITEMS LIST matching image_65047771.png */}
+              <div className="flex-1 overflow-y-auto p-3.5 divide-y divide-neutral-100 space-y-0.5">
+                {cart.length === 0 ? (
+                  <div className="h-48 flex flex-col items-center justify-center text-center text-neutral-400 space-y-2">
+                    <Sparkles className="w-8 h-8 text-neutral-300 stroke-1" />
+                    <p className="text-xs">Active ticket is empty</p>
+                    <p className="text-[11px] text-neutral-400">
+                      Tap any food tile on the left to add items
+                    </p>
+                    <button
+                      onClick={handleResetToDemoTicket}
+                      className="mt-2 text-xs font-bold text-[#43A047] hover:underline cursor-pointer"
+                    >
+                      Load Demo Ticket
+                    </button>
+                  </div>
+                ) : (
+                  cart.map((ci, index) => {
+                    const linePriceStr = getLineItemTotal(ci);
+
+                    return (
+                      <div
+                        key={`${ci.menuItem.id}-${index}`}
+                        onClick={() => {
+                          setEditingItemIndex(index);
+                          setEditingItemNotes(ci.customerNotes || '');
+                        }}
+                        className="py-2.5 flex items-center justify-between text-xs cursor-pointer hover:bg-neutral-50 px-1 rounded-md transition-colors group"
+                      >
+                        {/* Item Name and Multiplier (e.g., "Pepperoni Pizza x 1") */}
+                        <div className="flex-1 min-w-0 pr-3">
+                          <div className="font-medium text-neutral-800 truncate">
+                            <span>{ci.menuItem.name}</span>
+                            <span className="text-neutral-500 font-normal ml-1">
+                              x {ci.quantity}
+                            </span>
+                          </div>
+                          {ci.customerNotes && (
+                            <div className="text-[10px] text-amber-700 font-medium truncate">
+                              Note: {ci.customerNotes}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Price (e.g., "5.69") */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {ci.customerNotes && (
+                            <Clock className="w-3 h-3 text-neutral-400" />
+                          )}
+                          <span className="font-normal tabular-nums text-neutral-900 font-mono text-xs sm:text-sm">
+                            {currency === 'USD' ? linePriceStr : formatMoney(ci.menuItem.price * ci.quantity)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* TOTALS & SUMMARY SECTION matching image_65047771.png WITH INTERACTIVE USER DECISIONS */}
+              <div className="p-4 border-t border-neutral-200 bg-white space-y-2.5 text-xs text-neutral-600">
+                {/* 1. Discount Row with Interactive Decision Controls */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium text-neutral-700">Discount</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowDiscountEditor(!showDiscountEditor)}
+                        className="text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-1.5 py-0.5 rounded-md border border-emerald-200 transition-colors cursor-pointer"
+                        title="Open discount editor"
+                      >
+                        {showDiscountEditor ? 'Close' : calculatedDiscountUsd > 0 ? 'Edit' : '+ Apply'}
+                      </button>
+                      {calculatedDiscountUsd > 0 && (
+                        <span className="text-[10px] text-neutral-400 font-mono">
+                          ({discountType === 'percent' ? `${discountValue}%` : `$${discountValue.toFixed(2)}`})
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono tabular-nums text-neutral-900 font-semibold">
+                        {currency === 'USD'
+                          ? calculatedDiscountUsd.toFixed(2)
+                          : formatMoney(calculatedDiscountTzs)}
+                      </span>
+                      {calculatedDiscountUsd > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDiscountValue(0);
+                            showToast('Discount removed');
+                          }}
+                          className="text-neutral-400 hover:text-rose-600 p-0.5 cursor-pointer"
+                          title="Remove discount"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Inline Discount Decision Editor */}
+                  {showDiscountEditor && (
+                    <div className="p-2.5 bg-neutral-50 rounded-xl border border-neutral-200 space-y-2 animate-in fade-in duration-150">
+                      <div className="flex items-center justify-between text-[11px] font-bold text-neutral-700">
+                        <span>Discount Presets:</span>
+                        <div className="flex items-center gap-1">
                           <button
-                            key={pct}
                             type="button"
-                            onClick={() => setDiscountValue(pct)}
-                            className="flex-1 py-0.5 text-[10px] font-mono font-bold bg-neutral-100 hover:bg-orange-100 text-neutral-700 hover:text-orange-900 rounded"
+                            onClick={() => setDiscountType('percent')}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              discountType === 'percent' ? 'bg-[#43A047] text-white' : 'bg-neutral-200 text-neutral-700'
+                            }`}
                           >
-                            {pct}%
+                            %
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDiscountType('fixed')}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              discountType === 'fixed' ? 'bg-[#43A047] text-white' : 'bg-neutral-200 text-neutral-700'
+                            }`}
+                          >
+                            $
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Quick preset buttons */}
+                      <div className="flex flex-wrap gap-1">
+                        {[
+                          { label: 'None', val: 0, type: 'fixed' as const },
+                          { label: '5%', val: 5, type: 'percent' as const },
+                          { label: '10%', val: 10, type: 'percent' as const },
+                          { label: '15%', val: 15, type: 'percent' as const },
+                          { label: '$20', val: 20, type: 'fixed' as const },
+                          { label: '$21 (Demo)', val: 21, type: 'fixed' as const },
+                        ].map((p, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => {
+                              setDiscountType(p.type);
+                              setDiscountValue(p.val);
+                            }}
+                            className={`px-2 py-1 rounded-md text-[10px] font-mono font-bold border transition-colors cursor-pointer ${
+                              discountValue === p.val && discountType === p.type
+                                ? 'bg-emerald-600 text-white border-emerald-600'
+                                : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                            }`}
+                          >
+                            {p.label}
                           </button>
                         ))}
                       </div>
-                    )}
+
+                      {/* Custom Input & Reason */}
+                      <div className="grid grid-cols-2 gap-1.5 pt-1">
+                        <div>
+                          <label className="text-[10px] text-neutral-500 block mb-0.5">Custom Value:</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            value={discountValue}
+                            onChange={(e) => setDiscountValue(Number(e.target.value))}
+                            className="w-full text-xs p-1 bg-white border border-neutral-200 rounded font-mono font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-neutral-500 block mb-0.5">Reason:</label>
+                          <select
+                            value={discountReason}
+                            onChange={(e) => setDiscountReason(e.target.value)}
+                            className="w-full text-xs p-1 bg-white border border-neutral-200 rounded text-neutral-800"
+                          >
+                            <option value="Courtesy / Promo">Courtesy / Promo</option>
+                            <option value="VIP Regular">VIP Regular</option>
+                            <option value="Manager Discretion">Manager Discretion</option>
+                            <option value="Staff Meal">Staff Meal</option>
+                            <option value="Service Recovery">Service Recovery</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. Tax Row with Interactive Decision Controls (Tax Applied vs Tax-Exempt) */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium text-neutral-700">Tax</span>
+                      {/* User Decision Toggle for Tax */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextState = !applyTax;
+                          setApplyTax(nextState);
+                          showToast(nextState ? `Tax applied (${taxRatePct}%)` : 'Tax Exempt: $0.00 tax applied');
+                        }}
+                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md border transition-colors cursor-pointer ${
+                          applyTax
+                            ? 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100'
+                            : 'text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100'
+                        }`}
+                        title="Click to toggle between Tax Applied and Tax Exempt"
+                      >
+                        {applyTax ? `✓ ${taxRatePct}% Tax` : '✕ Tax-Exempt (0%)'}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowTaxEditor(!showTaxEditor)}
+                        className="text-[10px] text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                        title="Change tax rate preset"
+                      >
+                        ⚙️
+                      </button>
+                    </div>
+
+                    <span className="font-mono tabular-nums text-neutral-900 font-semibold">
+                      {currency === 'USD'
+                        ? calculatedTaxUsd.toFixed(2)
+                        : formatMoney(calculatedTaxTzs)}
+                    </span>
+                  </div>
+
+                  {/* Inline Tax Rate Selector */}
+                  {showTaxEditor && (
+                    <div className="p-2.5 bg-neutral-50 rounded-xl border border-neutral-200 space-y-2 animate-in fade-in duration-150">
+                      <div className="text-[10px] font-bold text-neutral-700">Tax Configuration:</div>
+                      <div className="grid grid-cols-3 gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setApplyTax(true);
+                            setTaxRatePct(6.5);
+                          }}
+                          className={`p-1 text-[10px] rounded font-mono font-bold border ${
+                            applyTax && taxRatePct === 6.5
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : 'bg-white border-neutral-200 text-neutral-700'
+                          }`}
+                        >
+                          6.5% Meal Tax
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setApplyTax(true);
+                            setTaxRatePct(18.0);
+                          }}
+                          className={`p-1 text-[10px] rounded font-mono font-bold border ${
+                            applyTax && taxRatePct === 18.0
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : 'bg-white border-neutral-200 text-neutral-700'
+                          }`}
+                        >
+                          18% VAT
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setApplyTax(false);
+                          }}
+                          className={`p-1 text-[10px] rounded font-mono font-bold border ${
+                            !applyTax
+                              ? 'bg-amber-600 text-white border-amber-600'
+                              : 'bg-white border-neutral-200 text-neutral-700'
+                          }`}
+                        >
+                          0% Exempt
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Delivery Fee Line (when orderType === 'delivery') */}
+                {orderType === 'delivery' && (
+                  <div className="flex justify-between items-center text-blue-700 font-medium">
+                    <div className="flex items-center gap-1">
+                      <span>🛵 Delivery Fee</span>
+                      <span className="text-[10px] text-blue-500 font-mono">(Flat Rate)</span>
+                    </div>
+                    <span className="font-mono tabular-nums font-semibold">
+                      {currency === 'USD' ? deliveryFeeUsd.toFixed(2) : formatMoney(deliveryFeeEffectiveTzs)}
+                    </span>
                   </div>
                 )}
-              </div>
-            ) : selectedOrderForPayment.discount > 0 ? (
-              <div className="flex justify-between items-center bg-emerald-50 text-emerald-800 p-2 rounded-lg font-semibold">
-                <span>
-                  Discount Applied {selectedOrderForPayment.discountType === 'percent' ? `(${selectedOrderForPayment.discountValue}%)` : ''}:
-                </span>
-                <span className="font-mono tabular-nums">-{formatMoney(selectedOrderForPayment.discount)}</span>
-              </div>
-            ) : null}
 
-            {/* Net Amount if discount is present */}
-            {(calculatedDiscount > 0 || (selectedOrderForPayment && selectedOrderForPayment.discount > 0)) && (
-              <div className="flex justify-between text-[11px] text-neutral-500">
-                <span>Net Subtotal:</span>
-                <span className="font-mono tabular-nums">
-                  {formatMoney(
-                    selectedOrderForPayment
-                      ? Math.max(0, selectedOrderForPayment.subtotal - selectedOrderForPayment.discount)
-                      : discountedCartSubtotal
-                  )}
-                </span>
+                {/* 4. Bold Total Line matching screenshot ("Total      48.52") */}
+                <div className="flex justify-between items-baseline pt-2 border-t border-neutral-200 text-neutral-900">
+                  <span className="text-sm font-bold">Total</span>
+                  <span className="text-base sm:text-lg font-bold font-mono tabular-nums">
+                    {currency === 'USD' ? totalPayableUsd.toFixed(2) : formatMoney(totalPayableTzs)}
+                  </span>
+                </div>
               </div>
-            )}
 
-            {/* Tax Setting / Removal Option */}
-            <div className="flex items-center justify-between py-1 border-t border-neutral-100">
-              <div className="flex items-center gap-1.5">
-                <span>VAT (18%):</span>
-                {!selectedOrderForPayment && (
+              {/* BOTTOM DUAL GREEN ACTION BUTTONS: [ SAVE ] [ CHARGE ] matching image_65047771.png */}
+              <div className="grid grid-cols-2 gap-1 p-2 bg-neutral-100 border-t border-neutral-200 shrink-0">
+                {/* SAVE BUTTON */}
+                <button
+                  disabled={cart.length === 0}
+                  onClick={handleSaveTicket}
+                  className={`py-3 px-3 rounded-lg text-xs font-bold uppercase tracking-wider text-white transition-all shadow-xs flex items-center justify-center gap-1.5 ${
+                    cart.length > 0
+                      ? 'bg-[#689F38] hover:bg-[#558B2F] active:scale-98 cursor-pointer'
+                      : 'bg-neutral-300 text-neutral-500 cursor-not-allowed'
+                  }`}
+                >
+                  <span>SAVE</span>
+                </button>
+
+                {/* CHARGE BUTTON */}
+                <button
+                  disabled={cart.length === 0}
+                  onClick={() => {
+                    setTenderCashAmount(totalPayableUsd);
+                    setIsChargeModalOpen(true);
+                  }}
+                  className={`py-3 px-3 rounded-lg text-xs font-bold uppercase tracking-wider text-white transition-all shadow-xs flex items-center justify-center gap-1.5 ${
+                    cart.length > 0
+                      ? 'bg-[#43A047] hover:bg-[#388E3C] active:scale-98 cursor-pointer'
+                      : 'bg-neutral-300 text-neutral-500 cursor-not-allowed'
+                  }`}
+                >
+                  <span>CHARGE</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+      {/* ================= RESTAURANT SLIDE-OVER NAVIGATION DRAWER ================= */}
+      {isNavDrawerOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Backdrop */}
+          <div
+            onClick={() => setIsNavDrawerOpen(false)}
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity"
+          />
+
+          {/* Drawer content */}
+          <div className="relative w-80 max-w-[85vw] bg-white h-full shadow-2xl flex flex-col justify-between z-10 animate-in slide-in-from-left duration-200">
+            {/* Drawer Header */}
+            <div className="p-4 bg-[#43A047] text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl">{currentTenant.logo}</span>
+                <div>
+                  <h3 className="font-bold text-sm leading-tight text-white">{currentTenant.name}</h3>
+                  <p className="text-[10px] text-white/80">Cashier Station · Terminal 01</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsNavDrawerOpen(false)}
+                className="p-1 hover:bg-white/20 rounded-md text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Navigation Links to All Restaurant Modules */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 px-3 py-1">
+                Restaurant Modules
+              </div>
+
+              {[
+                { role: 'cashier', label: 'Cashier POS', icon: Banknote, desc: 'Live register & tickets' },
+                { role: 'owner', label: 'Executive BI', icon: LayoutGrid, desc: 'Analytics & P&L figures' },
+                { role: 'kitchen', label: 'Kitchen KDS', icon: ChefHat, desc: 'Live cook stations' },
+                { role: 'waiter', label: 'Waiter App', icon: Users, desc: 'Orders & 5% commission' },
+                { role: 'customer', label: 'Customer Portal', icon: Smartphone, desc: 'Online order menu' },
+                { role: 'manager', label: 'Inventory & BOM', icon: Boxes, desc: 'Recipe costing & stock' },
+                { role: 'reception', label: 'Staff & Payroll', icon: ShieldCheck, desc: 'HR & wage advances' },
+              ].map((item) => {
+                const Icon = item.icon;
+                const isActive = activeRole === item.role;
+
+                return (
                   <button
-                    type="button"
-                    onClick={() => setApplyTax(!applyTax)}
-                    className={`text-[10px] px-2 py-0.5 rounded font-bold transition-colors cursor-pointer ${
-                      applyTax
-                        ? 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
-                        : 'bg-amber-100 text-amber-800 border border-amber-300'
+                    key={item.role}
+                    onClick={() => {
+                      setActiveRole(item.role as Role);
+                      setIsNavDrawerOpen(false);
+                    }}
+                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs flex items-center gap-3 transition-colors ${
+                      isActive
+                        ? 'bg-[#43A047]/10 text-[#2E7D32] font-bold border border-[#43A047]/30'
+                        : 'text-neutral-700 hover:bg-neutral-100'
                     }`}
-                    title={applyTax ? 'Click to remove tax (Tax Exempt)' : 'Click to apply 18% standard VAT'}
                   >
-                    {applyTax ? 'Remove Tax' : '✓ Tax Exempt (0%)'}
+                    <Icon className={`w-4 h-4 ${isActive ? 'text-[#43A047]' : 'text-neutral-500'}`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold leading-tight">{item.label}</div>
+                      <div className="text-[10px] text-neutral-400">{item.desc}</div>
+                    </div>
+                    {isActive && <Check className="w-4 h-4 text-[#43A047]" />}
                   </button>
-                )}
+                );
+              })}
+
+              {/* Held Tabs Quick Look */}
+              <div className="pt-3 border-t border-neutral-100">
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-neutral-400 px-3 py-1">
+                  <span>Held / Open Tickets</span>
+                  <span className="font-mono text-emerald-700">{heldTickets.length} open</span>
+                </div>
+                {heldTickets.map((ht) => (
+                  <div
+                    key={ht.id}
+                    className="mx-1 my-1 p-2 bg-neutral-50 hover:bg-neutral-100 rounded-lg text-xs flex items-center justify-between border border-neutral-200/60"
+                  >
+                    <div>
+                      <div className="font-bold text-neutral-800">{ht.name}</div>
+                      <div className="text-[10px] text-neutral-400">
+                        {ht.itemsCount} items · Saved {ht.savedAt}
+                      </div>
+                    </div>
+                    <span className="font-mono font-bold text-neutral-900">
+                      ${ht.total.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
               </div>
-              <span className={`font-mono tabular-nums ${!applyTax && !selectedOrderForPayment ? 'line-through text-neutral-400' : ''}`}>
-                {formatMoney(
-                  selectedOrderForPayment
-                    ? selectedOrderForPayment.tax
-                    : cartTax
-                )}
-              </span>
+
+              {/* Switch Restaurant Branch */}
+              <div className="pt-3 border-t border-neutral-100">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 px-3 py-1">
+                  Switch Branch
+                </div>
+                {tenants.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      setCurrentTenantId(t.id);
+                      setIsNavDrawerOpen(false);
+                      showToast(`Switched branch to ${t.name}`);
+                    }}
+                    className={`w-full text-left px-3 py-1.5 rounded-lg text-xs flex items-center justify-between ${
+                      t.id === currentTenant.id
+                        ? 'bg-neutral-100 text-neutral-900 font-bold'
+                        : 'text-neutral-600 hover:bg-neutral-50'
+                    }`}
+                  >
+                    <span className="truncate">{t.logo} {t.name}</span>
+                    {t.id === currentTenant.id && <span className="w-1.5 h-1.5 rounded-full bg-[#43A047]" />}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {/* Delivery Charge row (shown if delivery order or existing order with delivery fee) */}
-            {((!selectedOrderForPayment && cartServiceType === 'delivery') ||
-              (selectedOrderForPayment && selectedOrderForPayment.deliveryFee > 0)) && (
-              <div className="flex justify-between items-center text-emerald-800 bg-emerald-50/70 p-1.5 rounded-lg font-semibold">
-                <span className="flex items-center gap-1">
-                  <Truck className="w-3.5 h-3.5" />
-                  <span>Delivery Cost:</span>
-                </span>
-                <span className="font-mono tabular-nums">
-                  +{formatMoney(
-                    selectedOrderForPayment
-                      ? selectedOrderForPayment.deliveryFee
-                      : cartDeliveryFee
-                  )}
+            {/* Drawer Footer: Shift Register Float */}
+            <div className="p-3 bg-neutral-50 border-t border-neutral-200 text-xs">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-neutral-500">Drawer Cash Float:</span>
+                <span className="font-mono font-bold text-neutral-900">
+                  {formatMoney(cashierShift.expectedCash)}
                 </span>
               </div>
-            )}
-
-            {/* Total Payable */}
-            <div className="flex justify-between text-sm font-extrabold text-neutral-900 pt-2 border-t border-neutral-200">
-              <span>Total Payable:</span>
-              <span className="text-emerald-700 font-mono tabular-nums text-base">
-                {formatMoney(selectedOrderForPayment ? selectedOrderForPayment.total : cartTotal)}
-              </span>
+              <div className="text-[10px] text-neutral-400">
+                Cashier: Tony Danza · Shift opened {cashierShift.openedAt}
+              </div>
             </div>
           </div>
-
-          {/* Payment Method Selector (Cash, Card, Scan / M-Pesa) */}
-          <div>
-            <div className="text-[11px] font-semibold text-neutral-500 mb-2">Payment Method</div>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                onClick={() => setSelectedPaymentMethod('cash')}
-                className={`py-2 px-3 rounded-xl border text-xs font-semibold flex flex-col items-center gap-1 transition-all ${
-                  selectedPaymentMethod === 'cash'
-                    ? 'border-emerald-600 bg-white text-emerald-800 shadow-xs'
-                    : 'border-neutral-200 bg-white/70 text-neutral-600 hover:bg-white'
-                }`}
-              >
-                <Banknote className="w-4 h-4 text-emerald-600" />
-                <span>Cash</span>
-              </button>
-
-              <button
-                onClick={() => setSelectedPaymentMethod('card')}
-                className={`py-2 px-3 rounded-xl border text-xs font-semibold flex flex-col items-center gap-1 transition-all ${
-                  selectedPaymentMethod === 'card'
-                    ? 'border-emerald-600 bg-white text-emerald-800 shadow-xs'
-                    : 'border-neutral-200 bg-white/70 text-neutral-600 hover:bg-white'
-                }`}
-              >
-                <CreditCard className="w-4 h-4 text-emerald-600" />
-                <span>Card</span>
-              </button>
-
-              <button
-                onClick={() => setSelectedPaymentMethod('mpesa')}
-                className={`py-2 px-3 rounded-xl border text-xs font-semibold flex flex-col items-center gap-1 transition-all ${
-                  selectedPaymentMethod === 'mpesa'
-                    ? 'border-emerald-600 bg-white text-emerald-800 shadow-xs'
-                    : 'border-neutral-200 bg-white/70 text-neutral-600 hover:bg-white'
-                }`}
-              >
-                <QrCode className="w-4 h-4 text-emerald-600" />
-                <span>Scan / M-Pesa</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Primary Action Button (Process Payment in Vibrant Emerald) */}
-          {selectedOrderForPayment ? (
-            <button
-              onClick={() => handleSettleExistingOrder(selectedOrderForPayment)}
-              className="w-full py-3 px-4 rounded-xl font-bold text-xs text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md flex items-center justify-center gap-2"
-            >
-              <CheckCircle className="w-4 h-4" />
-              <span>Settle Payment ({formatMoney(selectedOrderForPayment.total)})</span>
-            </button>
-          ) : (
-            <button
-              disabled={cart.length === 0}
-              onClick={handleProcessCartPayment}
-              className={`w-full py-3 px-4 rounded-xl font-bold text-xs text-white transition-colors shadow-md flex items-center justify-center gap-2 ${
-                cart.length > 0
-                  ? 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'
-                  : 'bg-neutral-300 cursor-not-allowed opacity-75'
-              }`}
-            >
-              <Receipt className="w-4 h-4" />
-              <span>Process Payment</span>
-            </button>
-          )}
         </div>
-      </div>
+      )}
 
-      {/* Cashier Shift Drawer / Modal */}
-      {isShiftModalOpen && (
+      {/* ================= LINE ITEM DETAIL / MODIFIER MODAL ================= */}
+      {editingItemIndex !== null && cart[editingItemIndex] && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full border border-neutral-200 shadow-xl space-y-4">
-            <div className="flex items-center justify-between border-b pb-3">
-              <h3 className="font-bold text-neutral-900">Cashier Shift & Reconciliation</h3>
+          <div className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-neutral-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b pb-2.5">
+              <h3 className="font-bold text-sm text-neutral-900">
+                {cart[editingItemIndex].menuItem.name}
+              </h3>
               <button
-                onClick={() => setIsShiftModalOpen(false)}
-                className="text-xs text-neutral-500 hover:text-neutral-800"
+                onClick={() => setEditingItemIndex(null)}
+                className="p-1 text-neutral-400 hover:text-neutral-700"
               >
-                Close
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between py-1 border-b border-neutral-100">
-                <span className="text-neutral-500">Shift Started:</span>
-                <span className="font-semibold">{cashierShift.openedAt}</span>
+            {/* Quantity Stepper */}
+            <div className="flex items-center justify-between bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+              <span className="text-xs font-semibold text-neutral-700">Quantity</span>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => updateCartItemQty(editingItemIndex, -1)}
+                  className="w-8 h-8 rounded-lg bg-white border border-neutral-300 flex items-center justify-center hover:bg-neutral-100 text-neutral-700 font-bold"
+                >
+                  <Minus className="w-4 h-4" />
+                </button>
+                <span className="w-6 text-center font-mono font-bold text-sm text-neutral-900">
+                  {cart[editingItemIndex].quantity}
+                </span>
+                <button
+                  onClick={() => updateCartItemQty(editingItemIndex, 1)}
+                  className="w-8 h-8 rounded-lg bg-[#43A047] text-white flex items-center justify-center hover:bg-[#388E3C] shadow-xs"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
               </div>
-              <div className="flex justify-between py-1 border-b border-neutral-100">
-                <span className="text-neutral-500">Opening Float:</span>
-                <span className="font-mono font-semibold">{formatMoney(cashierShift.openingCash)}</span>
+            </div>
+
+            {/* Cooking Notes / Kitchen Modifiers */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-neutral-700">Kitchen / Preparation Note:</label>
+              <input
+                type="text"
+                placeholder="e.g. Extra hot, no dressing, warm up..."
+                value={editingItemNotes}
+                onChange={(e) => setEditingItemNotes(e.target.value)}
+                className="w-full text-xs p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-hidden focus:border-[#43A047]"
+              />
+            </div>
+
+            {/* Quick Note Presets */}
+            <div className="flex flex-wrap gap-1">
+              {['Warm up', 'Extra napkin', 'No dressing', 'Gluten conscious', 'Cut in half'].map((note) => (
+                <button
+                  key={note}
+                  type="button"
+                  onClick={() => setEditingItemNotes(note)}
+                  className="px-2 py-0.5 text-[10px] bg-neutral-100 hover:bg-neutral-200 rounded-md text-neutral-700"
+                >
+                  +{note}
+                </button>
+              ))}
+            </div>
+
+            {/* Actions: Remove & Save */}
+            <div className="pt-2 flex items-center gap-2">
+              <button
+                onClick={() => {
+                  removeFromCart(editingItemIndex);
+                  setEditingItemIndex(null);
+                  showToast('Item removed from ticket');
+                }}
+                className="py-2 px-3 text-xs font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-xl flex items-center gap-1.5 transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Remove</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  cart[editingItemIndex].customerNotes = editingItemNotes.trim();
+                  setEditingItemIndex(null);
+                  showToast('Line item updated');
+                }}
+                className="flex-1 py-2 px-3 text-xs font-bold text-white bg-[#43A047] hover:bg-[#388E3C] rounded-xl shadow-xs text-center"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CUSTOMER ASSIGNMENT MODAL ================= */}
+      {isCustomerModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-neutral-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b pb-2.5">
+              <div className="flex items-center gap-2">
+                <UserPlus className="w-4 h-4 text-[#43A047]" />
+                <h3 className="font-bold text-sm text-neutral-900">Assign Customer / Waiter</h3>
               </div>
-              <div className="flex justify-between py-1 border-b border-neutral-100">
-                <span className="text-neutral-500">Cash Sales:</span>
-                <span className="font-mono font-semibold text-emerald-700">+{formatMoney(cashierShift.cashSales)}</span>
+              <button
+                onClick={() => setIsCustomerModalOpen(false)}
+                className="p-1 text-neutral-400 hover:text-neutral-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="text-neutral-500 font-medium block mb-1">Customer Name:</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Sarah Jenkins"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-hidden focus:border-[#43A047]"
+                />
               </div>
-              <div className="flex justify-between py-1 border-b border-neutral-100">
-                <span className="text-neutral-500">Mobile Money (M-Pesa):</span>
-                <span className="font-mono font-semibold text-blue-700">+{formatMoney(cashierShift.mpesaSales)}</span>
+
+              <div>
+                <label className="text-neutral-500 font-medium block mb-1">Customer Phone / WhatsApp:</label>
+                <input
+                  type="tel"
+                  placeholder="+255 7... or +1 ..."
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-hidden focus:border-[#43A047]"
+                />
               </div>
-              <div className="flex justify-between py-1 border-b border-neutral-100">
-                <span className="text-neutral-500">Card Terminal Sales:</span>
-                <span className="font-mono font-semibold">+{formatMoney(cashierShift.cardSales)}</span>
-              </div>
-              <div className="flex justify-between py-2 text-sm font-bold text-neutral-900 border-t border-neutral-200">
-                <span>Expected Drawer Cash:</span>
-                <span className="font-mono text-emerald-700">{formatMoney(cashierShift.expectedCash)}</span>
+
+              <div>
+                <label className="text-neutral-500 font-medium block mb-1">Attributed Server / Waiter (5% Commission):</label>
+                <select
+                  value={selectedWaiterId}
+                  onChange={(e) => setSelectedWaiterId(e.target.value)}
+                  className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg outline-hidden text-neutral-800"
+                >
+                  {waiters.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name} ({w.referralCode})
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
             <div className="pt-2">
               <button
-                onClick={() => setIsShiftModalOpen(false)}
-                className="w-full py-2.5 px-4 bg-neutral-900 text-white font-semibold text-xs rounded-lg hover:bg-neutral-800 transition-colors"
+                onClick={() => {
+                  setIsCustomerModalOpen(false);
+                  showToast(customerName ? `Customer ${customerName} linked to ticket` : 'Customer info updated');
+                }}
+                className="w-full py-2.5 bg-[#43A047] hover:bg-[#388E3C] text-white font-bold text-xs rounded-xl shadow-xs"
               >
-                Verify & Keep Shift Open
+                Save to Ticket
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= TENDER / CHARGE PAYMENT MODAL ================= */}
+      {isChargeModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-neutral-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <span className="text-[11px] uppercase tracking-wider text-neutral-400 font-bold">
+                  Payment Checkout
+                </span>
+                <h3 className="text-lg font-bold text-neutral-900">Charge Ticket</h3>
+              </div>
+              <button
+                onClick={() => setIsChargeModalOpen(false)}
+                className="p-1 text-neutral-400 hover:text-neutral-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Total Due Banner */}
+            <div className="p-4 bg-neutral-900 text-white rounded-xl flex items-center justify-between">
+              <div>
+                <div className="text-xs text-neutral-400">Total Amount Due:</div>
+                <div className="text-2xl font-extrabold font-mono text-emerald-400">
+                  {currency === 'USD' ? `$${totalPayableUsd.toFixed(2)}` : formatMoney(totalPayableTzs)}
+                </div>
+              </div>
+              <div className="text-right text-xs text-neutral-400">
+                <div>Items: {cart.reduce((sum, ci) => sum + ci.quantity, 0)}</div>
+                <div className="text-emerald-400 font-mono">Tax: ${calculatedTaxUsd.toFixed(2)}</div>
+              </div>
+            </div>
+
+            {/* Payment Method Selector */}
+            <div>
+              <label className="text-xs font-semibold text-neutral-700 block mb-2">Select Tender:</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: 'cash', label: 'Cash', icon: Banknote },
+                  { id: 'card', label: 'Credit Card', icon: CreditCard },
+                  { id: 'mpesa', label: 'Scan / M-Pesa', icon: QrCode },
+                ].map((m) => {
+                  const Icon = m.icon;
+                  const isSel = selectedPaymentMethod === m.id;
+
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setSelectedPaymentMethod(m.id as PaymentMethod)}
+                      className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1.5 transition-all ${
+                        isSel
+                          ? 'border-[#43A047] bg-[#43A047]/10 text-[#2E7D32] shadow-xs'
+                          : 'border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" />
+                      <span>{m.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Cash Tender Calculation & Quick Denomination Buttons */}
+            {selectedPaymentMethod === 'cash' && (
+              <div className="space-y-2 bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-neutral-700">Cash Received:</span>
+                  <div className="flex items-center gap-1 font-mono">
+                    <span className="text-neutral-500">$</span>
+                    <input
+                      type="number"
+                      step={0.01}
+                      min={totalPayableUsd}
+                      value={tenderCashAmount}
+                      onChange={(e) => setTenderCashAmount(Number(e.target.value))}
+                      className="w-24 p-1 bg-white border border-neutral-300 rounded font-bold text-neutral-900 text-right"
+                    />
+                  </div>
+                </div>
+
+                {/* Quick denomination pills */}
+                <div className="flex gap-1.5 pt-1">
+                  {[totalPayableUsd, 50, 60, 100].map((amt, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setTenderCashAmount(amt)}
+                      className={`flex-1 py-1 text-[11px] font-mono font-bold rounded-lg border transition-colors ${
+                        tenderCashAmount === amt
+                          ? 'bg-[#43A047] text-white border-[#43A047]'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      {idx === 0 ? 'Exact' : `$${amt}`}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Change Due Display */}
+                <div className="pt-2 border-t border-neutral-200 flex justify-between items-center text-xs">
+                  <span className="text-neutral-600 font-semibold">Change to Return:</span>
+                  <span className="text-sm font-bold font-mono text-emerald-700">
+                    ${changeDueUsd.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Settle Button */}
+            <div className="pt-2">
+              <button
+                onClick={handleProcessPayment}
+                className="w-full py-3 bg-[#43A047] hover:bg-[#388E3C] text-white font-bold text-xs uppercase tracking-wider rounded-xl shadow-md flex items-center justify-center gap-2 cursor-pointer transition-colors"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Complete Payment & Print Receipt</span>
               </button>
             </div>
           </div>

@@ -15,7 +15,15 @@ export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded';
 
 export type PaymentMethod = 'cash' | 'mpesa' | 'airtel' | 'card' | 'bank_transfer' | 'split';
 
-export type KitchenStation = 'hot_kitchen' | 'grill' | 'drinks' | 'bakery' | 'dessert';
+export type KitchenStation =
+  | 'hot_kitchen'
+  | 'grill'
+  | 'drinks'
+  | 'bakery'
+  | 'dessert'
+  | 'pastry'
+  | 'cold_prep'
+  | 'beverage';
 
 export type Role = 'owner' | 'manager' | 'cashier' | 'reception' | 'waiter' | 'kitchen' | 'customer';
 
@@ -194,11 +202,17 @@ export interface RecipeVersionHistoryItem {
   totalBatchCost: number;
   costPerPlate: number;
   foodCostPercentage: number;
+  name?: string;
+  cookingMethod?: 'batch_cooking' | 'on_sale_order';
+  preparationInstructions?: string;
+  archivedAt?: string;
+  archivedBy?: string;
+  totalCostPerPlate?: number;
 }
 
 export interface Recipe {
   id: string;
-  menuItemId: string;
+  menuItemId?: string;
   name?: string;
   batchYieldPlates: number; // Mandatory: Number of plates batch produces (e.g. 100 plates for Wali Nyama)
   version: number; // Recipe versioning (v1, v2)
