@@ -31,9 +31,12 @@ import {
   ChefHat,
   Smartphone,
   Boxes,
+  Ticket,
+  ShieldAlert,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { MenuItem, Order, PaymentMethod, OrderType, Role } from '../../types/restaurant';
+import { MenuItem, Order, PaymentMethod, OrderType, Role, KitchenStation } from '../../types/restaurant';
 import { ReceiptModal } from '../common/ReceiptModal';
 
 export const PosView: React.FC = () => {
@@ -50,9 +53,16 @@ export const PosView: React.FC = () => {
     removeFromCart,
     clearCart,
     submitOrder,
+    processPayment,
+    updateOrderStatus,
+    requestApproval,
     formatMoney,
     currency,
     toggleCurrency,
+    taxEnabled,
+    setTaxEnabled,
+    taxRatePct,
+    setTaxRatePct,
     cashierShift,
     activeRole,
     setActiveRole,
@@ -72,7 +82,6 @@ export const PosView: React.FC = () => {
   const [selectedTable, setSelectedTable] = useState<string>('Table 03');
   const [guestCount, setGuestCount] = useState<number>(2);
   const [deliveryAddress, setDeliveryAddress] = useState<string>('Mikocheni B, Mwai Kibaki Rd, House 14');
-  const [deliveryFeeUsd, setDeliveryFeeUsd] = useState<number>(2.50);
   const [isTicketMenuOpen, setIsTicketMenuOpen] = useState<boolean>(false);
   const [isTableDropdownOpen, setIsTableDropdownOpen] = useState<boolean>(false);
 
@@ -82,33 +91,48 @@ export const PosView: React.FC = () => {
   const [customerPhone, setCustomerPhone] = useState<string>('');
   const [selectedWaiterId, setSelectedWaiterId] = useState<string>('waiter-john');
 
+  // Coupon & Orders lookup modal
+  const [isCouponLookupOpen, setIsCouponLookupOpen] = useState<boolean>(false);
+  const [couponSearchQuery, setCouponSearchQuery] = useState<string>('');
+  const [cancelTargetOrder, setCancelTargetOrder] = useState<Order | null>(null);
+  const [cancelReasonDraft, setCancelReasonDraft] = useState<string>('');
+
   // Line item detail / modifier modal
   const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
   const [editingItemNotes, setEditingItemNotes] = useState<string>('');
+  const [editingItemExtraCharge, setEditingItemExtraCharge] = useState<number>(0);
 
-  // Discount decision controls (user has full control over value, percentage, fixed, presets)
-  // Reference photo has $21.00 discount on the demo ticket
-  const [discountValue, setDiscountValue] = useState<number>(21.0);
+  // Custom Off-Menu Item modal
+  const [isCustomItemModalOpen, setIsCustomItemModalOpen] = useState<boolean>(false);
+  const [posCustomName, setPosCustomName] = useState<string>('');
+  const [posCustomPrice, setPosCustomPrice] = useState<number>(15000);
+  const [posCustomQty, setPosCustomQty] = useState<number>(1);
+  const [posCustomStation, setPosCustomStation] = useState<KitchenStation>('grill');
+  const [posCustomNote, setPosCustomNote] = useState<string>('');
+
+  // Discount decision controls (in TZS for fixed, or % for percent)
+  const [discountValue, setDiscountValue] = useState<number>(0);
   const [discountType, setDiscountType] = useState<'fixed' | 'percent'>('fixed');
   const [discountReason, setDiscountReason] = useState<string>('Courtesy / Promo');
   const [showDiscountEditor, setShowDiscountEditor] = useState<boolean>(false);
 
-  // Tax decision controls (user can toggle tax-exempt or choose tax rate: 6.5% standard meal tax or 18% VAT)
-  const [applyTax, setApplyTax] = useState<boolean>(true);
-  const [taxRatePct, setTaxRatePct] = useState<number>(6.5);
-  const [showTaxEditor, setShowTaxEditor] = useState<boolean>(false);
-
-  // Payment / Charge modal
+  // Payment / Charge modal (in TZS, supports single & split tenders)
   const [isChargeModalOpen, setIsChargeModalOpen] = useState<boolean>(false);
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>('cash');
-  const [tenderCashAmount, setTenderCashAmount] = useState<number>(50.0);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<Exclude<PaymentMethod, 'split'>>('cash');
+  const [tenderCashTzs, setTenderCashTzs] = useState<number>(100000);
+  const [singleTxRef, setSingleTxRef] = useState<string>('');
+  const [isSplitPayment, setIsSplitPayment] = useState<boolean>(false);
+  const [splitMethod1, setSplitMethod1] = useState<Exclude<PaymentMethod, 'split'>>('cash');
+  const [splitAmount1, setSplitAmount1] = useState<number>(0);
+  const [splitMethod2, setSplitMethod2] = useState<Exclude<PaymentMethod, 'split'>>('mpesa');
+  const [splitRef2, setSplitRef2] = useState<string>('');
   const [lastProcessedOrder, setLastProcessedOrder] = useState<Order | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState<boolean>(false);
 
-  // Held tickets
+  // Held tickets (stored in TZS)
   const [heldTickets, setHeldTickets] = useState<{ id: string; name: string; itemsCount: number; total: number; savedAt: string }[]>([
-    { id: 'HT-101', name: 'Table 07 (Patio)', itemsCount: 4, total: 32.50, savedAt: '17:28' },
-    { id: 'HT-102', name: 'Bar Counter VIP', itemsCount: 2, total: 18.00, savedAt: '17:35' },
+    { id: 'HT-101', name: 'Table 07 (Patio)', itemsCount: 4, total: 84500, savedAt: '17:28' },
+    { id: 'HT-102', name: 'Bar Counter VIP', itemsCount: 2, total: 46800, savedAt: '17:35' },
   ]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -116,7 +140,7 @@ export const PosView: React.FC = () => {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
-    }, 3000);
+    }, 3200);
   };
 
   // Bottom categories matching screenshot
@@ -128,17 +152,10 @@ export const PosView: React.FC = () => {
     { id: 'All Items', label: 'ALL ITEMS' },
   ];
 
-  // Helper to format currency decimal or TZS
+  // Format line/ticket amount cleanly using global currency
   const formatPosNumber = (amountInTzs: number) => {
-    if (currency === 'USD') {
-      const usd = amountInTzs / currentTenant.currencyRate;
-      return usd.toFixed(2);
-    }
-    return amountInTzs.toLocaleString();
+    return formatMoney(amountInTzs);
   };
-
-  // Convert USD decimal to TZS
-  const usdToTzs = (usd: number) => Math.round(usd * currentTenant.currencyRate);
 
   // Filter items
   const filteredItems = useMemo(() => {
@@ -164,50 +181,37 @@ export const PosView: React.FC = () => {
     });
   }, [menuItems, selectedCategory, searchQuery]);
 
-  // Calculate ticket totals
-  // In the photo: Subtotal = 66.56, Discount = 21.00, Tax = 2.96, Total = 48.52
+  // Calculate ticket totals in TZS
   const grossSubtotalTzs = useMemo(() => {
     return cart.reduce((acc, ci) => {
-      const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
+      const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0) + (ci.extraCharge || 0);
       const mods = ci.selectedModifiers.reduce((mAcc, m) => mAcc + m.price, 0);
       return acc + (unit + mods) * ci.quantity;
     }, 0);
   }, [cart]);
 
-  const grossSubtotalUsd = grossSubtotalTzs / currentTenant.currencyRate;
-
-  const calculatedDiscountUsd = useMemo(() => {
+  const calculatedDiscountTzs = useMemo(() => {
     if (cart.length === 0) return 0;
     if (discountType === 'percent') {
-      return (grossSubtotalUsd * Math.min(100, Math.max(0, discountValue))) / 100;
+      return Math.round((grossSubtotalTzs * Math.min(100, Math.max(0, discountValue))) / 100);
     }
-    return Math.min(grossSubtotalUsd, Math.max(0, discountValue));
-  }, [grossSubtotalUsd, discountType, discountValue, cart.length]);
+    return Math.min(grossSubtotalTzs, Math.max(0, Math.round(discountValue)));
+  }, [grossSubtotalTzs, discountType, discountValue, cart.length]);
 
-  const calculatedDiscountTzs = usdToTzs(calculatedDiscountUsd);
+  const netSubtotalTzs = Math.max(0, grossSubtotalTzs - calculatedDiscountTzs);
 
-  const netSubtotalUsd = Math.max(0, grossSubtotalUsd - calculatedDiscountUsd);
+  // Tax calculation respects global optional taxEnabled & taxRatePct
+  const calculatedTaxTzs = useMemo(() => {
+    if (cart.length === 0 || !taxEnabled) return 0;
+    return Math.round(netSubtotalTzs * (taxRatePct / 100));
+  }, [netSubtotalTzs, cart.length, taxEnabled, taxRatePct]);
 
-  // Tax calculation: user decides whether tax is applied or tax-exempt, plus custom rate
-  const calculatedTaxUsd = useMemo(() => {
-    if (cart.length === 0 || !applyTax) return 0;
-    // If ticket matches screenshot closely ($45.56 net subtotal at 6.5%), give exact 2.96 tax
-    if (taxRatePct === 6.5 && Math.abs(netSubtotalUsd - 45.56) < 0.5) {
-      return 2.96;
-    }
-    return Number((netSubtotalUsd * (taxRatePct / 100)).toFixed(2));
-  }, [netSubtotalUsd, cart.length, applyTax, taxRatePct]);
+  const deliveryFeeEffectiveTzs = orderType === 'delivery' ? currentTenant.deliveryFee : 0;
 
-  const calculatedTaxTzs = usdToTzs(calculatedTaxUsd);
+  const totalPayableTzs = Math.max(0, netSubtotalTzs + calculatedTaxTzs + deliveryFeeEffectiveTzs);
 
-  const deliveryFeeEffectiveUsd = orderType === 'delivery' ? deliveryFeeUsd : 0;
-  const deliveryFeeEffectiveTzs = usdToTzs(deliveryFeeEffectiveUsd);
-
-  const totalPayableUsd = Number((netSubtotalUsd + calculatedTaxUsd + deliveryFeeEffectiveUsd).toFixed(2));
-  const totalPayableTzs = usdToTzs(totalPayableUsd);
-
-  // Calculate Change Due
-  const changeDueUsd = Math.max(0, Number((tenderCashAmount - totalPayableUsd).toFixed(2)));
+  // Calculate Change Due in TZS
+  const changeDueTzs = Math.max(0, Math.round(tenderCashTzs - totalPayableTzs));
 
   // Add Item Click
   const handleItemClick = (item: MenuItem) => {
@@ -224,7 +228,7 @@ export const PosView: React.FC = () => {
   const handleApplyDiscountTile = (val: number, type: 'percent' | 'fixed') => {
     setDiscountType(type);
     setDiscountValue(val);
-    showToast(type === 'percent' ? `Applied ${val}% discount to Ticket` : `Applied $${val.toFixed(2)} discount to Ticket`);
+    showToast(type === 'percent' ? `Applied ${val}% discount to Ticket` : `Applied ${formatMoney(val)} discount to Ticket`);
   };
 
   // Handle Save (Hold) Order
@@ -238,14 +242,14 @@ export const PosView: React.FC = () => {
       id: `HT-${Date.now().toString().slice(-3)}`,
       name: `${orderType === 'dine_in' ? selectedTable : 'Takeaway'} (${customerName || 'Guest'})`,
       itemsCount: cart.reduce((sum, i) => sum + i.quantity, 0),
-      total: totalPayableUsd,
+      total: totalPayableTzs,
       savedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
     setHeldTickets((prev) => [newHeld, ...prev]);
 
     // Also dispatch to kitchen
-    submitOrder({
+    const createdOrder = submitOrder({
       type: orderType,
       tableNumber: orderType === 'dine_in' ? selectedTable : undefined,
       customerName: customerName || `Walk-in Guest (${selectedTable})`,
@@ -258,42 +262,102 @@ export const PosView: React.FC = () => {
       discountValue: discountValue,
       discountReason: discountReason,
       tax: calculatedTaxTzs,
+      taxRate: taxEnabled ? taxRatePct / 100 : 0,
+      isTaxExempt: !taxEnabled,
     });
 
     clearCart();
     setDiscountValue(0);
-    showToast(`Ticket saved & held as #${newHeld.id}. Order sent to Kitchen KDS!`);
+    showToast(
+      `Ticket held (#${newHeld.id}) · Coupon ${createdOrder.serviceCouponCode || ''} sent to Kitchen!`
+    );
   };
 
-  // Handle Charge / Settle Payment
+  // Handle Charge / Settle Payment (supports single & split tenders)
   const handleProcessPayment = () => {
     if (cart.length === 0) return;
 
-    const completedOrder = submitOrder({
-      type: orderType,
-      tableNumber: orderType === 'dine_in' ? selectedTable : undefined,
-      customerName: customerName || `Guest (${orderType === 'dine_in' ? selectedTable : 'Walk-in'})`,
-      customerPhone: customerPhone || undefined,
-      referralWaiterId: selectedWaiterId,
-      paymentMethod: selectedPaymentMethod,
-      markAsPaid: true,
-      notes: `Settled via POS · Tender: ${selectedPaymentMethod.toUpperCase()} · ${orderType.toUpperCase()}`,
-      discount: calculatedDiscountTzs,
-      discountType: discountType,
-      discountValue: discountValue,
-      discountReason: discountReason,
-      tax: calculatedTaxTzs,
-    });
+    if (isSplitPayment) {
+      const amt1 = Math.min(totalPayableTzs, Math.max(0, Math.round(splitAmount1)));
+      const amt2 = Math.max(0, totalPayableTzs - amt1);
 
-    setLastProcessedOrder(completedOrder);
+      const createdOrder = submitOrder({
+        type: orderType,
+        tableNumber: orderType === 'dine_in' ? selectedTable : undefined,
+        customerName: customerName || `Guest (${orderType === 'dine_in' ? selectedTable : 'Walk-in'})`,
+        customerPhone: customerPhone || undefined,
+        referralWaiterId: selectedWaiterId,
+        paymentMethod: 'split',
+        markAsPaid: false,
+        notes: `Settled via POS (Split: ${splitMethod1.toUpperCase()} + ${splitMethod2.toUpperCase()})`,
+        discount: calculatedDiscountTzs,
+        discountType: discountType,
+        discountValue: discountValue,
+        discountReason: discountReason,
+        tax: calculatedTaxTzs,
+        taxRate: taxEnabled ? taxRatePct / 100 : 0,
+        isTaxExempt: !taxEnabled,
+        actorName: 'Cashier POS',
+        actorRole: 'cashier',
+      });
+
+      if (amt1 > 0) {
+        processPayment(createdOrder.id, splitMethod1, amt1, {
+          completeService: amt2 === 0,
+          collectedBy: 'Cashier POS',
+        });
+      }
+      if (amt2 > 0) {
+        processPayment(createdOrder.id, splitMethod2, amt2, {
+          completeService: true,
+          collectedBy: 'Cashier POS',
+          transactionRef: splitRef2.trim() || undefined,
+        });
+      }
+
+      setLastProcessedOrder({
+        ...createdOrder,
+        paidAmount: totalPayableTzs,
+        paymentStatus: 'paid',
+        paymentMethod: 'split',
+      });
+    } else {
+      const completedOrder = submitOrder({
+        type: orderType,
+        tableNumber: orderType === 'dine_in' ? selectedTable : undefined,
+        customerName: customerName || `Guest (${orderType === 'dine_in' ? selectedTable : 'Walk-in'})`,
+        customerPhone: customerPhone || undefined,
+        referralWaiterId: selectedWaiterId,
+        paymentMethod: selectedPaymentMethod,
+        markAsPaid: true,
+        notes: `Settled via POS · Tender: ${selectedPaymentMethod.toUpperCase()}${
+          singleTxRef.trim() ? ` (Ref: ${singleTxRef.trim()})` : ''
+        } · ${orderType.toUpperCase()}`,
+        discount: calculatedDiscountTzs,
+        discountType: discountType,
+        discountValue: discountValue,
+        discountReason: discountReason,
+        tax: calculatedTaxTzs,
+        taxRate: taxEnabled ? taxRatePct / 100 : 0,
+        isTaxExempt: !taxEnabled,
+        actorName: 'Cashier POS',
+        actorRole: 'cashier',
+      });
+
+      setLastProcessedOrder(completedOrder);
+    }
+
     setIsChargeModalOpen(false);
     setIsReceiptOpen(true);
     setDiscountValue(0);
     setCustomerName('');
     setCustomerPhone('');
+    setSingleTxRef('');
+    setSplitRef2('');
+    setIsSplitPayment(false);
   };
 
-  // Quick reset to demo ticket matching the screenshot
+  // Quick reset to demo ticket
   const handleResetToDemoTicket = () => {
     const findItem = (id: string, fallbackIdx: number) =>
       menuItems.find((i) => i.id === id) || menuItems[fallbackIdx];
@@ -306,15 +370,15 @@ export const PosView: React.FC = () => {
       addToCart(findItem('pos-black-tea', 18), undefined, [], '', 1);
       addToCart(findItem('pos-sandwich', 19), undefined, [], '', 1);
       addToCart(findItem('pos-mango-dessert', 2), undefined, [], '', 2);
-      setDiscountValue(21.0);
+      setDiscountValue(0);
       setDiscountType('fixed');
-      showToast('Loaded exact ticket from reference photo!');
+      showToast('Loaded sample POS ticket!');
     }, 50);
   };
 
   // Line item price formatting
   const getLineItemTotal = (ci: (typeof cart)[0]) => {
-    const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
+    const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0) + (ci.extraCharge || 0);
     const totalTzs = unit * ci.quantity;
     return formatPosNumber(totalTzs);
   };
@@ -385,11 +449,21 @@ export const PosView: React.FC = () => {
                 </button>
               )}
 
-              {/* Fast currency toggle ($ / TZS) */}
+              {/* Coupon Lookup Modal Trigger */}
+              <button
+                onClick={() => setIsCouponLookupOpen(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-400 hover:bg-amber-300 text-neutral-950 transition-colors cursor-pointer"
+                title="Verify Service Coupon Code & Live Orders"
+              >
+                <Ticket className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Coupons ({orders.filter((o) => o.status !== 'completed').length})</span>
+              </button>
+
+              {/* Fast currency toggle (TZS / USD) */}
               <button
                 onClick={toggleCurrency}
                 className="px-2 py-0.5 rounded-md text-[11px] font-mono font-bold bg-white/20 hover:bg-white/30 text-white transition-colors cursor-pointer"
-                title={`Current: ${currency}. Click to switch between USD and TZS`}
+                title={`Current: ${currency}. Click to switch between TZS and USD`}
               >
                 {currency}
               </button>
@@ -524,29 +598,28 @@ export const PosView: React.FC = () => {
                     </span>
                   </div>
 
-                  {/* Tile 5: Discount 20 (Grey Price Tag tile) */}
+                  {/* Tile 5: Discount 5,000 TZS (Grey Price Tag tile) */}
                   <div
-                    onClick={() => handleApplyDiscountTile(20.0, 'fixed')}
+                    onClick={() => handleApplyDiscountTile(5000, 'fixed')}
                     className={`relative aspect-4/3 sm:aspect-square active:scale-97 border rounded-xl p-2 flex flex-col items-center justify-center cursor-pointer shadow-xs transition-all group ${
-                      discountValue === 20 && discountType === 'fixed'
+                      discountValue === 5000 && discountType === 'fixed'
                         ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/30 text-emerald-900'
                         : 'bg-neutral-100 hover:bg-neutral-200 border-neutral-300 text-neutral-800'
                     }`}
                   >
-                    {discountValue === 20 && discountType === 'fixed' && (
+                    {discountValue === 5000 && discountType === 'fixed' && (
                       <span className="absolute top-1 right-1 text-[9px] bg-emerald-600 text-white rounded-full p-0.5">
                         <Check className="w-2.5 h-2.5" />
                       </span>
                     )}
-                    {/* Price tag outline graphic with 20.00 inside */}
                     <div className="relative mb-1 flex items-center justify-center">
                       <Tag className={`w-6 h-6 transition-colors stroke-1.5 rotate-45 ${
-                        discountValue === 20 && discountType === 'fixed' ? 'text-emerald-600' : 'text-neutral-400 group-hover:text-neutral-600'
+                        discountValue === 5000 && discountType === 'fixed' ? 'text-emerald-600' : 'text-neutral-400 group-hover:text-neutral-600'
                       }`} />
-                      <span className="absolute text-[8px] font-bold font-mono">20</span>
+                      <span className="absolute text-[8px] font-bold font-mono">5k</span>
                     </div>
                     <span className="text-[11px] sm:text-xs font-semibold">
-                      Discount 20
+                      {formatMoney(5000)} Off
                     </span>
                   </div>
                 </div>
@@ -635,7 +708,48 @@ export const PosView: React.FC = () => {
 
                   {/* Ticket Options Popover */}
                   {isTicketMenuOpen && (
-                    <div className="absolute right-0 top-full mt-1.5 w-48 bg-white rounded-xl shadow-xl border border-neutral-200 py-1.5 z-40 text-xs text-neutral-700 animate-in fade-in duration-100">
+                    <div className="absolute right-0 top-full mt-1.5 w-56 bg-white rounded-xl shadow-xl border border-neutral-200 py-1.5 z-40 text-xs text-neutral-700 animate-in fade-in duration-100">
+                      <button
+                        onClick={() => {
+                          setIsCustomItemModalOpen(true);
+                          setIsTicketMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center gap-2 font-semibold text-indigo-700"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>Add Custom Off-Menu Item</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsCouponLookupOpen(true);
+                          setIsTicketMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center gap-2 font-semibold text-amber-800"
+                      >
+                        <Ticket className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Verify Service Coupon</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setTaxEnabled(!taxEnabled);
+                          setIsTicketMenuOpen(false);
+                          showToast(
+                            !taxEnabled
+                              ? `Tax enabled (${taxRatePct}% VAT across POS, Waiter & Customer)`
+                              : 'Tax disabled across all carts & orders'
+                          );
+                        }}
+                        className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center justify-between gap-2"
+                      >
+                        <span className="font-semibold">Optional Tax ({taxRatePct}% VAT)</span>
+                        <span
+                          className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                            taxEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-neutral-100 text-neutral-500'
+                          }`}
+                        >
+                          {taxEnabled ? 'ON' : 'OFF'}
+                        </span>
+                      </button>
                       <button
                         onClick={() => {
                           clearCart();
@@ -656,7 +770,7 @@ export const PosView: React.FC = () => {
                         className="w-full text-left px-3 py-1.5 hover:bg-neutral-50 flex items-center gap-2"
                       >
                         <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Reset Reference Items</span>
+                        <span>Load Sample Ticket</span>
                       </button>
                       <button
                         onClick={() => {
@@ -808,7 +922,7 @@ export const PosView: React.FC = () => {
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] font-bold uppercase text-neutral-500">Delivery Address:</span>
                       <span className="text-[11px] font-mono font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                        Fee: +${deliveryFeeUsd.toFixed(2)}
+                        Fee: +{formatMoney(currentTenant.deliveryFee)}
                       </span>
                     </div>
                     <input
@@ -841,38 +955,67 @@ export const PosView: React.FC = () => {
                 ) : (
                   cart.map((ci, index) => {
                     const linePriceStr = getLineItemTotal(ci);
+                    const isCustom = ci.isCustomItem || ci.menuItem.id.startsWith('custom-');
 
                     return (
                       <div
                         key={`${ci.menuItem.id}-${index}`}
                         onClick={() => {
                           setEditingItemIndex(index);
-                          setEditingItemNotes(ci.customerNotes || '');
+                          setEditingItemNotes(ci.customInstructions || ci.customerNotes || '');
+                          setEditingItemExtraCharge(ci.extraCharge || 0);
                         }}
-                        className="py-2.5 flex items-center justify-between text-xs cursor-pointer hover:bg-neutral-50 px-1 rounded-md transition-colors group"
+                        className="py-2.5 flex items-start justify-between gap-2.5 text-xs cursor-pointer hover:bg-neutral-50 px-1 rounded-md transition-colors group"
                       >
-                        {/* Item Name and Multiplier (e.g., "Pepperoni Pizza x 1") */}
-                        <div className="flex-1 min-w-0 pr-3">
-                          <div className="font-medium text-neutral-800 truncate">
-                            <span>{ci.menuItem.name}</span>
-                            <span className="text-neutral-500 font-normal ml-1">
-                              x {ci.quantity}
-                            </span>
+                        {!isCustom && ci.menuItem.image ? (
+                          <img
+                            src={ci.menuItem.image}
+                            alt={ci.menuItem.name}
+                            referrerPolicy="no-referrer"
+                            className="w-10 h-10 rounded-lg object-cover shrink-0 border border-neutral-200 bg-neutral-100"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-lg shrink-0 border border-indigo-200 bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                            <Sparkles className="w-4 h-4" />
                           </div>
-                          {ci.customerNotes && (
-                            <div className="text-[10px] text-amber-700 font-medium truncate">
-                              Note: {ci.customerNotes}
+                        )}
+
+                        {/* Full Item Name, Description & Prep Notes */}
+                        <div className="flex-1 min-w-0 pr-2 space-y-0.5">
+                          <div className="font-semibold text-neutral-800 leading-snug break-words flex items-center gap-1.5 flex-wrap">
+                            <span>{ci.menuItem.name}</span>
+                            <span className="text-neutral-500 font-normal">
+                              × {ci.quantity}
+                            </span>
+                            {isCustom && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-800">
+                                Custom
+                              </span>
+                            )}
+                          </div>
+                          {isCustom && ci.menuItem.description && ci.menuItem.description !== ci.customInstructions && (
+                            <div className="text-[10px] text-neutral-500 leading-snug break-words">
+                              {ci.menuItem.description}
+                            </div>
+                          )}
+                          {(ci.customInstructions || ci.customerNotes || (ci.extraCharge && ci.extraCharge > 0)) && (
+                            <div className="text-[10px] text-amber-700 font-medium leading-snug break-words">
+                              {ci.customInstructions || ci.customerNotes}
+                              {ci.extraCharge && ci.extraCharge > 0 ? ` (+${formatMoney(ci.extraCharge)})` : ''}
                             </div>
                           )}
                         </div>
 
-                        {/* Price (e.g., "5.69") */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          {ci.customerNotes && (
+                        {/* Price */}
+                        <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
+                          {(ci.customInstructions || ci.customerNotes) && (
                             <Clock className="w-3 h-3 text-neutral-400" />
                           )}
-                          <span className="font-normal tabular-nums text-neutral-900 font-mono text-xs sm:text-sm">
-                            {currency === 'USD' ? linePriceStr : formatMoney(ci.menuItem.price * ci.quantity)}
+                          <span className="font-semibold tabular-nums text-neutral-900 font-mono text-xs sm:text-sm">
+                            {linePriceStr}
                           </span>
                         </div>
                       </div>
@@ -881,7 +1024,7 @@ export const PosView: React.FC = () => {
                 )}
               </div>
 
-              {/* TOTALS & SUMMARY SECTION matching image_65047771.png WITH INTERACTIVE USER DECISIONS */}
+              {/* TOTALS & SUMMARY SECTION WITH OPTIONAL CONFIGURABLE TAX */}
               <div className="p-4 border-t border-neutral-200 bg-white space-y-2.5 text-xs text-neutral-600">
                 {/* 1. Discount Row with Interactive Decision Controls */}
                 <div className="space-y-1.5">
@@ -894,21 +1037,19 @@ export const PosView: React.FC = () => {
                         className="text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-1.5 py-0.5 rounded-md border border-emerald-200 transition-colors cursor-pointer"
                         title="Open discount editor"
                       >
-                        {showDiscountEditor ? 'Close' : calculatedDiscountUsd > 0 ? 'Edit' : '+ Apply'}
+                        {showDiscountEditor ? 'Close' : calculatedDiscountTzs > 0 ? 'Edit' : '+ Apply'}
                       </button>
-                      {calculatedDiscountUsd > 0 && (
+                      {calculatedDiscountTzs > 0 && (
                         <span className="text-[10px] text-neutral-400 font-mono">
-                          ({discountType === 'percent' ? `${discountValue}%` : `$${discountValue.toFixed(2)}`})
+                          ({discountType === 'percent' ? `${discountValue}%` : formatMoney(discountValue)})
                         </span>
                       )}
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className="font-mono tabular-nums text-neutral-900 font-semibold">
-                        {currency === 'USD'
-                          ? calculatedDiscountUsd.toFixed(2)
-                          : formatMoney(calculatedDiscountTzs)}
+                        {formatMoney(calculatedDiscountTzs)}
                       </span>
-                      {calculatedDiscountUsd > 0 && (
+                      {calculatedDiscountTzs > 0 && (
                         <button
                           type="button"
                           onClick={() => {
@@ -946,7 +1087,7 @@ export const PosView: React.FC = () => {
                               discountType === 'fixed' ? 'bg-[#43A047] text-white' : 'bg-neutral-200 text-neutral-700'
                             }`}
                           >
-                            $
+                            TZS
                           </button>
                         </div>
                       </div>
@@ -958,8 +1099,8 @@ export const PosView: React.FC = () => {
                           { label: '5%', val: 5, type: 'percent' as const },
                           { label: '10%', val: 10, type: 'percent' as const },
                           { label: '15%', val: 15, type: 'percent' as const },
-                          { label: '$20', val: 20, type: 'fixed' as const },
-                          { label: '$21 (Demo)', val: 21, type: 'fixed' as const },
+                          { label: '5,000', val: 5000, type: 'fixed' as const },
+                          { label: '10,000', val: 10000, type: 'fixed' as const },
                         ].map((p, i) => (
                           <button
                             key={i}
@@ -982,11 +1123,13 @@ export const PosView: React.FC = () => {
                       {/* Custom Input & Reason */}
                       <div className="grid grid-cols-2 gap-1.5 pt-1">
                         <div>
-                          <label className="text-[10px] text-neutral-500 block mb-0.5">Custom Value:</label>
+                          <label className="text-[10px] text-neutral-500 block mb-0.5">
+                            Custom ({discountType === 'percent' ? '%' : 'TZS'}):
+                          </label>
                           <input
                             type="number"
                             min="0"
-                            step="0.5"
+                            step={discountType === 'percent' ? 1 : 500}
                             value={discountValue}
                             onChange={(e) => setDiscountValue(Number(e.target.value))}
                             className="w-full text-xs p-1 bg-white border border-neutral-200 rounded font-mono font-bold"
@@ -1011,96 +1154,17 @@ export const PosView: React.FC = () => {
                   )}
                 </div>
 
-                {/* 2. Tax Row with Interactive Decision Controls (Tax Applied vs Tax-Exempt) */}
-                <div className="space-y-1.5">
+                {/* 2. Optional Tax Row — ONLY displayed and included when Manager/Owner enables Tax */}
+                {taxEnabled && (
                   <div className="flex justify-between items-center">
                     <div className="flex items-center gap-1.5">
-                      <span className="font-medium text-neutral-700">Tax</span>
-                      {/* User Decision Toggle for Tax */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const nextState = !applyTax;
-                          setApplyTax(nextState);
-                          showToast(nextState ? `Tax applied (${taxRatePct}%)` : 'Tax Exempt: $0.00 tax applied');
-                        }}
-                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md border transition-colors cursor-pointer ${
-                          applyTax
-                            ? 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100'
-                            : 'text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100'
-                        }`}
-                        title="Click to toggle between Tax Applied and Tax Exempt"
-                      >
-                        {applyTax ? `✓ ${taxRatePct}% Tax` : '✕ Tax-Exempt (0%)'}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setShowTaxEditor(!showTaxEditor)}
-                        className="text-[10px] text-neutral-400 hover:text-neutral-700 cursor-pointer"
-                        title="Change tax rate preset"
-                      >
-                        ⚙️
-                      </button>
+                      <span className="font-medium text-neutral-700">VAT ({taxRatePct}%)</span>
                     </div>
-
                     <span className="font-mono tabular-nums text-neutral-900 font-semibold">
-                      {currency === 'USD'
-                        ? calculatedTaxUsd.toFixed(2)
-                        : formatMoney(calculatedTaxTzs)}
+                      {formatMoney(calculatedTaxTzs)}
                     </span>
                   </div>
-
-                  {/* Inline Tax Rate Selector */}
-                  {showTaxEditor && (
-                    <div className="p-2.5 bg-neutral-50 rounded-xl border border-neutral-200 space-y-2 animate-in fade-in duration-150">
-                      <div className="text-[10px] font-bold text-neutral-700">Tax Configuration:</div>
-                      <div className="grid grid-cols-3 gap-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setApplyTax(true);
-                            setTaxRatePct(6.5);
-                          }}
-                          className={`p-1 text-[10px] rounded font-mono font-bold border ${
-                            applyTax && taxRatePct === 6.5
-                              ? 'bg-emerald-600 text-white border-emerald-600'
-                              : 'bg-white border-neutral-200 text-neutral-700'
-                          }`}
-                        >
-                          6.5% Meal Tax
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setApplyTax(true);
-                            setTaxRatePct(18.0);
-                          }}
-                          className={`p-1 text-[10px] rounded font-mono font-bold border ${
-                            applyTax && taxRatePct === 18.0
-                              ? 'bg-emerald-600 text-white border-emerald-600'
-                              : 'bg-white border-neutral-200 text-neutral-700'
-                          }`}
-                        >
-                          18% VAT
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setApplyTax(false);
-                          }}
-                          className={`p-1 text-[10px] rounded font-mono font-bold border ${
-                            !applyTax
-                              ? 'bg-amber-600 text-white border-amber-600'
-                              : 'bg-white border-neutral-200 text-neutral-700'
-                          }`}
-                        >
-                          0% Exempt
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                )}
 
                 {/* 3. Delivery Fee Line (when orderType === 'delivery') */}
                 {orderType === 'delivery' && (
@@ -1110,21 +1174,21 @@ export const PosView: React.FC = () => {
                       <span className="text-[10px] text-blue-500 font-mono">(Flat Rate)</span>
                     </div>
                     <span className="font-mono tabular-nums font-semibold">
-                      {currency === 'USD' ? deliveryFeeUsd.toFixed(2) : formatMoney(deliveryFeeEffectiveTzs)}
+                      {formatMoney(deliveryFeeEffectiveTzs)}
                     </span>
                   </div>
                 )}
 
-                {/* 4. Bold Total Line matching screenshot ("Total      48.52") */}
+                {/* 4. Bold Total Line */}
                 <div className="flex justify-between items-baseline pt-2 border-t border-neutral-200 text-neutral-900">
                   <span className="text-sm font-bold">Total</span>
                   <span className="text-base sm:text-lg font-bold font-mono tabular-nums">
-                    {currency === 'USD' ? totalPayableUsd.toFixed(2) : formatMoney(totalPayableTzs)}
+                    {formatMoney(totalPayableTzs)}
                   </span>
                 </div>
               </div>
 
-              {/* BOTTOM DUAL GREEN ACTION BUTTONS: [ SAVE ] [ CHARGE ] matching image_65047771.png */}
+              {/* BOTTOM DUAL GREEN ACTION BUTTONS: [ SAVE ] [ CHARGE ] */}
               <div className="grid grid-cols-2 gap-1 p-2 bg-neutral-100 border-t border-neutral-200 shrink-0">
                 {/* SAVE BUTTON */}
                 <button
@@ -1143,7 +1207,7 @@ export const PosView: React.FC = () => {
                 <button
                   disabled={cart.length === 0}
                   onClick={() => {
-                    setTenderCashAmount(totalPayableUsd);
+                    setTenderCashTzs(totalPayableTzs);
                     setIsChargeModalOpen(true);
                   }}
                   className={`py-3 px-3 rounded-lg text-xs font-bold uppercase tracking-wider text-white transition-all shadow-xs flex items-center justify-center gap-1.5 ${
@@ -1245,7 +1309,7 @@ export const PosView: React.FC = () => {
                       </div>
                     </div>
                     <span className="font-mono font-bold text-neutral-900">
-                      ${ht.total.toFixed(2)}
+                      {formatMoney(ht.total)}
                     </span>
                   </div>
                 ))}
@@ -1333,19 +1397,31 @@ export const PosView: React.FC = () => {
 
             {/* Cooking Notes / Kitchen Modifiers */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-neutral-700">Kitchen / Preparation Note:</label>
+              <label className="text-xs font-semibold text-neutral-700">Modification / Kitchen Note:</label>
               <input
                 type="text"
-                placeholder="e.g. Extra hot, no dressing, warm up..."
+                placeholder="e.g. No onions, extra tomato sauce..."
                 value={editingItemNotes}
                 onChange={(e) => setEditingItemNotes(e.target.value)}
                 className="w-full text-xs p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg outline-hidden focus:border-[#43A047]"
               />
             </div>
 
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-neutral-700">Extra Ingredient Charge (TZS):</label>
+              <input
+                type="number"
+                min={0}
+                step={500}
+                value={editingItemExtraCharge}
+                onChange={(e) => setEditingItemExtraCharge(Number(e.target.value))}
+                className="w-full text-xs p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg font-mono font-bold outline-hidden focus:border-[#43A047]"
+              />
+            </div>
+
             {/* Quick Note Presets */}
             <div className="flex flex-wrap gap-1">
-              {['Warm up', 'Extra napkin', 'No dressing', 'Gluten conscious', 'Cut in half'].map((note) => (
+              {['No onions', 'Extra spices', 'No cheese', 'Extra sauce', 'Cut in half'].map((note) => (
                 <button
                   key={note}
                   type="button"
@@ -1374,6 +1450,8 @@ export const PosView: React.FC = () => {
               <button
                 onClick={() => {
                   cart[editingItemIndex].customerNotes = editingItemNotes.trim();
+                  cart[editingItemIndex].customInstructions = editingItemNotes.trim();
+                  cart[editingItemIndex].extraCharge = Math.max(0, Math.round(editingItemExtraCharge));
                   setEditingItemIndex(null);
                   showToast('Line item updated');
                 }}
@@ -1382,6 +1460,116 @@ export const PosView: React.FC = () => {
                 Done
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CUSTOM OFF-MENU ITEM MODAL ================= */}
+      {isCustomItemModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-neutral-200 space-y-3.5">
+            <div className="flex items-center justify-between border-b pb-2.5">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-indigo-600" />
+                <h3 className="font-bold text-sm text-neutral-900">Special Off-Menu Item</h3>
+              </div>
+              <button
+                onClick={() => setIsCustomItemModalOpen(false)}
+                className="p-1 text-neutral-400 hover:text-neutral-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <div>
+                <label className="font-semibold text-neutral-700 block mb-1">Description / Dish Name</label>
+                <input
+                  type="text"
+                  value={posCustomName}
+                  onChange={(e) => setPosCustomName(e.target.value)}
+                  placeholder="e.g. Custom Half Chicken & Chips Combo"
+                  className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg"
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="font-semibold text-neutral-700 block mb-1">Qty</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={posCustomQty}
+                    onChange={(e) => setPosCustomQty(Number(e.target.value))}
+                    className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-neutral-700 block mb-1">Unit (TZS)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={500}
+                    value={posCustomPrice}
+                    onChange={(e) => setPosCustomPrice(Number(e.target.value))}
+                    className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-neutral-700 block mb-1">Station</label>
+                  <select
+                    value={posCustomStation}
+                    onChange={(e) => setPosCustomStation(e.target.value as KitchenStation)}
+                    className="w-full p-2 bg-neutral-50 border border-neutral-200 rounded-lg font-semibold"
+                  >
+                    <option value="grill">Grill</option>
+                    <option value="hot_kitchen">Main / Hot Kitchen</option>
+                    <option value="drinks">Drinks / Bar</option>
+                    <option value="cold_prep">Cold Prep</option>
+                    <option value="dessert">Dessert</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="font-semibold text-neutral-700 block mb-1">Preparation Instructions</label>
+                <input
+                  type="text"
+                  value={posCustomNote}
+                  onChange={(e) => setPosCustomNote(e.target.value)}
+                  placeholder="Only for this transaction..."
+                  className="w-full p-2.5 bg-neutral-50 border border-neutral-200 rounded-lg"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                if (!posCustomName.trim()) return;
+                addToCart(
+                  {
+                    id: `custom-${Date.now()}`,
+                    name: posCustomName.trim(),
+                    category: 'Special',
+                    description: posCustomNote.trim() || 'Special off-menu customer request',
+                    price: Math.max(0, Math.round(posCustomPrice)),
+                    image: '/src/assets/images/dish_burger_roastbeef_1794223269419.jpg',
+                    preparationTimeMinutes: 15,
+                    isAvailable: true,
+                    station: posCustomStation,
+                  },
+                  undefined,
+                  [],
+                  posCustomNote.trim() || 'Off-menu custom order',
+                  Math.max(1, Math.round(posCustomQty))
+                );
+                setPosCustomName('');
+                setPosCustomNote('');
+                setIsCustomItemModalOpen(false);
+                showToast('Added custom off-menu item to ticket');
+              }}
+              className="w-full py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs rounded-xl cursor-pointer"
+            >
+              Add to Active Ticket
+            </button>
           </div>
         </div>
       )}
@@ -1457,10 +1645,10 @@ export const PosView: React.FC = () => {
         </div>
       )}
 
-      {/* ================= TENDER / CHARGE PAYMENT MODAL ================= */}
+      {/* ================= TENDER / CHARGE PAYMENT MODAL (SINGLE OR SPLIT) ================= */}
       {isChargeModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-neutral-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-neutral-200 space-y-4 max-h-[90dvh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header */}
             <div className="flex items-center justify-between border-b pb-3">
               <div>
@@ -1481,90 +1669,200 @@ export const PosView: React.FC = () => {
             <div className="p-4 bg-neutral-900 text-white rounded-xl flex items-center justify-between">
               <div>
                 <div className="text-xs text-neutral-400">Total Amount Due:</div>
-                <div className="text-2xl font-extrabold font-mono text-emerald-400">
-                  {currency === 'USD' ? `$${totalPayableUsd.toFixed(2)}` : formatMoney(totalPayableTzs)}
+                <div className="text-2xl font-extrabold font-mono text-emerald-400 tabular-nums">
+                  {formatMoney(totalPayableTzs)}
                 </div>
               </div>
               <div className="text-right text-xs text-neutral-400">
                 <div>Items: {cart.reduce((sum, ci) => sum + ci.quantity, 0)}</div>
-                <div className="text-emerald-400 font-mono">Tax: ${calculatedTaxUsd.toFixed(2)}</div>
+                {taxEnabled && (
+                  <div className="text-emerald-400 font-mono">
+                    VAT ({taxRatePct}%): {formatMoney(calculatedTaxTzs)}
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Payment Method Selector */}
-            <div>
-              <label className="text-xs font-semibold text-neutral-700 block mb-2">Select Tender:</label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'cash', label: 'Cash', icon: Banknote },
-                  { id: 'card', label: 'Credit Card', icon: CreditCard },
-                  { id: 'mpesa', label: 'Scan / M-Pesa', icon: QrCode },
-                ].map((m) => {
-                  const Icon = m.icon;
-                  const isSel = selectedPaymentMethod === m.id;
+            {/* Single vs Split Payment Toggle */}
+            <div className="grid grid-cols-2 gap-1.5 bg-neutral-100 p-1 rounded-xl text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setIsSplitPayment(false)}
+                className={`py-2 rounded-lg transition-colors cursor-pointer ${
+                  !isSplitPayment ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600'
+                }`}
+              >
+                Single Payment
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSplitPayment(true);
+                  setSplitAmount1(Math.round(totalPayableTzs / 2));
+                }}
+                className={`py-2 rounded-lg transition-colors cursor-pointer ${
+                  isSplitPayment ? 'bg-white text-neutral-900 shadow-xs' : 'text-neutral-600'
+                }`}
+              >
+                Split Payment (2 Methods)
+              </button>
+            </div>
 
-                  return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => setSelectedPaymentMethod(m.id as PaymentMethod)}
-                      className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1.5 transition-all ${
-                        isSel
-                          ? 'border-[#43A047] bg-[#43A047]/10 text-[#2E7D32] shadow-xs'
-                          : 'border-neutral-200 text-neutral-600 hover:bg-neutral-50'
-                      }`}
+            {!isSplitPayment ? (
+              <>
+                {/* Payment Method Selector */}
+                <div>
+                  <label className="text-xs font-semibold text-neutral-700 block mb-2">Select Tender:</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(
+                      [
+                        { id: 'cash', label: 'Cash', icon: Banknote },
+                        { id: 'card', label: 'Credit Card', icon: CreditCard },
+                        { id: 'mpesa', label: 'Scan / M-Pesa', icon: QrCode },
+                      ] as const
+                    ).map((m) => {
+                      const Icon = m.icon;
+                      const isSel = selectedPaymentMethod === m.id;
+
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => setSelectedPaymentMethod(m.id)}
+                          className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1.5 transition-all cursor-pointer ${
+                            isSel
+                              ? 'border-[#43A047] bg-[#43A047]/10 text-[#2E7D32] shadow-xs'
+                              : 'border-neutral-200 text-neutral-600 hover:bg-neutral-50'
+                          }`}
+                        >
+                          <Icon className="w-4 h-4" />
+                          <span>{m.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {selectedPaymentMethod !== 'cash' && (
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-neutral-700 block">
+                      Transaction / Authorization Ref (Optional):
+                    </label>
+                    <input
+                      type="text"
+                      value={singleTxRef}
+                      onChange={(e) => setSingleTxRef(e.target.value)}
+                      placeholder="e.g. QK992014 or Card Auth #"
+                      className="w-full p-2.5 text-xs font-mono bg-neutral-50 border border-neutral-200 rounded-xl"
+                    />
+                  </div>
+                )}
+
+                {/* Cash Tender Calculation & Quick Denomination Buttons in TZS */}
+                {selectedPaymentMethod === 'cash' && (
+                  <div className="space-y-2 bg-neutral-50 p-3 rounded-xl border border-neutral-200">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-neutral-700">Cash Received (TZS):</span>
+                      <div className="flex items-center gap-1.5 font-mono">
+                        <span className="text-neutral-500 text-[11px]">TZS</span>
+                        <input
+                          type="number"
+                          step={500}
+                          min={totalPayableTzs}
+                          value={tenderCashTzs}
+                          onChange={(e) => setTenderCashTzs(Number(e.target.value))}
+                          className="w-28 p-1.5 bg-white border border-neutral-300 rounded font-bold text-neutral-900 text-right"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Quick TZS denomination buttons */}
+                    <div className="flex gap-1.5 pt-1">
+                      {[totalPayableTzs, 50000, 100000, 200000].map((amt, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setTenderCashTzs(amt)}
+                          className={`flex-1 py-1.5 text-[11px] font-mono font-bold rounded-lg border transition-colors cursor-pointer ${
+                            tenderCashTzs === amt
+                              ? 'bg-[#43A047] text-white border-[#43A047]'
+                              : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                          }`}
+                        >
+                          {idx === 0 ? 'Exact' : `${(amt / 1000).toFixed(0)}k`}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Change Due Display */}
+                    <div className="pt-2 border-t border-neutral-200 flex justify-between items-center text-xs">
+                      <span className="text-neutral-600 font-semibold">Change to Return:</span>
+                      <span className="text-sm font-bold font-mono text-emerald-700">
+                        {formatMoney(changeDueTzs)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="space-y-3 bg-neutral-50 p-3.5 rounded-xl border border-neutral-200 text-xs">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[11px] font-semibold text-neutral-600 block mb-1">1st Method</label>
+                    <select
+                      value={splitMethod1}
+                      onChange={(e) => setSplitMethod1(e.target.value as Exclude<PaymentMethod, 'split'>)}
+                      className="w-full p-2 bg-white border border-neutral-200 rounded-lg font-bold"
                     >
-                      <Icon className="w-4 h-4" />
-                      <span>{m.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Cash Tender Calculation & Quick Denomination Buttons */}
-            {selectedPaymentMethod === 'cash' && (
-              <div className="space-y-2 bg-neutral-50 p-3 rounded-xl border border-neutral-200">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-neutral-700">Cash Received:</span>
-                  <div className="flex items-center gap-1 font-mono">
-                    <span className="text-neutral-500">$</span>
+                      <option value="cash">Cash</option>
+                      <option value="mpesa">M-Pesa</option>
+                      <option value="airtel">Airtel Money</option>
+                      <option value="card">Card</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-neutral-600 block mb-1">1st Amount (TZS)</label>
                     <input
                       type="number"
-                      step={0.01}
-                      min={totalPayableUsd}
-                      value={tenderCashAmount}
-                      onChange={(e) => setTenderCashAmount(Number(e.target.value))}
-                      className="w-24 p-1 bg-white border border-neutral-300 rounded font-bold text-neutral-900 text-right"
+                      min={0}
+                      max={totalPayableTzs}
+                      step={500}
+                      value={splitAmount1}
+                      onChange={(e) => setSplitAmount1(Number(e.target.value))}
+                      className="w-full p-2 bg-white border border-neutral-200 rounded-lg font-mono font-bold"
                     />
                   </div>
                 </div>
 
-                {/* Quick denomination pills */}
-                <div className="flex gap-1.5 pt-1">
-                  {[totalPayableUsd, 50, 60, 100].map((amt, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => setTenderCashAmount(amt)}
-                      className={`flex-1 py-1 text-[11px] font-mono font-bold rounded-lg border transition-colors ${
-                        tenderCashAmount === amt
-                          ? 'bg-[#43A047] text-white border-[#43A047]'
-                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                      }`}
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-neutral-200">
+                  <div>
+                    <label className="text-[11px] font-semibold text-neutral-600 block mb-1">2nd Method</label>
+                    <select
+                      value={splitMethod2}
+                      onChange={(e) => setSplitMethod2(e.target.value as Exclude<PaymentMethod, 'split'>)}
+                      className="w-full p-2 bg-white border border-neutral-200 rounded-lg font-bold"
                     >
-                      {idx === 0 ? 'Exact' : `$${amt}`}
-                    </button>
-                  ))}
+                      <option value="mpesa">M-Pesa</option>
+                      <option value="airtel">Airtel Money</option>
+                      <option value="card">Card</option>
+                      <option value="cash">Cash</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-neutral-600 block mb-1">Remaining Balance</label>
+                    <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg font-mono font-bold text-emerald-900">
+                      {formatMoney(Math.max(0, totalPayableTzs - Math.min(totalPayableTzs, Math.max(0, splitAmount1))))}
+                    </div>
+                  </div>
                 </div>
 
-                {/* Change Due Display */}
-                <div className="pt-2 border-t border-neutral-200 flex justify-between items-center text-xs">
-                  <span className="text-neutral-600 font-semibold">Change to Return:</span>
-                  <span className="text-sm font-bold font-mono text-emerald-700">
-                    ${changeDueUsd.toFixed(2)}
-                  </span>
-                </div>
+                <input
+                  type="text"
+                  value={splitRef2}
+                  onChange={(e) => setSplitRef2(e.target.value)}
+                  placeholder="2nd leg Transaction Ref (e.g. M-Pesa QK...)"
+                  className="w-full p-2 bg-white border border-neutral-200 rounded-lg font-mono"
+                />
               </div>
             )}
 
@@ -1575,14 +1873,239 @@ export const PosView: React.FC = () => {
                 className="w-full py-3 bg-[#43A047] hover:bg-[#388E3C] text-white font-bold text-xs uppercase tracking-wider rounded-xl shadow-md flex items-center justify-center gap-2 cursor-pointer transition-colors"
               >
                 <Printer className="w-4 h-4" />
-                <span>Complete Payment & Print Receipt</span>
+                <span>Complete Payment &amp; Print Receipt</span>
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Tax Receipt Modal */}
+      {/* ================= SERVICE COUPON VERIFICATION & LIVE ORDERS MODAL ================= */}
+      {isCouponLookupOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-neutral-200 overflow-hidden flex flex-col max-h-[88vh]">
+            <div className="px-5 py-4 bg-neutral-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <Ticket className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h3 className="font-bold text-sm">Cashier Service Coupon &amp; Order Lookup</h3>
+                  <p className="text-[11px] text-neutral-400">
+                    Verify coupon codes, collect split/partial balances, or request controlled cancellation
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsCouponLookupOpen(false)}
+                className="p-1.5 text-neutral-400 hover:text-white rounded-lg"
+                aria-label="Close coupon lookup"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b border-neutral-200 bg-neutral-50">
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="text"
+                  value={couponSearchQuery}
+                  onChange={(e) => setCouponSearchQuery(e.target.value)}
+                  placeholder="Enter Service Coupon (e.g. SV-4827), KOT #, Order #, or Customer Name..."
+                  autoFocus
+                  className="w-full pl-9 pr-3 py-2.5 text-xs bg-white border border-neutral-300 rounded-xl font-mono focus:outline-none focus:border-[#43A047]"
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {orders
+                .filter((o) => {
+                  const q = couponSearchQuery.trim().toLowerCase();
+                  if (!q) return true;
+                  const coupon = (o.serviceCouponCode || `SV-${o.orderNumber.replace('#', '')}`).toLowerCase();
+                  return (
+                    coupon.includes(q) ||
+                    o.orderNumber.toLowerCase().includes(q) ||
+                    (o.kotNumber || '').toLowerCase().includes(q) ||
+                    o.customerName.toLowerCase().includes(q) ||
+                    (o.tableNumber || '').toLowerCase().includes(q)
+                  );
+                })
+                .map((ord) => {
+                  const coupon = ord.serviceCouponCode || `SV-${ord.orderNumber.replace('#', '')}`;
+                  const isPaid = ord.paymentStatus === 'paid';
+                  const remaining = Math.max(0, ord.total - (ord.paidAmount || 0));
+                  const isCancelledOrDraft = ord.status === 'cancelled' || ord.status === 'draft' || ord.status === 'rejected';
+                  return (
+                    <div
+                      key={ord.id}
+                      className="p-3.5 rounded-xl border border-neutral-200 bg-white space-y-2.5"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-extrabold text-xs bg-amber-100 text-amber-950 px-2 py-0.5 rounded border border-amber-300">
+                              {coupon}
+                            </span>
+                            <span className="font-mono font-bold text-xs text-neutral-900">
+                              {ord.orderNumber}
+                            </span>
+                            {ord.kotNumber && (
+                              <span className="font-mono text-[10px] font-bold bg-neutral-100 text-neutral-700 px-1.5 py-0.5 rounded">
+                                {ord.kotNumber}
+                              </span>
+                            )}
+                            <span className="text-[11px] text-neutral-500">
+                              {ord.tableNumber || ord.type}
+                            </span>
+                          </div>
+                          <div className="text-xs text-neutral-700 font-medium mt-1">
+                            {ord.customerName} · {ord.items.map((i) => `${i.quantity}x ${i.name}`).join(', ')}
+                          </div>
+                          {ord.items.some((i) => i.customInstructions || i.isCustomItem) && (
+                            <div className="text-[11px] text-amber-800 mt-0.5">
+                              {ord.items
+                                .filter((i) => i.customInstructions || i.isCustomItem)
+                                .map((i) => `${i.name}: ${i.customInstructions || 'Off-Menu Custom'}`)
+                                .join(' · ')}
+                            </div>
+                          )}
+                          {ord.payments && ord.payments.length > 0 && (
+                            <div className="text-[10px] font-mono text-blue-700 mt-1">
+                              Paid entries: {ord.payments.map((p) => `${p.method.toUpperCase()} ${formatMoney(p.amount)}`).join(' + ')}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <div className="text-sm font-extrabold font-mono text-neutral-900 tabular-nums">
+                            {formatMoney(ord.total)}
+                          </div>
+                          {ord.paymentStatus === 'partial' && (
+                            <div className="text-[11px] font-mono font-bold text-blue-700">
+                              Bal: {formatMoney(remaining)}
+                            </div>
+                          )}
+                          <div
+                            className={`text-[10px] font-bold uppercase ${
+                              isPaid ? 'text-emerald-700' : 'text-amber-700'
+                            }`}
+                          >
+                            {ord.paymentStatus} · {ord.status.replace(/_/g, ' ')}
+                          </div>
+                        </div>
+                      </div>
+
+                      {cancelTargetOrder?.id === ord.id && (
+                        <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 space-y-2">
+                          <input
+                            type="text"
+                            value={cancelReasonDraft}
+                            onChange={(e) => setCancelReasonDraft(e.target.value)}
+                            placeholder="Reason for cancellation approval..."
+                            className="w-full p-2 text-xs bg-white border border-rose-200 rounded-lg"
+                          />
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCancelTargetOrder(null);
+                                setCancelReasonDraft('');
+                              }}
+                              className="px-2.5 py-1 text-[11px] font-semibold text-neutral-600"
+                            >
+                              Back
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!cancelReasonDraft.trim()}
+                              onClick={() => {
+                                requestApproval({
+                                  orderId: ord.id,
+                                  actionType: 'cancel_order',
+                                  requestedBy: 'Tony Danza (Cashier)',
+                                  requestedRole: 'cashier',
+                                  details: `Cancel ${ord.orderNumber} (${formatMoney(ord.total)})`,
+                                  amountImpact: ord.total,
+                                  reason: cancelReasonDraft.trim(),
+                                });
+                                setCancelTargetOrder(null);
+                                setCancelReasonDraft('');
+                                showToast(`Cancellation approval sent to Manager for ${ord.orderNumber}`);
+                              }}
+                              className="px-3 py-1 bg-rose-600 text-white text-[11px] font-bold rounded-lg disabled:opacity-40 cursor-pointer"
+                            >
+                              Send Cancel Request
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100 flex-wrap">
+                        <button
+                          onClick={() => {
+                            setLastProcessedOrder(ord);
+                            setIsReceiptOpen(true);
+                          }}
+                          className="px-3 py-1.5 text-[11px] font-semibold bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-lg cursor-pointer"
+                        >
+                          View Receipt
+                        </button>
+                        {!isPaid && !isCancelledOrDraft && remaining > 0 && (
+                          <>
+                            <button
+                              onClick={() => {
+                                processPayment(ord.id, 'cash', remaining, { collectedBy: 'Cashier POS' });
+                                showToast(`Settled ${formatMoney(remaining)} for ${ord.orderNumber} via Cash`);
+                              }}
+                              className="px-3 py-1.5 text-[11px] font-bold bg-[#43A047] hover:bg-[#388E3C] text-white rounded-lg cursor-pointer"
+                            >
+                              Pay Cash ({formatMoney(remaining)})
+                            </button>
+                            <button
+                              onClick={() => {
+                                processPayment(ord.id, 'mpesa', remaining, {
+                                  collectedBy: 'Cashier POS',
+                                  transactionRef: `MP-${Date.now().toString().slice(-5)}`,
+                                });
+                                showToast(`Settled ${formatMoney(remaining)} for ${ord.orderNumber} via M-Pesa`);
+                              }}
+                              className="px-3 py-1.5 text-[11px] font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-lg cursor-pointer"
+                            >
+                              M-Pesa ({formatMoney(remaining)})
+                            </button>
+                          </>
+                        )}
+                        {ord.status !== 'completed' && !isCancelledOrDraft && (
+                          <>
+                            <button
+                              onClick={() => setCancelTargetOrder(ord)}
+                              className="px-2.5 py-1.5 text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg cursor-pointer inline-flex items-center gap-1"
+                            >
+                              <ShieldAlert className="w-3 h-3" />
+                              <span>Req Cancel</span>
+                            </button>
+                            <button
+                              onClick={() => {
+                                updateOrderStatus(ord.id, 'completed', 'Cashier POS');
+                                showToast(`Order ${ord.orderNumber} (${coupon}) completed`);
+                              }}
+                              className="px-3 py-1.5 text-[11px] font-bold bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg cursor-pointer"
+                            >
+                              Complete Service
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sales / Tax Receipt Modal */}
       <ReceiptModal
         order={lastProcessedOrder}
         isOpen={isReceiptOpen}

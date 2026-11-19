@@ -22,6 +22,13 @@ import {
   BlockedCookingAttempt,
   DailyReconciliationItem,
   RecipeVersionHistoryItem,
+  CommissionMode,
+  OrderItemStatus,
+  PaymentTransaction,
+  OrderAdjustment,
+  ApprovalRequest,
+  AuditLogEntry,
+  DiscrepancyAlert,
 } from '../types/restaurant';
 import {
   INITIAL_TENANTS,
@@ -39,7 +46,10 @@ import {
   INITIAL_PREPARED_DISH_STOCKS,
   INITIAL_BLOCKED_ATTEMPTS,
   INITIAL_DAILY_RECONCILIATION,
+  INITIAL_AUDIT_LOGS,
+  INITIAL_APPROVAL_REQUESTS,
 } from '../data/mockData';
+import { parseAppDeepLink, notifyFlutterHost } from '../utils/mobileEnvironment';
 
 export interface CartItem {
   menuItem: MenuItem;
@@ -47,6 +57,9 @@ export interface CartItem {
   selectedPortion?: { name: string; priceDelta: number };
   selectedModifiers: ModifierItem[];
   customerNotes?: string;
+  customInstructions?: string;
+  extraCharge?: number;
+  isCustomItem?: boolean;
 }
 
 interface RestaurantContextType {
@@ -55,11 +68,38 @@ interface RestaurantContextType {
   setCurrentTenantId: (tenantId: string) => void;
   activeRole: Role;
   setActiveRole: (role: Role) => void;
+  isStandalonePortal: boolean;
+  initialTableNumber?: string;
   activeWaiterId: string;
   setActiveWaiterId: (id: string) => void;
   currency: 'TZS' | 'USD';
   toggleCurrency: () => void;
   formatMoney: (amountInTzs: number) => string;
+  taxEnabled: boolean;
+  setTaxEnabled: (enabled: boolean) => void;
+  taxRatePct: number;
+  setTaxRatePct: (ratePct: number) => void;
+  defaultCommissionMode: CommissionMode;
+  defaultCommissionValue: number;
+  setDefaultCommissionPolicy: (mode: CommissionMode, value: number) => void;
+  updateOrderCommission: (
+    orderId: string,
+    mode: CommissionMode,
+    value: number,
+    configuredBy?: string,
+    waiterId?: string
+  ) => void;
+  getOrderCommission: (
+    order: Order,
+    waiterId?: string
+  ) => {
+    mode: CommissionMode;
+    value: number;
+    amount: number;
+    isPaidEligible: boolean;
+    configuredBy: string;
+  };
+  settleWaiterCommission: (waiterId: string, amount?: number) => void;
   orders: Order[];
   tables: Table[];
   menuItems: MenuItem[];
@@ -111,6 +151,9 @@ interface RestaurantContextType {
     servingWaiterId?: string;
     notes?: string;
     markAsPaid?: boolean;
+    asDraft?: boolean;
+    existingDraftId?: string;
+    priority?: 'normal' | 'rush' | 'vip';
     discount?: number;
     discountType?: 'percent' | 'fixed';
     discountValue?: number;
@@ -120,10 +163,36 @@ interface RestaurantContextType {
     isTaxExempt?: boolean;
     deliveryFee?: number;
     donation?: number;
+    customItems?: CartItem[];
+    actorName?: string;
+    actorRole?: Role;
   }) => Order;
-  updateOrderStatus: (orderId: string, status: OrderStatus) => void;
-  updateOrderItemStatus: (orderId: string, itemIndex: number, itemStatus: 'pending' | 'preparing' | 'ready') => void;
-  processPayment: (orderId: string, method: PaymentMethod, amount: number) => void;
+  submitDraftToKitchen: (orderId: string, actorName?: string) => void;
+  updateOrderStatus: (orderId: string, status: OrderStatus, actorName?: string, note?: string) => void;
+  updateOrderItemStatus: (orderId: string, itemIndex: number, itemStatus: OrderItemStatus, actorName?: string) => void;
+  rejectOrderItem: (orderId: string, itemIndex: number, kitchenStaff: string, reason: string) => void;
+  processPayment: (
+    orderId: string,
+    method: Exclude<PaymentMethod, 'split'>,
+    amount: number,
+    options?: { completeService?: boolean; collectedBy?: string; transactionRef?: string; isRefund?: boolean }
+  ) => void;
+  auditLogs: AuditLogEntry[];
+  approvalRequests: ApprovalRequest[];
+  discrepancies: DiscrepancyAlert[];
+  requestApproval: (params: {
+    orderId: string;
+    actionType: ApprovalRequest['actionType'];
+    requestedBy: string;
+    requestedRole: Role;
+    details: string;
+    amountImpact: number;
+    reason: string;
+    payload?: ApprovalRequest['payload'];
+  }) => ApprovalRequest;
+  reviewApprovalRequest: (requestId: string, approve: boolean, managerName?: string) => void;
+  cancelOrderControlled: (orderId: string, reason: string, actor: string, approvedBy?: string) => void;
+  promoteCustomItemToMenu: (orderId: string, itemIndex: number, category?: string) => MenuItem | null;
   updateTableStatus: (tableId: string, status: Table['status'], waiterId?: string) => void;
   addTable: (table: Omit<Table, 'id'>) => Table;
   updateTable: (table: Table) => void;
@@ -186,6 +255,8 @@ interface RestaurantContextType {
     todaySales: number;
     pendingOrdersCount: number;
     completedOrdersCount: number;
+    unpaidOrdersCount: number;
+    unpaidProjectedCommission: number;
     earnedCommission: number;
     pendingCommission: number;
     paidCommission: number;
@@ -206,12 +277,25 @@ interface RestaurantContextType {
 const RestaurantContext = createContext<RestaurantContextType | undefined>(undefined);
 
 export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [deepLink] = useState(() => parseAppDeepLink());
   const [tenants] = useState<RestaurantTenant[]>(INITIAL_TENANTS);
-  const [currentTenantId, setCurrentTenantId] = useState<string>('tenant-savanna');
-  const [activeRole, setActiveRole] = useState<Role>('cashier');
+  const [currentTenantId, setCurrentTenantId] = useState<string>(() => {
+    if (deepLink.tenantId && INITIAL_TENANTS.some((t) => t.id === deepLink.tenantId || t.slug === deepLink.tenantId)) {
+      const found = INITIAL_TENANTS.find((t) => t.id === deepLink.tenantId || t.slug === deepLink.tenantId);
+      return found ? found.id : 'tenant-savanna';
+    }
+    return 'tenant-savanna';
+  });
+  const [activeRole, setActiveRole] = useState<Role>(() => deepLink.portal ?? 'cashier');
+  const [isStandalonePortal] = useState<boolean>(() => Boolean(deepLink.standalone));
   const [activeWaiterId, setActiveWaiterId] = useState<string>('waiter-john');
-  const [currency, setCurrency] = useState<'TZS' | 'USD'>('USD');
-  const [activeReferralCode, setActiveReferralCode] = useState<string | null>('WAITER_JOHN');
+  const [currency, setCurrency] = useState<'TZS' | 'USD'>('TZS');
+  const [taxEnabled, setTaxEnabled] = useState<boolean>(false);
+  const [taxRatePct, setTaxRatePct] = useState<number>(18);
+  const [defaultCommissionMode, setDefaultCommissionMode] = useState<CommissionMode>('percent');
+  const [defaultCommissionValue, setDefaultCommissionValue] = useState<number>(5);
+  const [settledCommissionByWaiter, setSettledCommissionByWaiter] = useState<Record<string, number>>({});
+  const [activeReferralCode, setActiveReferralCode] = useState<string | null>(() => deepLink.referralCode ?? 'WAITER_JOHN');
 
   const [orders, setOrders] = useState<Order[]>(INITIAL_ORDERS);
   const [tables, setTables] = useState<Table[]>(INITIAL_TABLES);
@@ -227,8 +311,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [waiters, setWaiters] = useState<Waiter[]>(INITIAL_WAITERS);
   const [employees, setEmployees] = useState<Employee[]>(INITIAL_EMPLOYEES);
 
-  // Initialize cart with the exact demo ticket from the Loyverse tablet POS photo
+  // Initialize cart empty when opened directly into Customer Portal, otherwise seed Cashier POS demo ticket
   const [cart, setCart] = useState<CartItem[]>(() => {
+    if (deepLink.portal === 'customer') return [];
     const findItem = (id: string, fallbackIdx: number) =>
       INITIAL_MENU_ITEMS.find((i) => i.id === id) || INITIAL_MENU_ITEMS[fallbackIdx];
     return [
@@ -241,7 +326,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     ];
   });
   const [notifications, setNotifications] = useState<AppNotification[]>(INITIAL_NOTIFICATIONS);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(INITIAL_AUDIT_LOGS);
+  const [approvalRequests, setApprovalRequests] = useState<ApprovalRequest[]>(INITIAL_APPROVAL_REQUESTS);
   const [soundAlertTriggered, setSoundAlertTriggered] = useState<boolean>(false);
+
+  const logAuditEvent = (entry: Omit<AuditLogEntry, 'id' | 'timestamp'>) => {
+    const newLog: AuditLogEntry = {
+      ...entry,
+      id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: new Date().toISOString(),
+    };
+    setAuditLogs((prev) => [newLog, ...prev]);
+  };
 
   const unreadNotificationCount = useMemo(() => {
     return notifications.filter((n) => !n.read).length;
@@ -456,6 +552,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     servingWaiterId?: string;
     notes?: string;
     markAsPaid?: boolean;
+    asDraft?: boolean;
+    existingDraftId?: string;
+    priority?: 'normal' | 'rush' | 'vip';
     discount?: number;
     discountType?: 'percent' | 'fixed';
     discountValue?: number;
@@ -465,12 +564,17 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     isTaxExempt?: boolean;
     deliveryFee?: number;
     donation?: number;
+    customItems?: CartItem[];
+    actorName?: string;
+    actorRole?: Role;
   }) => {
+    const sourceItems = params.customItems ?? cart;
     let subtotal = 0;
-    const items = cart.map((ci) => {
+    const items = sourceItems.map((ci) => {
       const unitPrice = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
       const modifiersSum = ci.selectedModifiers.reduce((acc, m) => acc + m.price, 0);
-      const totalItemPrice = unitPrice + modifiersSum;
+      const extraCharge = Math.max(0, Math.round(ci.extraCharge || 0));
+      const totalItemPrice = unitPrice + modifiersSum + extraCharge;
       subtotal += totalItemPrice * ci.quantity;
 
       return {
@@ -481,27 +585,28 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         portion: ci.selectedPortion?.name,
         selectedModifiers: ci.selectedModifiers,
         customerNotes: ci.customerNotes,
+        customInstructions: ci.customInstructions,
+        extraCharge: extraCharge > 0 ? extraCharge : undefined,
+        isCustomItem: ci.isCustomItem || ci.menuItem.id.startsWith('custom-'),
         station: ci.menuItem.station,
         status: 'pending' as const,
       };
     });
 
-    // Discount calculation
     const discountAmount = Math.max(0, Math.min(subtotal, Math.round(params.discount ?? 0)));
     const discountedSubtotal = Math.max(0, subtotal - discountAmount);
 
-    // Tax calculation: if isTaxExempt is true or tax is explicitly 0, tax is 0. Otherwise use params.tax or standard rate on discountedSubtotal.
+    const effectiveRate = taxEnabled ? (params.taxRate !== undefined ? params.taxRate : taxRatePct / 100) : 0;
     let tax = 0;
-    if (!params.isTaxExempt) {
+    const isExempt = !taxEnabled || Boolean(params.isTaxExempt);
+    if (!isExempt) {
       if (params.tax !== undefined) {
         tax = Math.max(0, Math.round(params.tax));
       } else {
-        const rate = params.taxRate !== undefined ? params.taxRate : currentTenant.taxRate;
-        tax = Math.round(discountedSubtotal * rate);
+        tax = Math.round(discountedSubtotal * effectiveRate);
       }
     }
 
-    // Delivery fee: use custom params.deliveryFee if provided, else if delivery order default to tenant standard delivery fee, else 0
     let deliveryFee = 0;
     if (params.type === 'delivery') {
       deliveryFee = params.deliveryFee !== undefined ? Math.max(0, Math.round(params.deliveryFee)) : currentTenant.deliveryFee;
@@ -509,43 +614,109 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const donation = params.donation !== undefined ? params.donation : 0;
     const total = Math.max(0, discountedSubtotal + tax + deliveryFee + donation);
 
-    const nextOrderNum = `#F00${orders.length + 27}`;
+    const existingDraft = params.existingDraftId ? orders.find((o) => o.id === params.existingDraftId) : undefined;
+    const nextOrderNum = existingDraft?.orderNumber || `#F00${orders.length + 27}`;
+    const nextKotNum = existingDraft?.kotNumber || `KOT-${Math.floor(154650 + orders.length * 3 + Math.random() * 9)}`;
+    const branchPrefix = currentTenant.id === 'tenant-kona-chips' ? 'KC' : 'SV';
+    const existingCodes = new Set(orders.map((o) => o.serviceCouponCode).filter(Boolean));
+    let serviceCouponCode = existingDraft?.serviceCouponCode || `${branchPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (!existingDraft?.serviceCouponCode) {
+      while (existingCodes.has(serviceCouponCode)) {
+        serviceCouponCode = `${branchPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+      }
+    }
+
+    const defaultCommAmount =
+      defaultCommissionMode === 'percent'
+        ? Math.round(discountedSubtotal * (Math.max(0, Math.min(100, defaultCommissionValue)) / 100))
+        : Math.max(0, Math.round(defaultCommissionValue));
+
+    const nowIso = new Date().toISOString();
+    const actor = params.actorName || (params.servingWaiterId ? waiters.find((w) => w.id === params.servingWaiterId)?.name || 'Staff' : 'POS / Guest');
+    const actorRole: Role = params.actorRole || (params.servingWaiterId ? 'waiter' : activeRole);
+    const targetStatus: OrderStatus = params.asDraft ? 'draft' : 'sent_to_kitchen';
+    const orderId = existingDraft?.id || `ord-${Date.now()}`;
+
+    const initialPayments: PaymentTransaction[] =
+      params.markAsPaid && total > 0
+        ? [
+            {
+              id: `pay-${Date.now()}`,
+              orderId,
+              method: (params.paymentMethod && params.paymentMethod !== 'split' ? params.paymentMethod : 'cash') as Exclude<PaymentMethod, 'split'>,
+              amount: total,
+              receivedBy: actor,
+              timestamp: nowIso,
+            },
+          ]
+        : existingDraft?.payments || [];
+
     const newOrder: Order = {
-      id: `ord-${Date.now()}`,
+      id: orderId,
       orderNumber: nextOrderNum,
+      kotNumber: nextKotNum,
+      serviceCouponCode,
       tenantId: currentTenant.id,
       type: params.type,
+      priority: params.priority || 'normal',
       tableNumber: params.tableNumber,
       customerName: params.customerName || 'Guest Customer',
       customerPhone: params.customerPhone,
       deliveryAddress: params.deliveryAddress,
       items,
-      status: 'sent_to_kitchen',
+      status: targetStatus,
       paymentStatus: params.markAsPaid ? 'paid' : 'unpaid',
       paymentMethod: params.paymentMethod,
       referralWaiterId: params.referralWaiterId || (activeReferralCode ? 'waiter-john' : undefined),
       servingWaiterId: params.servingWaiterId,
       subtotal,
+      originalAmount: existingDraft?.originalAmount ?? total,
       discount: discountAmount,
       discountType: params.discountType,
       discountValue: params.discountValue,
       discountReason: params.discountReason,
       tax,
-      taxRate: params.isTaxExempt ? 0 : (params.taxRate ?? currentTenant.taxRate),
-      isTaxExempt: params.isTaxExempt ?? false,
+      taxRate: isExempt ? 0 : effectiveRate,
+      isTaxExempt: isExempt,
       deliveryFee,
       donation,
       total,
-      paidAmount: params.markAsPaid ? total : 0,
+      paidAmount: params.markAsPaid ? total : existingDraft?.paidAmount || 0,
+      payments: initialPayments,
+      adjustments: existingDraft?.adjustments || [],
+      statusHistory: [
+        ...(existingDraft?.statusHistory || []),
+        {
+          status: targetStatus,
+          actor,
+          note: params.asDraft
+            ? 'Saved draft order (visible to management)'
+            : existingDraft
+            ? 'Submitted saved draft to Kitchen'
+            : 'Order created and sent to Kitchen',
+          timestamp: nowIso,
+        },
+      ],
+      commissionMode: defaultCommissionMode,
+      commissionValue: defaultCommissionValue,
+      commissionAmount: defaultCommAmount,
+      commissionConfiguredBy:
+        defaultCommissionMode === 'percent'
+          ? `Auto Rule (${defaultCommissionValue}% Net)`
+          : `Auto Rule (${formatMoney(defaultCommissionValue)} Fixed)`,
+      commissionUpdatedAt: nowIso,
       notes: params.notes,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: existingDraft?.createdAt || nowIso,
+      updatedAt: nowIso,
     };
 
-    setOrders((prev) => [newOrder, ...prev]);
+    if (existingDraft) {
+      setOrders((prev) => prev.map((o) => (o.id === existingDraft.id ? newOrder : o)));
+    } else {
+      setOrders((prev) => [newOrder, ...prev]);
+    }
 
-    // Update table status if dine-in
-    if (params.type === 'dine_in' && params.tableNumber) {
+    if (params.type === 'dine_in' && params.tableNumber && !params.asDraft) {
       setTables((prev) =>
         prev.map((t) =>
           t.number.toLowerCase() === params.tableNumber?.toLowerCase()
@@ -555,36 +726,136 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       );
     }
 
-    // Deduct theoretical recipe inventory
-    deductIngredientsForOrder(cart, nextOrderNum);
+    if (!params.asDraft) {
+      deductIngredientsForOrder(sourceItems, nextOrderNum);
+      setSoundAlertTriggered(true);
+      addNotification({
+        title: `New Order ${nextOrderNum} (${serviceCouponCode})`,
+        message: `${params.type === 'dine_in' ? `Table ${params.tableNumber}` : params.type.toUpperCase()} - ${items.map((i) => `${i.quantity}x ${i.name}`).join(', ')}`,
+        type: 'order',
+        actionRole: 'kitchen',
+        actionLabel: 'Open KDS Ticket',
+      });
+    } else {
+      addNotification({
+        title: `Waiter Draft Saved: ${nextOrderNum}`,
+        message: `${actor} saved a draft (${formatMoney(total)}) for ${params.tableNumber || params.customerName}. Visible for accountability.`,
+        type: 'order',
+        actionRole: 'manager',
+        actionLabel: 'Review Drafts',
+      });
+    }
 
-    // Clear cart and trigger sound alert
-    clearCart();
-    setSoundAlertTriggered(true);
+    logAuditEvent({
+      orderId: newOrder.id,
+      orderNumber: newOrder.orderNumber,
+      actor,
+      actorRole,
+      action: params.asDraft ? 'DRAFT_SAVED' : 'ORDER_SUBMITTED',
+      details: `${params.asDraft ? 'Draft saved' : 'Sent to kitchen'} (${items.length} line items, ${formatMoney(total)})${
+        items.some((i) => i.isCustomItem) ? ' · Contains Custom Off-Menu Item' : ''
+      }`,
+    });
 
-    // Trigger Notification for new order
-    addNotification({
-      title: `New Order ${nextOrderNum}`,
-      message: `${params.type === 'dine_in' ? `Table ${params.tableNumber}` : params.type.toUpperCase()} - ${items.map((i) => `${i.quantity}x ${i.name}`).join(', ')}`,
-      type: 'order',
-      actionRole: 'kitchen',
-      actionLabel: 'Open KDS Ticket',
+    if (!params.customItems) {
+      clearCart();
+    }
+
+    notifyFlutterHost('orderPlaced', {
+      orderId: newOrder.id,
+      orderNumber: newOrder.orderNumber,
+      serviceCouponCode: newOrder.serviceCouponCode,
+      total: newOrder.total,
+      type: newOrder.type,
     });
 
     return newOrder;
   };
 
-  const updateOrderStatus = (orderId: string, status: OrderStatus) => {
+  const submitDraftToKitchen = (orderId: string, actorName: string = 'Waiter') => {
+    const draft = orders.find((o) => o.id === orderId);
+    if (!draft || draft.status !== 'draft') return;
+    const nowIso = new Date().toISOString();
+
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              status: 'sent_to_kitchen',
+              updatedAt: nowIso,
+              statusHistory: [
+                ...(o.statusHistory || []),
+                {
+                  status: 'sent_to_kitchen',
+                  actor: actorName,
+                  note: 'Draft submitted to Kitchen KDS',
+                  timestamp: nowIso,
+                },
+              ],
+            }
+          : o
+      )
+    );
+
+    if (draft.type === 'dine_in' && draft.tableNumber) {
+      setTables((prev) =>
+        prev.map((t) =>
+          t.number.toLowerCase() === draft.tableNumber?.toLowerCase()
+            ? { ...t, status: 'occupied', currentOrderId: draft.id, assignedWaiterId: draft.servingWaiterId }
+            : t
+        )
+      );
+    }
+
+    setSoundAlertTriggered(true);
+    addNotification({
+      title: `Draft Dispatched: ${draft.orderNumber}`,
+      message: `${draft.kotNumber || draft.orderNumber} sent to Kitchen by ${actorName}.`,
+      type: 'order',
+      actionRole: 'kitchen',
+      actionLabel: 'Open KDS',
+    });
+
+    logAuditEvent({
+      orderId: draft.id,
+      orderNumber: draft.orderNumber,
+      actor: actorName,
+      actorRole: 'waiter',
+      action: 'DRAFT_DISPATCHED_TO_KITCHEN',
+      details: `Converted draft ${draft.orderNumber} (${draft.kotNumber || ''}) into live Kitchen KOT.`,
+    });
+  };
+
+  const updateOrderStatus = (
+    orderId: string,
+    status: OrderStatus,
+    actorName: string = 'Kitchen / Floor Staff',
+    note?: string
+  ) => {
+    const nowIso = new Date().toISOString();
+    const target = orders.find((o) => o.id === orderId);
+
     setOrders((prev) =>
       prev.map((ord) => {
         if (ord.id === orderId) {
           let updatedItems = ord.items;
-          if (status === 'ready') {
-            updatedItems = ord.items.map((it) => ({ ...it, status: 'ready' }));
+          if (status === 'accepted') {
+            updatedItems = ord.items.map((it) =>
+              it.status === 'pending' ? { ...it, status: 'accepted' as const } : it
+            );
+          } else if (status === 'ready') {
+            updatedItems = ord.items.map((it) =>
+              it.status !== 'rejected' ? { ...it, status: 'ready' as const } : it
+            );
+          } else if (status === 'served') {
+            updatedItems = ord.items.map((it) =>
+              it.status !== 'rejected' ? { ...it, status: 'served' as const } : it
+            );
           } else if (status === 'preparing') {
             updatedItems = ord.items.map((it) => ({
               ...it,
-              status: it.status === 'pending' ? 'preparing' : it.status,
+              status: it.status === 'pending' || it.status === 'accepted' ? 'preparing' : it.status,
             }));
           }
 
@@ -602,20 +873,33 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             ...ord,
             status,
             items: updatedItems,
-            updatedAt: new Date().toISOString(),
+            updatedAt: nowIso,
+            statusHistory: [
+              ...(ord.statusHistory || []),
+              { status, actor: actorName, note, timestamp: nowIso },
+            ],
           };
         }
         return ord;
       })
     );
 
-    // Release table if completed or cancelled
-    if (status === 'completed' || status === 'cancelled') {
-      const order = orders.find((o) => o.id === orderId);
-      if (order?.tableNumber) {
+    if (target) {
+      logAuditEvent({
+        orderId: target.id,
+        orderNumber: target.orderNumber,
+        actor: actorName,
+        actorRole: activeRole,
+        action: `STATUS_${status.toUpperCase()}`,
+        details: `Order ${target.orderNumber} moved from ${target.status} to ${status}${note ? ` (${note})` : ''}.`,
+      });
+    }
+
+    if (status === 'completed' || status === 'cancelled' || status === 'rejected') {
+      if (target?.tableNumber) {
         setTables((prev) =>
           prev.map((t) =>
-            t.number.toLowerCase() === order.tableNumber?.toLowerCase()
+            t.number.toLowerCase() === target.tableNumber?.toLowerCase()
               ? { ...t, status: 'available', currentOrderId: undefined }
               : t
           )
@@ -627,8 +911,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const updateOrderItemStatus = (
     orderId: string,
     itemIndex: number,
-    itemStatus: 'pending' | 'preparing' | 'ready'
+    itemStatus: OrderItemStatus,
+    actorName: string = 'Kitchen Staff'
   ) => {
+    const nowIso = new Date().toISOString();
     setOrders((prev) =>
       prev.map((ord) => {
         if (ord.id === orderId) {
@@ -636,19 +922,38 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           if (updatedItems[itemIndex]) {
             updatedItems[itemIndex] = { ...updatedItems[itemIndex], status: itemStatus };
           }
-          const allReady = updatedItems.every((it) => it.status === 'ready');
-          const anyPreparing = updatedItems.some((it) => it.status === 'preparing');
-          const newOrderStatus = allReady
-            ? 'ready'
-            : anyPreparing
-            ? 'preparing'
-            : ord.status;
+          const activeItems = updatedItems.filter((it) => it.status !== 'rejected');
+          const allReady = activeItems.length > 0 && activeItems.every((it) => it.status === 'ready' || it.status === 'served');
+          const anyPreparing = activeItems.some((it) => it.status === 'preparing');
+          const anyAccepted = activeItems.some((it) => it.status === 'accepted');
+          const newOrderStatus: OrderStatus =
+            activeItems.length === 0
+              ? 'rejected'
+              : allReady
+              ? 'ready'
+              : anyPreparing
+              ? 'preparing'
+              : anyAccepted && ord.status === 'sent_to_kitchen'
+              ? 'accepted'
+              : ord.status;
 
           return {
             ...ord,
             items: updatedItems,
             status: newOrderStatus,
-            updatedAt: new Date().toISOString(),
+            updatedAt: nowIso,
+            statusHistory:
+              newOrderStatus !== ord.status
+                ? [
+                    ...(ord.statusHistory || []),
+                    {
+                      status: newOrderStatus,
+                      actor: actorName,
+                      note: `Item "${updatedItems[itemIndex]?.name}" marked ${itemStatus}`,
+                      timestamp: nowIso,
+                    },
+                  ]
+                : ord.statusHistory,
           };
         }
         return ord;
@@ -656,38 +961,526 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     );
   };
 
-  const processPayment = (orderId: string, method: PaymentMethod, amount: number) => {
+  const rejectOrderItem = (
+    orderId: string,
+    itemIndex: number,
+    kitchenStaff: string,
+    reason: string
+  ) => {
+    const target = orders.find((o) => o.id === orderId);
+    if (!target || !target.items[itemIndex]) return;
+    const nowIso = new Date().toISOString();
+    const rejectedItem = target.items[itemIndex];
+    const deductionAmount = rejectedItem.price * rejectedItem.quantity;
+
+    setOrders((prev) =>
+      prev.map((ord) => {
+        if (ord.id !== orderId) return ord;
+        const updatedItems = ord.items.map((it, idx) =>
+          idx === itemIndex
+            ? {
+                ...it,
+                status: 'rejected' as const,
+                rejectionReason: reason,
+                rejectedBy: kitchenStaff,
+                rejectedAt: nowIso,
+              }
+            : it
+        );
+        const activeItems = updatedItems.filter((it) => it.status !== 'rejected');
+        const newSubtotal = activeItems.reduce((sum, it) => sum + it.price * it.quantity, 0);
+        const discountedSub = Math.max(0, newSubtotal - (ord.discount || 0));
+        const newTax = ord.isTaxExempt ? 0 : Math.round(discountedSub * (ord.taxRate || 0));
+        const newTotal = Math.max(0, discountedSub + newTax + (ord.deliveryFee || 0) + (ord.donation || 0));
+        const newStatus: OrderStatus = activeItems.length === 0 ? 'rejected' : ord.status;
+
+        const adjustment: OrderAdjustment = {
+          id: `adj-${Date.now()}`,
+          orderId: ord.id,
+          type: 'void_item',
+          originalAmount: ord.total,
+          newAmount: newTotal,
+          difference: newTotal - ord.total,
+          reason: `Kitchen rejected ${rejectedItem.quantity}x ${rejectedItem.name}: ${reason}`,
+          requestedBy: kitchenStaff,
+          approvedBy: 'Kitchen Exception Log',
+          status: 'approved',
+          timestamp: nowIso,
+        };
+
+        return {
+          ...ord,
+          items: updatedItems,
+          subtotal: newSubtotal,
+          tax: newTax,
+          total: newTotal,
+          status: newStatus,
+          adjustments: [...(ord.adjustments || []), adjustment],
+          statusHistory: [
+            ...(ord.statusHistory || []),
+            {
+              status: newStatus,
+              actor: kitchenStaff,
+              note: `Rejected ${rejectedItem.name}: ${reason}`,
+              timestamp: nowIso,
+            },
+          ],
+          updatedAt: nowIso,
+        };
+      })
+    );
+
+    addNotification({
+      title: `Kitchen Rejected Item (${target.orderNumber})`,
+      message: `${kitchenStaff} rejected ${rejectedItem.quantity}x ${rejectedItem.name} (${formatMoney(deductionAmount)}). Reason: ${reason}`,
+      type: 'kitchen',
+      actionRole: 'manager',
+      actionLabel: 'Inspect Audit Log',
+    });
+
+    logAuditEvent({
+      orderId: target.id,
+      orderNumber: target.orderNumber,
+      actor: kitchenStaff,
+      actorRole: 'kitchen',
+      action: 'KITCHEN_ITEM_REJECTED',
+      details: `Marked ${rejectedItem.quantity}x ${rejectedItem.name} as REJECTED (-${formatMoney(deductionAmount)}). Reason: ${reason}`,
+    });
+  };
+
+  const processPayment = (
+    orderId: string,
+    method: Exclude<PaymentMethod, 'split'>,
+    amount: number,
+    options?: { completeService?: boolean; collectedBy?: string; transactionRef?: string; isRefund?: boolean }
+  ) => {
+    const targetOrder = orders.find((o) => o.id === orderId);
+    const nowIso = new Date().toISOString();
+    const delta = options?.isRefund ? -Math.abs(amount) : Math.abs(amount);
+    const willBeFullyPaid = targetOrder ? (targetOrder.paidAmount || 0) + delta >= targetOrder.total : false;
+    const collector = options?.collectedBy || 'Cashier / POS';
+
+    const tx: PaymentTransaction = {
+      id: `pay-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      orderId,
+      method,
+      amount: Math.abs(amount),
+      receivedBy: collector,
+      transactionRef: options?.transactionRef,
+      timestamp: nowIso,
+      isRefund: options?.isRefund,
+    };
+
     setOrders((prev) =>
       prev.map((ord) => {
         if (ord.id === orderId) {
-          const newPaidAmount = (ord.paidAmount || 0) + amount;
-          const isFullyPaid = newPaidAmount >= ord.total;
+          const newPaidAmount = Math.max(0, (ord.paidAmount || 0) + delta);
+          const isFullyPaid = newPaidAmount >= ord.total && ord.total > 0;
+          const updatedPayments = [...(ord.payments || []), tx];
+          const distinctMethods = Array.from(new Set(updatedPayments.filter((p) => !p.isRefund).map((p) => p.method)));
+          const resolvedMethod: PaymentMethod = distinctMethods.length > 1 ? 'split' : method;
+
+          const netSales = Math.max(0, ord.subtotal - (ord.discount || 0));
+          const mode = ord.commissionMode ?? defaultCommissionMode;
+          const val = ord.commissionValue ?? defaultCommissionValue;
+          const computedComm =
+            ord.commissionAmount !== undefined
+              ? ord.commissionAmount
+              : mode === 'percent'
+              ? Math.round(netSales * (Math.max(0, Math.min(100, val)) / 100))
+              : Math.max(0, Math.round(val));
+
+          const nextStatus: OrderStatus =
+            isFullyPaid && options?.completeService
+              ? 'completed'
+              : isFullyPaid && ord.status === 'ready'
+              ? 'served'
+              : ord.status;
+
           return {
             ...ord,
-            paymentStatus: isFullyPaid ? 'paid' : 'partial',
-            paymentMethod: method,
+            paymentStatus: options?.isRefund && newPaidAmount === 0 ? 'refunded' : isFullyPaid ? 'paid' : newPaidAmount > 0 ? 'partial' : 'unpaid',
+            paymentMethod: resolvedMethod,
             paidAmount: newPaidAmount,
-            status: isFullyPaid && ord.status === 'ready' ? 'served' : ord.status,
-            updatedAt: new Date().toISOString(),
+            payments: updatedPayments,
+            status: nextStatus,
+            commissionMode: mode,
+            commissionValue: val,
+            commissionAmount: computedComm,
+            commissionConfiguredBy:
+              ord.commissionConfiguredBy ||
+              (mode === 'percent' ? `Auto Rule (${val}% Net)` : `Auto Rule (${formatMoney(val)} Fixed)`),
+            updatedAt: nowIso,
           };
         }
         return ord;
       })
     );
 
+    if (options?.completeService && willBeFullyPaid && targetOrder?.tableNumber) {
+      setTables((prev) =>
+        prev.map((t) =>
+          t.number.toLowerCase() === targetOrder.tableNumber?.toLowerCase()
+            ? { ...t, status: 'available', currentOrderId: undefined, assignedWaiterId: undefined }
+            : t
+        )
+      );
+    }
+
+    if (targetOrder) {
+      logAuditEvent({
+        orderId: targetOrder.id,
+        orderNumber: targetOrder.orderNumber,
+        actor: collector,
+        actorRole: activeRole,
+        action: options?.isRefund ? 'REFUND_RECORDED' : 'PAYMENT_COLLECTED',
+        details: `${options?.isRefund ? 'Refunded' : 'Collected'} ${formatMoney(Math.abs(amount))} via ${method.toUpperCase()}${
+          options?.transactionRef ? ` (Ref: ${options.transactionRef})` : ''
+        }`,
+      });
+    }
+
+    if (options?.collectedBy && targetOrder) {
+      addNotification({
+        title: `Payment Collected (${targetOrder.orderNumber})`,
+        message: `${options.collectedBy} collected ${formatMoney(amount)} via ${method.toUpperCase()} for Coupon ${
+          targetOrder.serviceCouponCode || targetOrder.orderNumber
+        }${options.completeService && willBeFullyPaid ? ' & completed service' : ''}.`,
+        type: 'order',
+        actionRole: 'cashier',
+        actionLabel: 'View Shift',
+      });
+    }
+
     setCashierShift((prev) => {
+      const signedAmt = options?.isRefund ? -Math.abs(amount) : Math.abs(amount);
       const isCash = method === 'cash';
       const isMpesa = method === 'mpesa' || method === 'airtel';
       const isCard = method === 'card';
       return {
         ...prev,
-        cashSales: isCash ? prev.cashSales + amount : prev.cashSales,
-        mpesaSales: isMpesa ? prev.mpesaSales + amount : prev.mpesaSales,
-        cardSales: isCard ? prev.cardSales + amount : prev.cardSales,
-        expectedCash: isCash ? prev.expectedCash + amount : prev.expectedCash,
+        cashSales: isCash ? prev.cashSales + signedAmt : prev.cashSales,
+        mpesaSales: isMpesa ? prev.mpesaSales + signedAmt : prev.mpesaSales,
+        cardSales: isCard ? prev.cardSales + signedAmt : prev.cardSales,
+        expectedCash: isCash ? prev.expectedCash + signedAmt : prev.expectedCash,
       };
     });
   };
+
+  const requestApproval = (params: {
+    orderId: string;
+    actionType: ApprovalRequest['actionType'];
+    requestedBy: string;
+    requestedRole: Role;
+    details: string;
+    amountImpact: number;
+    reason: string;
+    payload?: ApprovalRequest['payload'];
+  }): ApprovalRequest => {
+    const ord = orders.find((o) => o.id === params.orderId);
+    const nowIso = new Date().toISOString();
+    const newReq: ApprovalRequest = {
+      id: `apr-${Date.now()}`,
+      orderId: params.orderId,
+      orderNumber: ord?.orderNumber || '#F0000',
+      actionType: params.actionType,
+      requestedBy: params.requestedBy,
+      requestedRole: params.requestedRole,
+      details: params.details,
+      amountImpact: params.amountImpact,
+      reason: params.reason,
+      status: 'pending',
+      createdAt: nowIso,
+      payload: params.payload,
+    };
+    setApprovalRequests((prev) => [newReq, ...prev]);
+
+    addNotification({
+      title: `Approval Required: ${params.actionType.replace('_', ' ').toUpperCase()}`,
+      message: `${params.requestedBy} requested ${params.details} on ${newReq.orderNumber}. Reason: ${params.reason}`,
+      type: 'order',
+      actionRole: 'manager',
+      actionLabel: 'Review Approvals',
+    });
+
+    logAuditEvent({
+      orderId: params.orderId,
+      orderNumber: newReq.orderNumber,
+      actor: params.requestedBy,
+      actorRole: params.requestedRole,
+      action: 'APPROVAL_REQUESTED',
+      details: `${params.actionType.toUpperCase()} (${formatMoney(params.amountImpact)}): ${params.details} · Reason: ${params.reason}`,
+    });
+
+    return newReq;
+  };
+
+  const cancelOrderControlled = (
+    orderId: string,
+    reason: string,
+    actor: string,
+    approvedBy: string = 'Manager David Kasambala'
+  ) => {
+    const target = orders.find((o) => o.id === orderId);
+    if (!target || target.status === 'cancelled') return;
+    const nowIso = new Date().toISOString();
+
+    setOrders((prev) =>
+      prev.map((ord) => {
+        if (ord.id !== orderId) return ord;
+        const adj: OrderAdjustment = {
+          id: `adj-${Date.now()}`,
+          orderId: ord.id,
+          type: 'cancellation',
+          originalAmount: ord.total,
+          newAmount: 0,
+          difference: -ord.total,
+          reason,
+          requestedBy: actor,
+          approvedBy,
+          status: 'approved',
+          timestamp: nowIso,
+        };
+        return {
+          ...ord,
+          status: 'cancelled',
+          adjustments: [...(ord.adjustments || []), adj],
+          cancellationRecord: {
+            cancelledBy: actor,
+            approvedBy,
+            reason,
+            timestamp: nowIso,
+          },
+          statusHistory: [
+            ...(ord.statusHistory || []),
+            {
+              status: 'cancelled',
+              actor,
+              note: `Cancelled (${reason}) · Approved by ${approvedBy}`,
+              timestamp: nowIso,
+            },
+          ],
+          updatedAt: nowIso,
+        };
+      })
+    );
+
+    if (target.tableNumber) {
+      setTables((prev) =>
+        prev.map((t) =>
+          t.number.toLowerCase() === target.tableNumber?.toLowerCase()
+            ? { ...t, status: 'available', currentOrderId: undefined, assignedWaiterId: undefined }
+            : t
+        )
+      );
+    }
+
+    logAuditEvent({
+      orderId: target.id,
+      orderNumber: target.orderNumber,
+      actor,
+      actorRole: activeRole,
+      action: 'ORDER_CANCELLED_CONTROLLED',
+      details: `Order ${target.orderNumber} (${formatMoney(target.total)}) marked cancelled (record retained). Reason: ${reason}. Approved by: ${approvedBy}.`,
+    });
+  };
+
+  const reviewApprovalRequest = (
+    requestId: string,
+    approve: boolean,
+    managerName: string = 'David Kasambala (Manager)'
+  ) => {
+    const req = approvalRequests.find((r) => r.id === requestId);
+    if (!req || req.status !== 'pending') return;
+    const nowIso = new Date().toISOString();
+
+    setApprovalRequests((prev) =>
+      prev.map((r) =>
+        r.id === requestId
+          ? {
+              ...r,
+              status: approve ? 'approved' : 'rejected',
+              reviewedBy: managerName,
+              reviewedAt: nowIso,
+            }
+          : r
+      )
+    );
+
+    if (approve) {
+      if (req.actionType === 'cancel_order') {
+        cancelOrderControlled(req.orderId, req.reason, req.requestedBy, managerName);
+      } else if (req.actionType === 'discount') {
+        setOrders((prev) =>
+          prev.map((ord) => {
+            if (ord.id !== req.orderId) return ord;
+            const discType = req.payload?.discountType || 'fixed';
+            const discVal = req.payload?.discountValue ?? req.amountImpact;
+            const discountAmount =
+              discType === 'percent'
+                ? Math.round(ord.subtotal * (Math.min(100, Math.max(0, discVal)) / 100))
+                : Math.min(ord.subtotal, Math.max(0, Math.round(discVal)));
+            const discountedSub = Math.max(0, ord.subtotal - discountAmount);
+            const newTax = ord.isTaxExempt ? 0 : Math.round(discountedSub * (ord.taxRate || 0));
+            const newTotal = Math.max(0, discountedSub + newTax + (ord.deliveryFee || 0) + (ord.donation || 0));
+            const adj: OrderAdjustment = {
+              id: `adj-${Date.now()}`,
+              orderId: ord.id,
+              type: 'discount',
+              originalAmount: ord.total,
+              newAmount: newTotal,
+              difference: newTotal - ord.total,
+              reason: req.reason,
+              requestedBy: req.requestedBy,
+              approvedBy: managerName,
+              status: 'approved',
+              timestamp: nowIso,
+            };
+            return {
+              ...ord,
+              discount: discountAmount,
+              discountType: discType,
+              discountValue: discVal,
+              discountReason: req.reason,
+              tax: newTax,
+              total: newTotal,
+              adjustments: [...(ord.adjustments || []), adj],
+              updatedAt: nowIso,
+            };
+          })
+        );
+      }
+    }
+
+    logAuditEvent({
+      orderId: req.orderId,
+      orderNumber: req.orderNumber,
+      actor: managerName,
+      actorRole: 'manager',
+      action: approve ? 'APPROVAL_GRANTED' : 'APPROVAL_DENIED',
+      details: `${approve ? 'Approved' : 'Rejected'} ${req.actionType} request by ${req.requestedBy} for ${req.orderNumber} (${req.details}).`,
+    });
+  };
+
+  const promoteCustomItemToMenu = (
+    orderId: string,
+    itemIndex: number,
+    category: string = 'Special'
+  ): MenuItem | null => {
+    const ord = orders.find((o) => o.id === orderId);
+    const item = ord?.items[itemIndex];
+    if (!ord || !item) return null;
+
+    const newMenuItem: MenuItem = {
+      id: `menu-promoted-${Date.now()}`,
+      name: item.name,
+      category,
+      description: item.customInstructions || 'Promoted from waiter special customer order.',
+      price: item.price,
+      image: '/src/assets/images/dish_burger_roastbeef_1794223269419.jpg',
+      preparationTimeMinutes: 15,
+      isAvailable: true,
+      station: item.station,
+      tags: ['Manager Promoted', 'Chef Special'],
+    };
+
+    setMenuItems((prev) => [newMenuItem, ...prev]);
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              items: o.items.map((it, idx) =>
+                idx === itemIndex ? { ...it, promotedToMenuId: newMenuItem.id } : it
+              ),
+            }
+          : o
+      )
+    );
+
+    logAuditEvent({
+      orderId: ord.id,
+      orderNumber: ord.orderNumber,
+      actor: 'Manager / Owner',
+      actorRole: 'manager',
+      action: 'CUSTOM_ITEM_PROMOTED_TO_MENU',
+      details: `Added custom order item "${item.name}" (${formatMoney(item.price)}) from ${ord.orderNumber} into permanent ${category} menu.`,
+    });
+
+    return newMenuItem;
+  };
+
+  const discrepancies = useMemo<DiscrepancyAlert[]>(() => {
+    const alerts: DiscrepancyAlert[] = [];
+    const now = Date.now();
+
+    orders.forEach((ord) => {
+      if (ord.status === 'cancelled' || ord.status === 'draft') return;
+      const balance = Math.max(0, ord.total - (ord.paidAmount || 0));
+
+      if ((ord.status === 'served' || ord.status === 'completed') && balance > 0) {
+        alerts.push({
+          id: `disc-unpaid-${ord.id}`,
+          severity: 'critical',
+          type: ord.paidAmount > 0 ? 'partial_balance' : 'served_unpaid',
+          orderId: ord.id,
+          orderNumber: ord.orderNumber,
+          title: ord.paidAmount > 0 ? 'Served Order with Partial Payment Balance' : 'Order Marked Served but Unpaid',
+          detail: `${ord.tableNumber || ord.customerName} · Paid ${formatMoney(ord.paidAmount || 0)} of ${formatMoney(ord.total)}`,
+          amountImpact: balance,
+        });
+      }
+
+      ord.items.forEach((it, idx) => {
+        if (it.status === 'rejected') {
+          alerts.push({
+            id: `disc-rej-${ord.id}-${idx}`,
+            severity: 'warning',
+            type: 'rejected_item',
+            orderId: ord.id,
+            orderNumber: ord.orderNumber,
+            title: `Kitchen Rejected Item: ${it.name}`,
+            detail: `Rejected by ${it.rejectedBy || 'Kitchen'} · Reason: ${it.rejectionReason || 'Not specified'}`,
+            amountImpact: it.price * it.quantity,
+          });
+        }
+      });
+
+      const ageMins = Math.floor((now - new Date(ord.createdAt).getTime()) / 60000);
+      if (
+        (ord.status === 'sent_to_kitchen' || ord.status === 'accepted' || ord.status === 'preparing') &&
+        ageMins > 25
+      ) {
+        alerts.push({
+          id: `disc-age-${ord.id}`,
+          severity: 'warning',
+          type: 'overdue_open',
+          orderId: ord.id,
+          orderNumber: ord.orderNumber,
+          title: `Kitchen Ticket Open > 25 mins (${ageMins}m)`,
+          detail: `${ord.kotNumber || ord.orderNumber} (${ord.tableNumber || ord.customerName}) still in ${ord.status.replace('_', ' ')}`,
+          amountImpact: ord.total,
+        });
+      }
+    });
+
+    approvalRequests
+      .filter((r) => r.status === 'pending')
+      .forEach((req) => {
+        alerts.push({
+          id: `disc-apr-${req.id}`,
+          severity: 'warning',
+          type: 'unapproved_adjustment',
+          orderId: req.orderId,
+          orderNumber: req.orderNumber,
+          title: `Pending Manager Approval: ${req.actionType.replace('_', ' ')}`,
+          detail: `${req.requestedBy}: ${req.details}`,
+          amountImpact: req.amountImpact,
+        });
+      });
+
+    return alerts;
+  }, [orders, approvalRequests]);
 
   // Table Management
   const updateTableStatus = (tableId: string, status: Table['status'], waiterId?: string) => {
@@ -1697,26 +2490,130 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     );
   };
 
-  const calculateWaiterStats = (waiterId: string) => {
-    const waiter = waiters.find((w) => w.id === waiterId);
-    const rate = waiter?.commissionRate || 0.05;
+  const setDefaultCommissionPolicy = (mode: CommissionMode, value: number) => {
+    const cleanValue =
+      mode === 'percent'
+        ? Math.max(0, Math.min(100, Number(value) || 0))
+        : Math.max(0, Math.round(Number(value) || 0));
+    setDefaultCommissionMode(mode);
+    setDefaultCommissionValue(cleanValue);
+    if (mode === 'percent') {
+      setWaiters((prev) => prev.map((w) => ({ ...w, commissionRate: cleanValue / 100 })));
+    }
+    addNotification({
+      title: 'Waiter Commission Rule Updated',
+      message:
+        mode === 'percent'
+          ? `Default waiter commission set to ${cleanValue}% of paid net sales.`
+          : `Default waiter commission set to ${formatMoney(cleanValue)} fixed per paid order.`,
+      type: 'payroll',
+      actionRole: 'manager',
+      actionLabel: 'View Rules',
+    });
+  };
 
+  const getOrderCommission = (order: Order, waiterId?: string) => {
+    const waiter = waiterId ? waiters.find((w) => w.id === waiterId) : undefined;
+    const mode: CommissionMode = order.commissionMode ?? defaultCommissionMode;
+    const fallbackVal =
+      mode === 'percent' && waiter
+        ? Math.round((waiter.commissionRate || 0.05) * 10000) / 100
+        : defaultCommissionValue;
+    const value = order.commissionValue !== undefined ? order.commissionValue : fallbackVal;
+    const netSales = Math.max(0, order.subtotal - (order.discount || 0));
+    const computed =
+      order.commissionAmount !== undefined && order.commissionMode !== undefined
+        ? order.commissionAmount
+        : mode === 'percent'
+        ? Math.round(netSales * (Math.max(0, Math.min(100, value)) / 100))
+        : Math.max(0, Math.round(value));
+    const isPaidEligible = order.paymentStatus === 'paid' && order.status !== 'cancelled';
+
+    return {
+      mode,
+      value,
+      amount: computed,
+      isPaidEligible,
+      configuredBy: order.commissionConfiguredBy || 'Auto Rule',
+    };
+  };
+
+  const updateOrderCommission = (
+    orderId: string,
+    mode: CommissionMode,
+    value: number,
+    configuredBy: string = 'Manager',
+    waiterId?: string
+  ) => {
+    const cleanValue =
+      mode === 'percent'
+        ? Math.max(0, Math.min(100, Number(value) || 0))
+        : Math.max(0, Math.round(Number(value) || 0));
+
+    setOrders((prev) =>
+      prev.map((ord) => {
+        if (ord.id !== orderId) return ord;
+        const netSales = Math.max(0, ord.subtotal - (ord.discount || 0));
+        const amount =
+          mode === 'percent'
+            ? Math.round(netSales * (cleanValue / 100))
+            : Math.max(0, Math.round(cleanValue));
+        return {
+          ...ord,
+          servingWaiterId: waiterId !== undefined ? waiterId || undefined : ord.servingWaiterId,
+          commissionMode: mode,
+          commissionValue: cleanValue,
+          commissionAmount: amount,
+          commissionConfiguredBy: configuredBy,
+          commissionUpdatedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      })
+    );
+  };
+
+  const settleWaiterCommission = (waiterId: string, amount?: number) => {
+    const stats = calculateWaiterStats(waiterId);
+    const settleAmt = amount !== undefined ? Math.max(0, amount) : stats.pendingCommission;
+    if (settleAmt <= 0) return;
+    setSettledCommissionByWaiter((prev) => ({
+      ...prev,
+      [waiterId]: (prev[waiterId] || 0) + settleAmt,
+    }));
+  };
+
+  const calculateWaiterStats = (waiterId: string) => {
     const myOrders = orders.filter(
       (o) => o.referralWaiterId === waiterId || o.servingWaiterId === waiterId
     );
 
-    const completedOrders = myOrders.filter(
-      (o) => o.status === 'completed' || o.paymentStatus === 'paid'
+    // Waiter commission is strictly earned ONLY on PAID, non-cancelled orders
+    const paidOrders = myOrders.filter(
+      (o) => o.paymentStatus === 'paid' && o.status !== 'cancelled'
     );
-    const todaySales = completedOrders.reduce((sum, o) => sum + o.subtotal, 0);
+    const unpaidOrders = myOrders.filter(
+      (o) => o.paymentStatus !== 'paid' && o.status !== 'cancelled'
+    );
+
+    const todaySales = paidOrders.reduce(
+      (sum, o) => sum + Math.max(0, o.subtotal - (o.discount || 0)),
+      0
+    );
 
     const pendingOrdersCount = myOrders.filter(
       (o) => o.status !== 'completed' && o.status !== 'cancelled'
     ).length;
 
-    const completedOrdersCount = completedOrders.length;
-    const earnedCommission = Math.round(todaySales * rate);
-    const paidCommission = 45000;
+    const completedOrdersCount = paidOrders.length;
+    const earnedCommission = paidOrders.reduce(
+      (sum, o) => sum + getOrderCommission(o, waiterId).amount,
+      0
+    );
+    const unpaidProjectedCommission = unpaidOrders.reduce(
+      (sum, o) => sum + getOrderCommission(o, waiterId).amount,
+      0
+    );
+    const paidCommission = settledCommissionByWaiter[waiterId] || 0;
     const pendingCommission = Math.max(0, earnedCommission - paidCommission);
 
     return {
@@ -1724,6 +2621,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       todaySales,
       pendingOrdersCount,
       completedOrdersCount,
+      unpaidOrdersCount: unpaidOrders.length,
+      unpaidProjectedCommission,
       earnedCommission,
       pendingCommission,
       paidCommission,
@@ -1740,11 +2639,23 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setCurrentTenantId,
         activeRole,
         setActiveRole,
+        isStandalonePortal,
+        initialTableNumber: deepLink.tableNumber,
         activeWaiterId,
         setActiveWaiterId,
         currency,
         toggleCurrency,
         formatMoney,
+        taxEnabled,
+        setTaxEnabled,
+        taxRatePct,
+        setTaxRatePct,
+        defaultCommissionMode,
+        defaultCommissionValue,
+        setDefaultCommissionPolicy,
+        updateOrderCommission,
+        getOrderCommission,
+        settleWaiterCommission,
         orders,
         tables,
         menuItems,
@@ -1771,9 +2682,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         removeFromCart,
         clearCart,
         submitOrder,
+        submitDraftToKitchen,
         updateOrderStatus,
         updateOrderItemStatus,
+        rejectOrderItem,
         processPayment,
+        auditLogs,
+        approvalRequests,
+        discrepancies,
+        requestApproval,
+        reviewApprovalRequest,
+        cancelOrderControlled,
+        promoteCustomItemToMenu,
         updateTableStatus,
         addTable,
         updateTable,

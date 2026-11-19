@@ -34,9 +34,16 @@ import {
   ShieldCheck,
   Percent,
   Scale,
+  Award,
+  Ticket,
+  Users,
+  Lock,
+  Send,
+  Shield,
+  BookOpen,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { Ingredient, Recipe, StockMovement, MovementType } from '../../types/restaurant';
+import { Ingredient, Recipe, StockMovement, MovementType, CommissionMode } from '../../types/restaurant';
 import { AiBomBuilderModal } from './AiBomBuilderModal';
 import { BatchCookingModal } from './BatchCookingModal';
 import { RecipeCardModal } from './RecipeCardModal';
@@ -71,11 +78,46 @@ export const InventoryRecipesView: React.FC = () => {
     handleLeftoverPreparedPlates,
     updateDailyReconciliationCount,
     commitDailyReconciliation,
+    taxEnabled,
+    setTaxEnabled,
+    taxRatePct,
+    setTaxRatePct,
+    orders,
+    waiters,
+    calculateWaiterStats,
+    defaultCommissionMode,
+    defaultCommissionValue,
+    setDefaultCommissionPolicy,
+    updateOrderCommission,
+    getOrderCommission,
+    settleWaiterCommission,
+    approvalRequests,
+    auditLogs,
+    reviewApprovalRequest,
+    submitDraftToKitchen,
+    promoteCustomItemToMenu,
   } = useRestaurant();
 
   const [activeTab, setActiveTab] = useState<
-    'kpis_and_stock' | 'transfers' | 'daily_closing' | 'reports' | 'recipes' | 'menu_management' | 'tables_management'
+    | 'kpis_and_stock'
+    | 'transfers'
+    | 'daily_closing'
+    | 'reports'
+    | 'recipes'
+    | 'waiter_commissions'
+    | 'order_accountability'
+    | 'menu_management'
+    | 'tables_management'
   >('kpis_and_stock');
+  const [auditSearch, setAuditSearch] = useState<string>('');
+  const [policyModeDraft, setPolicyModeDraft] = useState<CommissionMode>(defaultCommissionMode);
+  const [policyValueDraft, setPolicyValueDraft] = useState<number>(defaultCommissionValue);
+  const [policyNotice, setPolicyNotice] = useState<string | null>(null);
+  const [commOrderFilter, setCommOrderFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [commSearchQuery, setCommSearchQuery] = useState<string>('');
+  const [orderCommDrafts, setOrderCommDrafts] = useState<
+    Record<string, { mode: CommissionMode; value: number; waiterId: string }>
+  >({});
   const [dateFilter, setDateFilter] = useState<'day' | 'week' | 'month' | 'all'>('week');
   const [movementTypeFilter, setMovementTypeFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -431,6 +473,36 @@ export const InventoryRecipesView: React.FC = () => {
             <Plus className="w-4 h-4" />
             <span>Add Raw Ingredient</span>
           </button>
+
+          {/* Optional Tax / VAT Config Control */}
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-neutral-200 bg-neutral-50">
+            <Percent className="w-3.5 h-3.5 text-neutral-500" />
+            <span className="text-[11px] font-bold text-neutral-700">Tax (VAT):</span>
+            <button
+              type="button"
+              onClick={() => setTaxEnabled(!taxEnabled)}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-extrabold transition-colors cursor-pointer ${
+                taxEnabled
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300'
+              }`}
+              title="Toggle optional VAT inclusion across Customer, Waiter, and Cashier carts"
+            >
+              {taxEnabled ? 'ON' : 'OFF'}
+            </button>
+            {taxEnabled && (
+              <select
+                value={taxRatePct}
+                onChange={(e) => setTaxRatePct(Number(e.target.value))}
+                className="bg-white border border-neutral-200 rounded-lg px-1.5 py-0.5 text-[11px] font-mono font-bold text-neutral-800 outline-hidden cursor-pointer"
+                aria-label="Tax Rate Percentage"
+              >
+                <option value={10}>10%</option>
+                <option value={15}>15%</option>
+                <option value={18}>18% TZ</option>
+              </select>
+            )}
+          </div>
         </div>
       </div>
 
@@ -522,6 +594,38 @@ export const InventoryRecipesView: React.FC = () => {
         >
           <Store className="w-3.5 h-3.5" />
           <span>Floor Tables & Seating Zones</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('waiter_commissions')}
+          className={`px-3.5 py-2 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 shrink-0 ${
+            activeTab === 'waiter_commissions'
+              ? 'bg-emerald-700 text-white shadow-xs'
+              : 'text-emerald-800 bg-emerald-50/70 hover:bg-emerald-100/70'
+          }`}
+        >
+          <Award className="w-3.5 h-3.5" />
+          <span>Waiter Commissions &amp; Order Rates</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('order_accountability')}
+          className={`px-3.5 py-2 text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 shrink-0 ${
+            activeTab === 'order_accountability'
+              ? 'bg-neutral-900 text-white shadow-xs'
+              : 'text-amber-900 bg-amber-50 hover:bg-amber-100'
+          }`}
+        >
+          <Shield className="w-3.5 h-3.5" />
+          <span>Order Accountability, Drafts &amp; Approvals</span>
+          {approvalRequests.filter((r) => r.status === 'pending').length +
+            orders.filter((o) => o.status === 'draft').length >
+            0 && (
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-amber-500 text-neutral-950 font-extrabold">
+              {approvalRequests.filter((r) => r.status === 'pending').length +
+                orders.filter((o) => o.status === 'draft').length}
+            </span>
+          )}
         </button>
       </div>
 
@@ -1970,6 +2074,765 @@ export const InventoryRecipesView: React.FC = () => {
       {activeTab === 'tables_management' && (
         <div className="pt-2">
           <TableManagementView />
+        </div>
+      )}
+
+      {/* TAB 8: Waiter Commissions & Per-Order Rate Configuration */}
+      {activeTab === 'waiter_commissions' && (
+        <div className="space-y-6">
+          {/* Default Store Policy + Security Notice */}
+          <div className="bg-white rounded-3xl p-6 border border-neutral-200/90 shadow-xs space-y-5">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-neutral-100 pb-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Award className="w-5 h-5 text-emerald-600" />
+                  <h2 className="text-base font-extrabold text-neutral-900">
+                    Waiter Commission Policy & Per-Order Rates
+                  </h2>
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                    <Lock className="w-3 h-3" />
+                    Manager-Controlled
+                  </span>
+                </div>
+                <p className="text-xs text-neutral-500 mt-1">
+                  Configure whether waiters earn a percentage (%) of paid net sales or a fixed TZS amount per paid order.
+                  Waiters cannot edit rates — commissions are only credited once an order is marked <strong>PAID</strong>.
+                </p>
+              </div>
+
+              <div className="text-right shrink-0 bg-neutral-50 px-3.5 py-2 rounded-xl border border-neutral-200">
+                <div className="text-[10px] font-semibold text-neutral-500 uppercase">Active Default Rate</div>
+                <div className="text-sm font-extrabold font-mono text-emerald-700">
+                  {defaultCommissionMode === 'percent'
+                    ? `${defaultCommissionValue}% of net sales`
+                    : `${formatMoney(defaultCommissionValue)} / paid order`}
+                </div>
+              </div>
+            </div>
+
+            {/* Policy Editor Controls */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-end">
+              <div className="lg:col-span-4 space-y-1.5">
+                <label className="text-xs font-bold text-neutral-700">Default Calculation Method</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPolicyModeDraft('percent');
+                      if (policyValueDraft > 100) setPolicyValueDraft(5);
+                    }}
+                    className={`py-2.5 px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
+                      policyModeDraft === 'percent'
+                        ? 'bg-neutral-900 text-white border-neutral-900'
+                        : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                    }`}
+                  >
+                    % Percent of Net Sales
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPolicyModeDraft('fixed');
+                      if (policyValueDraft <= 100) setPolicyValueDraft(2000);
+                    }}
+                    className={`py-2.5 px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
+                      policyModeDraft === 'fixed'
+                        ? 'bg-neutral-900 text-white border-neutral-900'
+                        : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Fixed Amount (TZS)
+                  </button>
+                </div>
+              </div>
+
+              <div className="lg:col-span-5 space-y-1.5">
+                <label className="text-xs font-bold text-neutral-700">
+                  {policyModeDraft === 'percent'
+                    ? 'Percentage Rate (% of Net Sales)'
+                    : 'Fixed Commission Amount per Paid Order (TZS)'}
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={policyModeDraft === 'percent' ? 100 : undefined}
+                    step={policyModeDraft === 'percent' ? 0.5 : 500}
+                    value={policyValueDraft}
+                    onChange={(e) => setPolicyValueDraft(Number(e.target.value))}
+                    className="w-32 px-3 py-2 text-sm font-mono font-bold bg-neutral-50 border border-neutral-200 rounded-xl outline-hidden focus:ring-2 focus:ring-emerald-600"
+                  />
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {(policyModeDraft === 'percent' ? [3, 5, 8, 10] : [1000, 2000, 3000, 5000]).map(
+                      (preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setPolicyValueDraft(preset)}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-mono font-bold border transition-colors cursor-pointer ${
+                            policyValueDraft === preset
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                          }`}
+                        >
+                          {policyModeDraft === 'percent' ? `${preset}%` : preset.toLocaleString()}
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDefaultCommissionPolicy(policyModeDraft, policyValueDraft);
+                    setPolicyNotice(
+                      policyModeDraft === 'percent'
+                        ? `Default policy updated to ${policyValueDraft}% of paid net sales.`
+                        : `Default policy updated to ${formatMoney(policyValueDraft)} fixed per paid order.`
+                    );
+                    setTimeout(() => setPolicyNotice(null), 3500);
+                  }}
+                  className="w-full lg:w-auto px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-colors shadow-xs cursor-pointer"
+                >
+                  Save Default Rule
+                </button>
+              </div>
+            </div>
+
+            {policyNotice && (
+              <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-center justify-between">
+                <span>{policyNotice}</span>
+                <button
+                  type="button"
+                  onClick={() => setPolicyNotice(null)}
+                  className="text-emerald-700 font-bold hover:underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Waiter Earned Summary Cards (Paid Orders Only) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {waiters.map((w) => {
+              const wStats = calculateWaiterStats(w.id);
+              return (
+                <div
+                  key={w.id}
+                  className="bg-white rounded-2xl p-5 border border-neutral-200/90 shadow-xs space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-extrabold text-neutral-900">{w.name}</h3>
+                      <span className="text-[11px] font-mono text-neutral-500">{w.referralCode}</span>
+                    </div>
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      {wStats.completedOrdersCount} paid
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5 text-xs pt-2 border-t border-neutral-100">
+                    <div className="flex justify-between">
+                      <span className="text-neutral-500">Paid Net Sales:</span>
+                      <span className="font-mono font-bold tabular-nums">{formatMoney(wStats.todaySales)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-neutral-500">Earned (Paid Orders):</span>
+                      <span className="font-mono font-extrabold text-emerald-700 tabular-nums">
+                        {formatMoney(wStats.earnedCommission)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-neutral-500">Unpaid ({wStats.unpaidOrdersCount} awaiting pay):</span>
+                      <span className="font-mono text-amber-700 tabular-nums">
+                        {formatMoney(wStats.unpaidProjectedCommission)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between pt-1.5 border-t border-neutral-100">
+                      <span className="font-semibold text-neutral-800">Pending Payout:</span>
+                      <span className="font-mono font-bold text-blue-700 tabular-nums">
+                        {formatMoney(wStats.pendingCommission)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {wStats.pendingCommission > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => settleWaiterCommission(w.id)}
+                      className="w-full py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Settle Payout ({formatMoney(wStats.pendingCommission)})
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Per-Order Commission Table (Set Percent or Fixed Amount per Order) */}
+          <div className="bg-white rounded-3xl p-6 border border-neutral-200/90 shadow-xs space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-extrabold text-neutral-900">
+                  Per-Order Commission Control (Start to End Lifecycle)
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Set an exact <strong>%</strong> or <strong>Fixed TZS</strong> commission on any order. Locked on payment for fast, accurate settlement.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                  <input
+                    type="text"
+                    value={commSearchQuery}
+                    onChange={(e) => setCommSearchQuery(e.target.value)}
+                    placeholder="Order #, coupon, waiter..."
+                    className="pl-8 pr-3 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl outline-hidden focus:ring-2 focus:ring-emerald-600"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl text-[11px] font-bold">
+                  {(['all', 'paid', 'unpaid'] as const).map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setCommOrderFilter(f)}
+                      className={`px-2.5 py-1 rounded-lg capitalize cursor-pointer ${
+                        commOrderFilter === f
+                          ? 'bg-white text-neutral-900 shadow-2xs'
+                          : 'text-neutral-500 hover:text-neutral-900'
+                      }`}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-neutral-50 text-neutral-500 font-bold border-y border-neutral-200">
+                  <tr>
+                    <th className="py-3 px-3">Order & Coupon</th>
+                    <th className="py-3 px-3">Waiter Attribution</th>
+                    <th className="py-3 px-3">Payment & Stage</th>
+                    <th className="py-3 px-3 text-right">Net Sales</th>
+                    <th className="py-3 px-3">Order Rule (% or Fixed)</th>
+                    <th className="py-3 px-3 text-right">Commission</th>
+                    <th className="py-3 px-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {orders
+                    .filter((o) => {
+                      if (commOrderFilter === 'paid' && o.paymentStatus !== 'paid') return false;
+                      if (commOrderFilter === 'unpaid' && o.paymentStatus === 'paid') return false;
+                      const q = commSearchQuery.trim().toLowerCase();
+                      if (!q) return true;
+                      const wId = o.servingWaiterId || o.referralWaiterId;
+                      const wName = waiters.find((w) => w.id === wId)?.name.toLowerCase() || '';
+                      return (
+                        o.orderNumber.toLowerCase().includes(q) ||
+                        (o.serviceCouponCode || '').toLowerCase().includes(q) ||
+                        o.customerName.toLowerCase().includes(q) ||
+                        wName.includes(q)
+                      );
+                    })
+                    .map((ord) => {
+                      const assignedWaiterId = ord.servingWaiterId || ord.referralWaiterId || '';
+                      const resolved = getOrderCommission(ord, assignedWaiterId || undefined);
+                      const draft = orderCommDrafts[ord.id] ?? {
+                        mode: resolved.mode,
+                        value: resolved.value,
+                        waiterId: assignedWaiterId,
+                      };
+                      const netSales = Math.max(0, ord.subtotal - (ord.discount || 0));
+                      const previewAmount =
+                        draft.mode === 'percent'
+                          ? Math.round(netSales * (Math.max(0, Math.min(100, draft.value)) / 100))
+                          : Math.max(0, Math.round(draft.value));
+                      const isDirty =
+                        draft.mode !== resolved.mode ||
+                        draft.value !== resolved.value ||
+                        draft.waiterId !== assignedWaiterId;
+
+                      return (
+                        <tr key={ord.id} className="hover:bg-neutral-50/70">
+                          <td className="py-3 px-3">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono font-bold text-neutral-900">{ord.orderNumber}</span>
+                              <span className="font-mono font-bold text-[10px] px-1.5 py-0.5 rounded bg-amber-50 border border-dashed border-amber-300 text-amber-900">
+                                {ord.serviceCouponCode || `SV-${ord.orderNumber.replace('#', '')}`}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-neutral-500 mt-0.5">
+                              {ord.customerName} {ord.tableNumber ? `· ${ord.tableNumber}` : ''}
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-3">
+                            <select
+                              value={draft.waiterId}
+                              onChange={(e) =>
+                                setOrderCommDrafts((prev) => ({
+                                  ...prev,
+                                  [ord.id]: { ...draft, waiterId: e.target.value },
+                                }))
+                              }
+                              className="px-2 py-1.5 text-xs bg-white border border-neutral-200 rounded-lg font-medium outline-hidden"
+                              aria-label={`Waiter for ${ord.orderNumber}`}
+                            >
+                              <option value="">Unassigned</option>
+                              {waiters.map((w) => (
+                                <option key={w.id} value={w.id}>
+                                  {w.name}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+
+                          <td className="py-3 px-3">
+                            <div className="flex flex-col gap-1 items-start">
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                                  ord.paymentStatus === 'paid'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-amber-100 text-amber-800'
+                                }`}
+                              >
+                                {ord.paymentStatus === 'paid' ? 'PAID · CREDITED' : 'UNPAID · LOCKED'}
+                              </span>
+                              <span className="text-[10px] text-neutral-500 capitalize">
+                                Stage: {ord.status.replace(/_/g, ' ')}
+                              </span>
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-3 text-right font-mono font-semibold text-neutral-900 tabular-nums">
+                            {formatMoney(netSales)}
+                          </td>
+
+                          <td className="py-3 px-3">
+                            <div className="flex items-center gap-1.5">
+                              <div className="inline-flex rounded-lg border border-neutral-200 overflow-hidden">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOrderCommDrafts((prev) => ({
+                                      ...prev,
+                                      [ord.id]: {
+                                        ...draft,
+                                        mode: 'percent',
+                                        value: draft.mode === 'fixed' ? 5 : draft.value,
+                                      },
+                                    }))
+                                  }
+                                  className={`px-2 py-1 text-[11px] font-bold cursor-pointer ${
+                                    draft.mode === 'percent'
+                                      ? 'bg-neutral-900 text-white'
+                                      : 'bg-white text-neutral-600'
+                                  }`}
+                                >
+                                  %
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOrderCommDrafts((prev) => ({
+                                      ...prev,
+                                      [ord.id]: {
+                                        ...draft,
+                                        mode: 'fixed',
+                                        value: draft.mode === 'percent' ? 2000 : draft.value,
+                                      },
+                                    }))
+                                  }
+                                  className={`px-2 py-1 text-[11px] font-bold cursor-pointer ${
+                                    draft.mode === 'fixed'
+                                      ? 'bg-neutral-900 text-white'
+                                      : 'bg-white text-neutral-600'
+                                  }`}
+                                >
+                                  TZS
+                                </button>
+                              </div>
+
+                              <input
+                                type="number"
+                                min={0}
+                                max={draft.mode === 'percent' ? 100 : undefined}
+                                step={draft.mode === 'percent' ? 0.5 : 500}
+                                value={draft.value}
+                                onChange={(e) =>
+                                  setOrderCommDrafts((prev) => ({
+                                    ...prev,
+                                    [ord.id]: { ...draft, value: Number(e.target.value) },
+                                  }))
+                                }
+                                className="w-20 px-2 py-1 text-xs font-mono font-bold bg-white border border-neutral-200 rounded-lg outline-hidden focus:ring-2 focus:ring-emerald-600"
+                              />
+                            </div>
+                            <div className="text-[10px] text-neutral-400 mt-0.5">
+                              {resolved.configuredBy}
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-3 text-right">
+                            <div
+                              className={`font-mono font-extrabold tabular-nums ${
+                                ord.paymentStatus === 'paid' ? 'text-emerald-700' : 'text-neutral-500'
+                              }`}
+                            >
+                              {formatMoney(previewAmount)}
+                            </div>
+                            <div className="text-[10px] text-neutral-400">
+                              {draft.mode === 'percent' ? `${draft.value}% net` : 'Fixed / order'}
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                updateOrderCommission(
+                                  ord.id,
+                                  draft.mode,
+                                  draft.value,
+                                  'Manager Override',
+                                  draft.waiterId
+                                );
+                              }}
+                              className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                                isDirty
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
+                                  : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
+                              }`}
+                            >
+                              {isDirty ? 'Apply' : 'Saved'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 9: Order Accountability, Approvals, Saved Drafts & Custom Off-Menu Promotion */}
+      {activeTab === 'order_accountability' && (
+        <div className="space-y-6">
+          {/* 1. Manager Approval Queue */}
+          <div className="bg-white rounded-3xl p-6 border border-neutral-200/90 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-extrabold text-neutral-900 flex items-center gap-2">
+                  <ShieldAlert className="w-5 h-5 text-rose-600" />
+                  <span>Discount, Cancellation &amp; Adjustment Approvals</span>
+                </h2>
+                <p className="text-xs text-neutral-500">
+                  Waiters and cashiers cannot silently delete orders or grant unlogged discounts. Every request is permanently audited.
+                </p>
+              </div>
+              <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-rose-50 text-rose-800 border border-rose-200 self-start">
+                {approvalRequests.filter((r) => r.status === 'pending').length} pending review
+              </span>
+            </div>
+
+            {approvalRequests.length === 0 ? (
+              <p className="text-xs text-neutral-500 py-6 text-center bg-neutral-50 rounded-2xl border border-neutral-100">
+                No approval requests recorded in this shift.
+              </p>
+            ) : (
+              <div className="space-y-2.5">
+                {approvalRequests.map((req) => (
+                  <div
+                    key={req.id}
+                    className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      req.status === 'pending'
+                        ? 'bg-amber-50/60 border-amber-300'
+                        : 'bg-neutral-50 border-neutral-200'
+                    }`}
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono font-extrabold text-xs text-neutral-900">
+                          {req.orderNumber}
+                        </span>
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-neutral-900 text-white">
+                          {req.actionType.replace('_', ' ')}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                            req.status === 'pending'
+                              ? 'bg-amber-200 text-amber-950'
+                              : req.status === 'approved'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}
+                        >
+                          {req.status}
+                        </span>
+                      </div>
+                      <div className="text-xs font-semibold text-neutral-900">
+                        {req.details} · Impact: <span className="font-mono">{formatMoney(req.amountImpact)}</span>
+                      </div>
+                      <div className="text-[11px] text-neutral-600">
+                        Requested by <strong>{req.requestedBy}</strong> ({req.requestedRole}) · Reason: {req.reason}
+                      </div>
+                      {req.reviewedBy && (
+                        <div className="text-[10px] text-neutral-500 font-mono">
+                          Reviewed by {req.reviewedBy}
+                        </div>
+                      )}
+                    </div>
+
+                    {req.status === 'pending' && (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => reviewApprovalRequest(req.id, false, 'David Kasambala (Manager)')}
+                          className="px-3.5 py-2 rounded-xl border border-rose-300 text-rose-700 hover:bg-rose-50 text-xs font-bold cursor-pointer"
+                        >
+                          Deny
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => reviewApprovalRequest(req.id, true, 'David Kasambala (Manager)')}
+                          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+                        >
+                          Approve
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 2. Waiter Saved Drafts Monitor & 3. Special Off-Menu Custom Items */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Saved Drafts (Never Hidden) */}
+            <div className="bg-white rounded-3xl p-6 border border-neutral-200/90 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-extrabold text-neutral-900">
+                    Waiter Saved Drafts (Live Business Visibility)
+                  </h3>
+                  <p className="text-xs text-neutral-500">
+                    All unsubmitted waiter drafts remain visible to Management and Owner
+                  </p>
+                </div>
+                <span className="font-mono font-bold text-xs px-2.5 py-1 rounded-full bg-amber-100 text-amber-900">
+                  {orders.filter((o) => o.status === 'draft').length} drafts
+                </span>
+              </div>
+
+              {orders.filter((o) => o.status === 'draft').length === 0 ? (
+                <p className="text-xs text-neutral-500 py-8 text-center bg-neutral-50 rounded-2xl">
+                  No pending waiter drafts right now.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {orders
+                    .filter((o) => o.status === 'draft')
+                    .map((draft) => {
+                      const waiterName =
+                        waiters.find((w) => w.id === (draft.servingWaiterId || draft.referralWaiterId))?.name ||
+                        'Waiter';
+                      return (
+                        <div key={draft.id} className="p-4 rounded-2xl border border-amber-200 bg-amber-50/40 space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-extrabold text-xs text-neutral-900">
+                                  {draft.orderNumber}
+                                </span>
+                                <span className="text-xs font-semibold text-neutral-700">
+                                  {draft.tableNumber || draft.type} · {waiterName}
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-neutral-500">
+                                Guest: {draft.customerName} · {new Date(draft.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            </div>
+                            <span className="font-mono font-extrabold text-xs text-neutral-900 tabular-nums">
+                              {formatMoney(draft.total)}
+                            </span>
+                          </div>
+
+                          <div className="space-y-1 text-xs">
+                            {draft.items.map((it, idx) => (
+                              <div key={idx} className="flex justify-between text-neutral-700">
+                                <span>
+                                  {it.quantity}× {it.name}
+                                  {it.isCustomItem ? ' [Custom]' : ''}
+                                  {it.customInstructions ? ` — ${it.customInstructions}` : ''}
+                                </span>
+                                <span className="font-mono tabular-nums">{formatMoney(it.price * it.quantity)}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="pt-2 border-t border-amber-200/70 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => submitDraftToKitchen(draft.id, 'David Kasambala (Manager)')}
+                              className="px-3.5 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <Send className="w-3 h-3" />
+                              <span>Dispatch Draft to Kitchen</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+
+            {/* Special / Off-Menu Custom Items */}
+            <div className="bg-white rounded-3xl p-6 border border-neutral-200/90 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-extrabold text-neutral-900 flex items-center gap-1.5">
+                    <BookOpen className="w-4 h-4 text-indigo-600" />
+                    <span>Special / Off-Menu Customer Items</span>
+                  </h3>
+                  <p className="text-xs text-neutral-500">
+                    Transaction-only specials — optionally promote popular requests to the permanent menu
+                  </p>
+                </div>
+              </div>
+
+              {(() => {
+                const customEntries = orders.flatMap((ord) =>
+                  ord.items
+                    .map((item, idx) => ({ ord, item, idx }))
+                    .filter((entry) => entry.item.isCustomItem)
+                );
+                if (customEntries.length === 0) {
+                  return (
+                    <p className="text-xs text-neutral-500 py-8 text-center bg-neutral-50 rounded-2xl">
+                      No custom off-menu items ordered yet.
+                    </p>
+                  );
+                }
+                return (
+                  <div className="space-y-3">
+                    {customEntries.map(({ ord, item, idx }) => {
+                      const waiterName =
+                        waiters.find((w) => w.id === (ord.servingWaiterId || ord.referralWaiterId))?.name ||
+                        'POS';
+                      return (
+                        <div key={`${ord.id}-${idx}`} className="p-3.5 rounded-2xl border border-indigo-200 bg-indigo-50/40 flex items-center justify-between gap-3">
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-xs text-neutral-900">{item.name}</span>
+                              <span className="font-mono text-[11px] font-bold text-indigo-800">
+                                {formatMoney(item.price)}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-neutral-600">
+                              {ord.orderNumber} ({ord.tableNumber || ord.type}) · {waiterName} · Station: {item.station}
+                            </div>
+                            {item.customInstructions && (
+                              <div className="text-[11px] text-amber-800 italic">
+                                Prep: {item.customInstructions}
+                              </div>
+                            )}
+                          </div>
+
+                          {item.promotedToMenuId ? (
+                            <span className="px-3 py-1.5 rounded-xl bg-emerald-100 text-emerald-800 text-[11px] font-bold shrink-0">
+                              Added to Menu ✓
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => promoteCustomItemToMenu(ord.id, idx, 'Special')}
+                              className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold shrink-0 cursor-pointer"
+                            >
+                              + Add to Permanent Menu
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          {/* 4. Immutable Order & Transaction Audit Trail */}
+          <div className="bg-white rounded-3xl p-6 border border-neutral-200/90 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-extrabold text-neutral-900 flex items-center gap-2">
+                  <History className="w-4 h-4 text-neutral-700" />
+                  <span>Full Transaction &amp; Kitchen Audit Trail</span>
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Every order creation, draft conversion, payment, kitchen rejection, and approval
+                </p>
+              </div>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="text"
+                  value={auditSearch}
+                  onChange={(e) => setAuditSearch(e.target.value)}
+                  placeholder="Search order #, actor, action..."
+                  className="pl-8 pr-3 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl w-64"
+                />
+              </div>
+            </div>
+
+            <div className="divide-y divide-neutral-100 border border-neutral-200 rounded-2xl overflow-hidden max-h-96 overflow-y-auto">
+              {auditLogs
+                .filter((log) => {
+                  const q = auditSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    (log.orderNumber || '').toLowerCase().includes(q) ||
+                    log.actor.toLowerCase().includes(q) ||
+                    log.action.toLowerCase().includes(q) ||
+                    log.details.toLowerCase().includes(q)
+                  );
+                })
+                .map((log) => (
+                  <div key={log.id} className="px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs hover:bg-neutral-50">
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono font-bold text-neutral-900">{log.orderNumber || 'SYSTEM'}</span>
+                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-neutral-100 text-neutral-800">
+                          {log.action}
+                        </span>
+                        <span className="text-[11px] font-semibold text-neutral-700">
+                          {log.actor} ({log.actorRole})
+                        </span>
+                      </div>
+                      <div className="text-neutral-600">{log.details}</div>
+                    </div>
+                    <span className="font-mono text-[11px] text-neutral-400 shrink-0">
+                      {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </div>
         </div>
       )}
 

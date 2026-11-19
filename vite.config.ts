@@ -38,7 +38,14 @@ function aiBomPlugin(): Plugin {
               return;
             }
 
-            const ai = new GoogleGenAI();
+            const ai = new GoogleGenAI({
+              apiKey,
+              httpOptions: {
+                headers: {
+                  'User-Agent': 'aistudio-build',
+                },
+              },
+            });
             const prompt = `You are an expert Restaurant ERP Master Data AI specializing in East African / Tanzanian restaurant kitchens.
 The user provides messy, natural language chef notes (often mixing Swahili and English):
 "${text}"
@@ -81,7 +88,7 @@ Output strict JSON with this structure:
 }`;
 
             const response = await ai.models.generateContent({
-              model: 'gemini-3.8-flash',
+              model: 'gemini-4-hydrogen',
               contents: prompt,
               config: {
                 responseMimeType: 'application/json',
@@ -111,6 +118,9 @@ export default defineConfig(() => {
       },
     },
     server: {
+      host: '0.0.0.0',
+      port: 3000,
+      allowedHosts: true as const,
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },

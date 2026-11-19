@@ -25,11 +25,17 @@ import {
   Building2,
   Percent,
   Sparkles,
+  AlertTriangle,
+  Eye,
+  X,
+  ShieldAlert,
+  BookOpen,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { Order, Role } from '../../types/restaurant';
 
 type ReportDimension =
+  | 'accountability_eod'
   | 'daily_trend'
   | 'by_salesperson'
   | 'by_order_type'
@@ -52,13 +58,27 @@ export const OwnerDashboardView: React.FC = () => {
     currency,
     toggleCurrency,
     setActiveRole,
+    taxEnabled,
+    setTaxEnabled,
+    taxRatePct,
+    setTaxRatePct,
+    defaultCommissionMode,
+    defaultCommissionValue,
+    discrepancies,
+    auditLogs,
+    approvalRequests,
+    reviewApprovalRequest,
+    promoteCustomItemToMenu,
+    getOrderCommission,
   } = useRestaurant();
 
-  // User type / persona view selector as requested: "based on user types each must see their respective report"
+  // User type / persona view selector
   const [activePersona, setActivePersona] = useState<PersonaView>('boss');
 
   // Filter dimensions
-  const [activeDimension, setActiveDimension] = useState<ReportDimension>('daily_trend');
+  const [activeDimension, setActiveDimension] = useState<ReportDimension>('accountability_eod');
+  const [inspectedWaiterId, setInspectedWaiterId] = useState<string | null>(null);
+  const [auditFilterQuery, setAuditFilterQuery] = useState<string>('');
   const [dateRangePreset, setDateRangePreset] = useState<string>('this_month');
   const [selectedShift, setSelectedShift] = useState<string>('all_day');
   const [selectedStoreFilter, setSelectedStoreFilter] = useState<string>('all_stores');
@@ -244,6 +264,112 @@ export const OwnerDashboardView: React.FC = () => {
     const lastX = points[points.length - 1].x;
     return `${svgPathD} L ${lastX} ${chartH - 20} L ${firstX} ${chartH - 20} Z`;
   }, [svgPathD, points]);
+
+  // Live Today Operations & EOD Financial Reconciliation (computed directly from live orders & payments)
+  const liveOps = useMemo(() => {
+    const activeNonDraft = orders.filter((o) => o.status !== 'draft' && o.status !== 'cancelled' && o.status !== 'rejected');
+    const drafts = orders.filter((o) => o.status === 'draft');
+    const cancelled = orders.filter((o) => o.status === 'cancelled' || o.status === 'rejected');
+    const outstandingOrders = activeNonDraft.filter((o) => Math.max(0, o.total - (o.paidAmount || 0)) > 0);
+    const totalSales = activeNonDraft.reduce((s, o) => s + o.total, 0);
+    const totalCollected = activeNonDraft.reduce((s, o) => s + (o.paidAmount || 0), 0);
+    const outstandingAmount = outstandingOrders.reduce((s, o) => s + Math.max(0, o.total - (o.paidAmount || 0)), 0);
+    const draftAmount = drafts.reduce((s, o) => s + o.total, 0);
+    const cancelledAmount = cancelled.reduce((s, o) => s + (o.originalAmount || o.total), 0);
+    const customItemsCount = orders.reduce((s, o) => s + o.items.filter((i) => i.isCustomItem).length, 0);
+
+    // Breakdown by tender method from Transaction records (fallback to paymentMethod when payments[] absent)
+    let cashCollected = 0;
+    let mpesaCollected = 0;
+    let airtelCollected = 0;
+    let cardCollected = 0;
+    let refundsTotal = 0;
+    let discountsTotal = 0;
+    let rejectedItemsValue = 0;
+
+    orders.forEach((ord) => {
+      discountsTotal += ord.discount || 0;
+      ord.items.forEach((it) => {
+        if (it.status === 'rejected') {
+          rejectedItemsValue += it.price * it.quantity;
+        }
+      });
+      if (ord.payments && ord.payments.length > 0) {
+        ord.payments.forEach((tx) => {
+          if (tx.isRefund) {
+            refundsTotal += tx.amount;
+          } else if (tx.method === 'cash') {
+            cashCollected += tx.amount;
+          } else if (tx.method === 'mpesa') {
+            mpesaCollected += tx.amount;
+          } else if (tx.method === 'airtel') {
+            airtelCollected += tx.amount;
+          } else if (tx.method === 'card') {
+            cardCollected += tx.amount;
+          }
+        });
+      } else if ((ord.paidAmount || 0) > 0) {
+        if (ord.paymentMethod === 'cash') cashCollected += ord.paidAmount;
+        else if (ord.paymentMethod === 'mpesa') mpesaCollected += ord.paidAmount;
+        else if (ord.paymentMethod === 'airtel') airtelCollected += ord.paidAmount;
+        else if (ord.paymentMethod === 'card') cardCollected += ord.paidAmount;
+      }
+    });
+
+    const perWaiter = waiters.map((w) => {
+      const wOrders = orders.filter((o) => o.servingWaiterId === w.id || o.referralWaiterId === w.id);
+      const wDrafts = wOrders.filter((o) => o.status === 'draft');
+      const wInKitchen = wOrders.filter((o) => ['sent_to_kitchen', 'accepted', 'preparing', 'ready'].includes(o.status));
+      const wServedUnpaid = wOrders.filter((o) => o.status === 'served' && o.paymentStatus !== 'paid');
+      const wPaid = wOrders.filter((o) => o.paymentStatus === 'paid' && o.status !== 'cancelled');
+      const wCancelled = wOrders.filter((o) => o.status === 'cancelled' || o.status === 'rejected');
+      const wCustomCount = wOrders.reduce((s, o) => s + o.items.filter((i) => i.isCustomItem).length, 0);
+      const wDiscounts = wOrders.reduce((s, o) => s + (o.discount || 0), 0);
+      const wCollected = wOrders
+        .filter((o) => o.status !== 'cancelled' && o.status !== 'draft')
+        .reduce((s, o) => s + (o.paidAmount || 0), 0);
+      const wOutstanding = wOrders
+        .filter((o) => o.status !== 'cancelled' && o.status !== 'draft')
+        .reduce((s, o) => s + Math.max(0, o.total - (o.paidAmount || 0)), 0);
+      const wCommission = wPaid.reduce((s, o) => s + getOrderCommission(o, w.id).amount, 0);
+
+      return {
+        waiter: w,
+        orders: wOrders,
+        draftsCount: wDrafts.length,
+        inKitchenCount: wInKitchen.length,
+        servedUnpaidCount: wServedUnpaid.length,
+        paidCount: wPaid.length,
+        cancelledCount: wCancelled.length,
+        customItemsCount: wCustomCount,
+        discountsTotal: wDiscounts,
+        collectedTotal: wCollected,
+        outstandingTotal: wOutstanding,
+        commissionTotal: wCommission,
+      };
+    });
+
+    return {
+      totalSales,
+      totalOrdersCount: activeNonDraft.length,
+      totalCollected,
+      outstandingCount: outstandingOrders.length,
+      outstandingAmount,
+      draftsCount: drafts.length,
+      draftAmount,
+      cancelledCount: cancelled.length,
+      cancelledAmount,
+      customItemsCount,
+      cashCollected,
+      mpesaCollected,
+      airtelCollected,
+      cardCollected,
+      refundsTotal,
+      discountsTotal,
+      rejectedItemsValue,
+      perWaiter,
+    };
+  }, [orders, waiters, getOrderCommission]);
 
   // Export CSV handler
   const handleExportCsv = () => {
@@ -440,20 +566,155 @@ export const OwnerDashboardView: React.FC = () => {
             </div>
           </div>
 
-          {/* Quick Info Badge based on Persona */}
-          <div className="text-xs font-medium text-neutral-500 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span>
-              {activePersona === 'boss' && 'Role: Executive Owner & Boss (Enterprise View)'}
-              {activePersona === 'manager' && 'Role: Store Manager (Shift & Kitchen Costing)'}
-              {activePersona === 'cashier' && 'Role: Cashier Terminal 01 (Register Audit)'}
-              {activePersona === 'waiter' && 'Role: John Mwamba (5% Personal Commission)'}
-            </span>
+          {/* Optional Tax Config + Quick Info Badge */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-neutral-200 bg-neutral-50 text-xs">
+              <Percent className="w-3.5 h-3.5 text-neutral-500" />
+              <span className="font-semibold text-neutral-700">Order Tax:</span>
+              <button
+                type="button"
+                onClick={() => setTaxEnabled(!taxEnabled)}
+                className={`px-2 py-0.5 rounded font-bold text-[11px] transition-colors cursor-pointer ${
+                  taxEnabled
+                    ? 'bg-[#43A047] text-white'
+                    : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300'
+                }`}
+              >
+                {taxEnabled ? 'ON' : 'OFF'}
+              </button>
+              {taxEnabled && (
+                <select
+                  value={taxRatePct}
+                  onChange={(e) => setTaxRatePct(Number(e.target.value))}
+                  className="bg-white border border-neutral-200 rounded px-1.5 py-0.5 text-[11px] font-mono font-bold text-neutral-800 outline-hidden cursor-pointer"
+                  aria-label="VAT Rate Percentage"
+                >
+                  <option value={10}>10%</option>
+                  <option value={15}>15%</option>
+                  <option value={18}>18%</option>
+                </select>
+              )}
+            </div>
+
+            <div className="text-xs font-medium text-neutral-500 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span>
+                {activePersona === 'boss' && 'Role: Executive Owner & Boss (Enterprise View)'}
+                {activePersona === 'manager' && 'Role: Store Manager (Shift & Kitchen Costing)'}
+                {activePersona === 'cashier' && 'Role: Cashier Terminal 01 (Register Audit)'}
+                {activePersona === 'waiter' &&
+                  `Role: John Mwamba (${
+                    defaultCommissionMode === 'percent'
+                      ? `${defaultCommissionValue}% Commission`
+                      : `${formatMoney(defaultCommissionValue)} / Paid Order`
+                  })`}
+              </span>
+            </div>
           </div>
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* ================= LIVE TODAY OPERATIONS & ACCOUNTABILITY OVERVIEW ================= */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="bg-white rounded-xl p-3.5 border border-neutral-200">
+            <div className="text-[11px] text-neutral-500 font-medium">Today Live Sales</div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-1 tabular-nums">
+              {formatMoney(liveOps.totalSales)}
+            </div>
+            <div className="text-[11px] text-emerald-700 font-medium mt-0.5">
+              {liveOps.totalOrdersCount} active orders
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl p-3.5 border border-neutral-200">
+            <div className="text-[11px] text-neutral-500 font-medium">Cash &amp; Digital Paid</div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-emerald-700 mt-1 tabular-nums">
+              {formatMoney(liveOps.totalCollected)}
+            </div>
+            <div className="text-[11px] text-neutral-500 mt-0.5">Verified payments</div>
+          </div>
+
+          <div className={`rounded-xl p-3.5 border ${liveOps.outstandingAmount > 0 ? 'bg-rose-50/70 border-rose-200' : 'bg-white border-neutral-200'}`}>
+            <div className="text-[11px] text-neutral-600 font-medium">Outstanding Bills</div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-rose-700 mt-1 tabular-nums">
+              {formatMoney(liveOps.outstandingAmount)}
+            </div>
+            <div className="text-[11px] text-rose-700 font-semibold mt-0.5">
+              {liveOps.outstandingCount} unpaid / partial
+            </div>
+          </div>
+
+          <div className="bg-amber-50/60 rounded-xl p-3.5 border border-amber-200">
+            <div className="text-[11px] text-amber-900 font-medium">Saved Drafts</div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-amber-950 mt-1 tabular-nums">
+              {liveOps.draftsCount} ({formatMoney(liveOps.draftAmount)})
+            </div>
+            <div className="text-[11px] text-amber-800 mt-0.5">Visible to Owner</div>
+          </div>
+
+          <div className="bg-white rounded-xl p-3.5 border border-neutral-200">
+            <div className="text-[11px] text-neutral-500 font-medium">Cancelled / Rejected</div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-1 tabular-nums">
+              {liveOps.cancelledCount} ({formatMoney(liveOps.cancelledAmount)})
+            </div>
+            <div className="text-[11px] text-neutral-500 mt-0.5">Full audit kept</div>
+          </div>
+
+          <div className="bg-indigo-50/60 rounded-xl p-3.5 border border-indigo-200">
+            <div className="text-[11px] text-indigo-900 font-medium">Off-Menu Specials</div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-indigo-950 mt-1 tabular-nums">
+              {liveOps.customItemsCount} items
+            </div>
+            <div className="text-[11px] text-indigo-700 mt-0.5">Per-order custom</div>
+          </div>
+        </div>
+
+        {/* ================= AUTOMATED DISCREPANCY ALERTS ================= */}
+        {discrepancies.length > 0 && (
+          <div className="bg-white rounded-2xl border border-rose-200 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-600" />
+                <h2 className="text-sm font-extrabold text-neutral-900">
+                  Live Discrepancy &amp; Risk Alerts ({discrepancies.length})
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveDimension('accountability_eod')}
+                className="text-xs font-bold text-rose-700 hover:underline cursor-pointer"
+              >
+                Open Accountability Ledger
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {discrepancies.map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`p-3 rounded-xl border text-xs flex items-start justify-between gap-2 ${
+                    alert.severity === 'critical'
+                      ? 'bg-rose-50 border-rose-200 text-rose-950'
+                      : 'bg-amber-50 border-amber-200 text-amber-950'
+                  }`}
+                >
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <span className="font-mono">{alert.orderNumber}</span>
+                      <span className="truncate">{alert.title}</span>
+                    </div>
+                    <div className="text-[11px] opacity-85">{alert.detail}</div>
+                  </div>
+                  <span className="font-mono font-extrabold shrink-0 tabular-nums">
+                    {formatMoney(alert.amountImpact)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ================= 5 KPI CARDS STRIP matching image_04d4b5da.png ================= */}
         {/* In the screenshot: Gross sales, Refunds, Discounts, Net sales, Gross profit */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
@@ -512,7 +773,13 @@ export const OwnerDashboardView: React.FC = () => {
               {formatVal(activePersona === 'waiter' ? 469.88 : baseKpi.grossProfit)}
             </div>
             <div className="flex items-center gap-1 text-[11px] text-emerald-700 font-medium mt-1">
-              <span>{activePersona === 'waiter' ? '5% attributed sales' : `${baseKpi.profitChangePct} (${baseKpi.marginPct}% margin)`}</span>
+              <span>
+                {activePersona === 'waiter'
+                  ? defaultCommissionMode === 'percent'
+                    ? `${defaultCommissionValue}% paid net sales`
+                    : `${formatMoney(defaultCommissionValue)} / paid order`
+                  : `${baseKpi.profitChangePct} (${baseKpi.marginPct}% margin)`}
+              </span>
             </div>
           </div>
         </div>
@@ -591,7 +858,11 @@ export const OwnerDashboardView: React.FC = () => {
                         fontSize="9"
                         fontFamily="monospace"
                       >
-                        ${val}
+                        {currency === 'USD'
+                          ? `$${val}`
+                          : val === 0
+                          ? 'TZS 0'
+                          : `TZS ${((val * currentTenant.currencyRate) / 1000000).toFixed(1)}M`}
                       </text>
                     </g>
                   );
@@ -694,6 +965,7 @@ export const OwnerDashboardView: React.FC = () => {
           <div className="p-4 border-b border-neutral-200 flex flex-wrap items-center justify-between gap-3 bg-neutral-50/50">
             <div className="flex items-center gap-1 overflow-x-auto max-w-full">
               {[
+                { id: 'accountability_eod', label: 'Waiter Accountability & EOD Reconciliation', icon: ShieldAlert },
                 { id: 'daily_trend', label: 'Daily Breakdown', icon: Calendar },
                 { id: 'by_salesperson', label: 'Sales by Salesperson / Waiter', icon: Users },
                 { id: 'by_order_type', label: 'Sales by Order Type (Dine/Takeaway)', icon: ShoppingBag },
@@ -952,6 +1224,319 @@ export const OwnerDashboardView: React.FC = () => {
                   Shift opened today at {cashierShift.openedAt} by Cashier Tony Danza. No void discrepancies detected.
                 </div>
               </div>
+
+              <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white">
+                <div className="px-4 py-2.5 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between text-xs">
+                  <span className="font-bold text-neutral-900">Active Shift Orders & Service Coupons</span>
+                  <span className="font-mono text-[11px] text-neutral-500">{orders.length} tickets</span>
+                </div>
+                <div className="divide-y divide-neutral-100 text-xs">
+                  {orders.slice(0, 8).map((o) => (
+                    <div key={o.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="font-mono font-extrabold text-[11px] px-2 py-0.5 rounded bg-amber-50 border border-dashed border-amber-300 text-amber-900">
+                          {o.serviceCouponCode || `SV-${o.orderNumber.replace('#', '')}`}
+                        </span>
+                        <span className="font-mono font-bold text-neutral-900">{o.orderNumber}</span>
+                        <span className="text-neutral-500 truncate">{o.customerName || 'Guest'}</span>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="font-mono font-bold text-neutral-900 tabular-nums">
+                          {formatMoney(o.total)}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                            o.paymentStatus === 'paid'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {o.paymentStatus.toUpperCase()}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================= TABLE 0: LIVE WAITER ACCOUNTABILITY & EOD FINANCIAL RECONCILIATION ================= */}
+          {activeDimension === 'accountability_eod' && (
+            <div className="p-5 space-y-6">
+              {/* Clickable Waiter Accountability Matrix */}
+              <div className="space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-extrabold text-neutral-900">
+                      Live Waiter Performance &amp; Full Accountability
+                    </h3>
+                    <p className="text-xs text-neutral-500">
+                      Click any waiter row to inspect drafts, kitchen-submitted, served-unpaid, paid, cancelled, and custom orders
+                    </p>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto border border-neutral-200 rounded-xl">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-neutral-100 text-neutral-600 font-bold uppercase text-[10px]">
+                      <tr>
+                        <th className="py-2.5 px-3">Waiter</th>
+                        <th className="py-2.5 px-3 text-center">Drafts</th>
+                        <th className="py-2.5 px-3 text-center">In Kitchen</th>
+                        <th className="py-2.5 px-3 text-center">Served Unpaid</th>
+                        <th className="py-2.5 px-3 text-center">Paid</th>
+                        <th className="py-2.5 px-3 text-center">Cancelled</th>
+                        <th className="py-2.5 px-3 text-center">Custom Items</th>
+                        <th className="py-2.5 px-3 text-right">Collected</th>
+                        <th className="py-2.5 px-3 text-right">Outstanding</th>
+                        <th className="py-2.5 px-3 text-right">Commission</th>
+                        <th className="py-2.5 px-3 text-right">Inspect</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {liveOps.perWaiter.map((row) => (
+                        <tr
+                          key={row.waiter.id}
+                          onClick={() => setInspectedWaiterId(row.waiter.id)}
+                          className="hover:bg-neutral-50 cursor-pointer transition-colors"
+                        >
+                          <td className="py-3 px-3 font-bold text-neutral-900">
+                            <div>{row.waiter.name}</div>
+                            <div className="text-[10px] font-mono text-neutral-500">{row.waiter.referralCode}</div>
+                          </td>
+                          <td className="py-3 px-3 text-center font-mono">
+                            {row.draftsCount > 0 ? (
+                              <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 font-bold">{row.draftsCount}</span>
+                            ) : (
+                              '0'
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-center font-mono">{row.inKitchenCount}</td>
+                          <td className="py-3 px-3 text-center font-mono">
+                            {row.servedUnpaidCount > 0 ? (
+                              <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-bold">{row.servedUnpaidCount}</span>
+                            ) : (
+                              '0'
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-center font-mono font-bold text-emerald-700">{row.paidCount}</td>
+                          <td className="py-3 px-3 text-center font-mono text-neutral-500">{row.cancelledCount}</td>
+                          <td className="py-3 px-3 text-center font-mono text-indigo-700 font-semibold">{row.customItemsCount}</td>
+                          <td className="py-3 px-3 text-right font-mono font-bold tabular-nums text-emerald-700">
+                            {formatMoney(row.collectedTotal)}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono font-bold tabular-nums text-rose-700">
+                            {formatMoney(row.outstandingTotal)}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono font-semibold tabular-nums">
+                            {formatMoney(row.commissionTotal)}
+                          </td>
+                          <td className="py-3 px-3 text-right">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setInspectedWaiterId(row.waiter.id);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-neutral-900 text-white text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <Eye className="w-3 h-3" />
+                              <span>Inspect</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* End-of-Day Financial Reconciliation Panel */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="border border-neutral-200 rounded-2xl p-4 space-y-3 bg-neutral-50/50">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-extrabold text-neutral-900">
+                      End-of-Day Financial Reconciliation
+                    </h4>
+                    <span className="text-[11px] font-mono font-semibold text-neutral-500">Live Ledger</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5 text-xs">
+                    <div className="p-3 bg-white rounded-xl border border-neutral-200">
+                      <div className="text-neutral-500">Cash Collected</div>
+                      <div className="font-mono font-extrabold text-sm text-neutral-900 mt-0.5 tabular-nums">
+                        {formatMoney(liveOps.cashCollected)}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-white rounded-xl border border-neutral-200">
+                      <div className="text-neutral-500">Mobile Money (M-Pesa + Airtel)</div>
+                      <div className="font-mono font-extrabold text-sm text-blue-700 mt-0.5 tabular-nums">
+                        {formatMoney(liveOps.mpesaCollected + liveOps.airtelCollected)}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-white rounded-xl border border-neutral-200">
+                      <div className="text-neutral-500">Card / POS Settlements</div>
+                      <div className="font-mono font-extrabold text-sm text-neutral-900 mt-0.5 tabular-nums">
+                        {formatMoney(liveOps.cardCollected)}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-rose-50 rounded-xl border border-rose-200">
+                      <div className="text-rose-800 font-medium">Unpaid / Partial Balances</div>
+                      <div className="font-mono font-extrabold text-sm text-rose-800 mt-0.5 tabular-nums">
+                        {formatMoney(liveOps.outstandingAmount)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="divide-y divide-neutral-200/70 text-xs bg-white rounded-xl border border-neutral-200 px-3">
+                    <div className="py-2 flex justify-between">
+                      <span className="text-neutral-600">Discounts Applied</span>
+                      <span className="font-mono font-bold text-neutral-900 tabular-nums">
+                        -{formatMoney(liveOps.discountsTotal)}
+                      </span>
+                    </div>
+                    <div className="py-2 flex justify-between">
+                      <span className="text-neutral-600">Kitchen Rejected / Voided Items</span>
+                      <span className="font-mono font-bold text-rose-700 tabular-nums">
+                        -{formatMoney(liveOps.rejectedItemsValue)}
+                      </span>
+                    </div>
+                    <div className="py-2 flex justify-between">
+                      <span className="text-neutral-600">Refunds Issued</span>
+                      <span className="font-mono font-bold text-neutral-900 tabular-nums">
+                        -{formatMoney(liveOps.refundsTotal)}
+                      </span>
+                    </div>
+                    <div className="py-2 flex justify-between font-bold">
+                      <span className="text-neutral-900">Expected Cash in Drawer (Float + Cash)</span>
+                      <span className="font-mono text-emerald-700 tabular-nums">
+                        {formatMoney(cashierShift.openingCash + liveOps.cashCollected - liveOps.refundsTotal)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pending Approvals + Custom Off-Menu Review */}
+                <div className="border border-neutral-200 rounded-2xl p-4 space-y-3 bg-white">
+                  <h4 className="text-sm font-extrabold text-neutral-900">
+                    Pending Approvals &amp; Custom Off-Menu Orders
+                  </h4>
+
+                  {approvalRequests.filter((r) => r.status === 'pending').length > 0 && (
+                    <div className="space-y-2">
+                      {approvalRequests
+                        .filter((r) => r.status === 'pending')
+                        .map((req) => (
+                          <div key={req.id} className="p-3 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-between gap-2 text-xs">
+                            <div className="min-w-0">
+                              <div className="font-bold text-neutral-900">
+                                {req.orderNumber} · {req.details}
+                              </div>
+                              <div className="text-[11px] text-neutral-600 truncate">
+                                {req.requestedBy}: {req.reason}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => reviewApprovalRequest(req.id, false, 'Owner / Boss')}
+                                className="px-2.5 py-1 rounded-lg border border-rose-300 text-rose-700 text-[11px] font-bold cursor-pointer"
+                              >
+                                Deny
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => reviewApprovalRequest(req.id, true, 'Owner / Boss')}
+                                className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold cursor-pointer"
+                              >
+                                Approve
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+
+                  <div className="space-y-2 max-h-56 overflow-y-auto">
+                    {orders
+                      .flatMap((ord) =>
+                        ord.items
+                          .map((item, idx) => ({ ord, item, idx }))
+                          .filter((x) => x.item.isCustomItem)
+                      )
+                      .map(({ ord, item, idx }) => (
+                        <div key={`${ord.id}-${idx}`} className="p-2.5 rounded-xl bg-indigo-50/50 border border-indigo-200 flex items-center justify-between gap-2 text-xs">
+                          <div className="min-w-0">
+                            <div className="font-bold text-neutral-900 truncate">
+                              {item.quantity}× {item.name} ({formatMoney(item.price)})
+                            </div>
+                            <div className="text-[11px] text-neutral-600 truncate">
+                              {ord.orderNumber} · {item.customInstructions || 'Custom customer item'}
+                            </div>
+                          </div>
+                          {item.promotedToMenuId ? (
+                            <span className="text-[10px] font-bold px-2 py-1 rounded bg-emerald-100 text-emerald-800 shrink-0">
+                              In Menu ✓
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => promoteCustomItemToMenu(ord.id, idx, 'Special')}
+                              className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-[11px] font-bold shrink-0 cursor-pointer"
+                            >
+                              + Add to Menu
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Immutable Audit Log Stream */}
+              <div className="border border-neutral-200 rounded-2xl overflow-hidden">
+                <div className="px-4 py-3 bg-neutral-50 border-b border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="text-xs font-extrabold text-neutral-900">
+                    System Audit Trail ({auditLogs.length} events)
+                  </div>
+                  <input
+                    type="text"
+                    value={auditFilterQuery}
+                    onChange={(e) => setAuditFilterQuery(e.target.value)}
+                    placeholder="Filter order #, actor, or action..."
+                    className="px-3 py-1 text-xs bg-white border border-neutral-200 rounded-lg w-full sm:w-64"
+                  />
+                </div>
+                <div className="divide-y divide-neutral-100 max-h-72 overflow-y-auto text-xs">
+                  {auditLogs
+                    .filter((log) => {
+                      const q = auditFilterQuery.trim().toLowerCase();
+                      if (!q) return true;
+                      return (
+                        (log.orderNumber || '').toLowerCase().includes(q) ||
+                        log.actor.toLowerCase().includes(q) ||
+                        log.action.toLowerCase().includes(q) ||
+                        log.details.toLowerCase().includes(q)
+                      );
+                    })
+                    .map((log) => (
+                      <div key={log.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <span className="font-mono font-bold text-neutral-900 mr-2">{log.orderNumber || 'SYSTEM'}</span>
+                          <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-800 mr-2">
+                            {log.action}
+                          </span>
+                          <span className="font-semibold text-neutral-800 mr-1.5">{log.actor}:</span>
+                          <span className="text-neutral-600">{log.details}</span>
+                        </div>
+                        <span className="font-mono text-[11px] text-neutral-400 shrink-0">
+                          {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -984,6 +1569,134 @@ export const OwnerDashboardView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* ================= WAITER FULL INSPECTION DRAWER / MODAL ================= */}
+      {inspectedWaiterId && (() => {
+        const waiterSummary = liveOps.perWaiter.find((w) => w.waiter.id === inspectedWaiterId);
+        if (!waiterSummary) return null;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-end bg-black/50 backdrop-blur-xs">
+            <div className="bg-white w-full max-w-2xl h-full shadow-2xl border-l border-neutral-200 flex flex-col">
+              <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between bg-neutral-900 text-white shrink-0">
+                <div>
+                  <h3 className="text-base font-extrabold">
+                    {waiterSummary.waiter.name} — Full Activity Inspection
+                  </h3>
+                  <p className="text-xs text-neutral-400 font-mono">
+                    {waiterSummary.waiter.referralCode} · Collected {formatMoney(waiterSummary.collectedTotal)} · Outstanding {formatMoney(waiterSummary.outstandingTotal)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInspectedWaiterId(null)}
+                  className="p-2 rounded-lg text-neutral-400 hover:text-white cursor-pointer"
+                  aria-label="Close inspection drawer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-4 border-b border-neutral-200 grid grid-cols-3 sm:grid-cols-6 gap-2 bg-neutral-50 text-center text-xs shrink-0">
+                <div className="p-2 bg-white rounded-lg border border-neutral-200">
+                  <div className="text-[10px] text-neutral-500">Drafts</div>
+                  <div className="font-mono font-bold text-amber-700">{waiterSummary.draftsCount}</div>
+                </div>
+                <div className="p-2 bg-white rounded-lg border border-neutral-200">
+                  <div className="text-[10px] text-neutral-500">In Kitchen</div>
+                  <div className="font-mono font-bold text-neutral-900">{waiterSummary.inKitchenCount}</div>
+                </div>
+                <div className="p-2 bg-white rounded-lg border border-neutral-200">
+                  <div className="text-[10px] text-neutral-500">Served Unpaid</div>
+                  <div className="font-mono font-bold text-rose-700">{waiterSummary.servedUnpaidCount}</div>
+                </div>
+                <div className="p-2 bg-white rounded-lg border border-neutral-200">
+                  <div className="text-[10px] text-neutral-500">Paid</div>
+                  <div className="font-mono font-bold text-emerald-700">{waiterSummary.paidCount}</div>
+                </div>
+                <div className="p-2 bg-white rounded-lg border border-neutral-200">
+                  <div className="text-[10px] text-neutral-500">Cancelled</div>
+                  <div className="font-mono font-bold text-neutral-600">{waiterSummary.cancelledCount}</div>
+                </div>
+                <div className="p-2 bg-white rounded-lg border border-neutral-200">
+                  <div className="text-[10px] text-neutral-500">Commission</div>
+                  <div className="font-mono font-bold text-emerald-700">{formatMoney(waiterSummary.commissionTotal)}</div>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {waiterSummary.orders.map((ord) => {
+                  const balance = Math.max(0, ord.total - (ord.paidAmount || 0));
+                  return (
+                    <div key={ord.id} className="p-3.5 rounded-2xl border border-neutral-200 bg-white space-y-2 text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-extrabold text-neutral-900">{ord.orderNumber}</span>
+                            {ord.kotNumber && (
+                              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-neutral-100 text-neutral-700">
+                                {ord.kotNumber}
+                              </span>
+                            )}
+                            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-neutral-900 text-white">
+                              {ord.status.replace(/_/g, ' ')}
+                            </span>
+                            <span
+                              className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                                ord.paymentStatus === 'paid'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : ord.paymentStatus === 'partial'
+                                  ? 'bg-blue-100 text-blue-800'
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}
+                            >
+                              {ord.paymentStatus}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-neutral-500 mt-0.5">
+                            {ord.tableNumber || ord.type} · {ord.customerName}
+                          </div>
+                        </div>
+                        <div className="text-right font-mono">
+                          <div className="font-extrabold text-neutral-900 tabular-nums">{formatMoney(ord.total)}</div>
+                          {balance > 0 && ord.status !== 'draft' && ord.status !== 'cancelled' && (
+                            <div className="text-[11px] font-bold text-rose-700">Bal: {formatMoney(balance)}</div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 border-t border-neutral-100 pt-2">
+                        {ord.items.map((it, idx) => (
+                          <div key={idx} className="flex justify-between gap-2 text-[11px]">
+                            <span className={it.status === 'rejected' ? 'line-through text-rose-600' : 'text-neutral-800'}>
+                              {it.quantity}× {it.name}
+                              {it.isCustomItem ? ' [Custom]' : ''}
+                              {it.customInstructions ? ` (${it.customInstructions})` : ''}
+                              {it.status === 'rejected' && it.rejectionReason ? ` — REJECTED: ${it.rejectionReason}` : ''}
+                            </span>
+                            <span className="font-mono text-neutral-600 tabular-nums shrink-0">
+                              {formatMoney(it.price * it.quantity)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {ord.adjustments && ord.adjustments.length > 0 && (
+                        <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-950">
+                          {ord.adjustments.map((adj) => (
+                            <div key={adj.id}>
+                              Adjustment ({adj.type}): {formatMoney(adj.difference)} · {adj.reason}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

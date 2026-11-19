@@ -1,17 +1,17 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Users,
   Award,
-  Wallet,
   CheckCircle2,
-  AlertCircle,
   Plus,
-  ArrowRight,
-  Receipt,
   Check,
+  Search,
+  Ticket,
+  Clock,
+  Banknote,
+  Smartphone,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { Employee } from '../../types/restaurant';
 
 export const HrPayrollView: React.FC = () => {
   const {
@@ -20,15 +20,40 @@ export const HrPayrollView: React.FC = () => {
     calculateWaiterStats,
     formatMoney,
     addAdvanceRequest,
-    approveAdvance,
+    orders,
+    processPayment,
+    updateOrderStatus,
+    defaultCommissionMode,
+    defaultCommissionValue,
+    settleWaiterCommission,
   } = useRestaurant();
 
-  const [activeTab, setActiveTab] = useState<'payroll' | 'commissions' | 'advances'>('payroll');
+  const [activeTab, setActiveTab] = useState<'coupons' | 'payroll' | 'commissions' | 'advances'>('coupons');
+  const [couponSearch, setCouponSearch] = useState('');
+  const [couponFilter, setCouponFilter] = useState<'all' | 'unpaid' | 'active' | 'completed'>('all');
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
   const [selectedEmpId, setSelectedEmpId] = useState(employees[1].id); // John Mwamba
   const [advanceAmount, setAdvanceAmount] = useState(50000);
   const [advanceReason, setAdvanceReason] = useState('Urgent family domestic medical expense');
   const [commissionApproved, setCommissionApproved] = useState(false);
+
+  const filteredReceptionOrders = useMemo(() => {
+    const q = couponSearch.trim().toLowerCase();
+    return orders.filter((o) => {
+      if (couponFilter === 'unpaid' && o.paymentStatus === 'paid') return false;
+      if (couponFilter === 'active' && o.status === 'completed') return false;
+      if (couponFilter === 'completed' && o.status !== 'completed') return false;
+      if (!q) return true;
+      const coupon = (o.serviceCouponCode || `SV-${o.orderNumber.replace('#', '')}`).toLowerCase();
+      return (
+        coupon.includes(q) ||
+        o.orderNumber.toLowerCase().includes(q) ||
+        (o.customerName || '').toLowerCase().includes(q) ||
+        (o.tableNumber || '').toLowerCase().includes(q)
+      );
+    });
+  }, [orders, couponSearch, couponFilter]);
 
   const handleCreateAdvance = (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,9 +70,9 @@ export const HrPayrollView: React.FC = () => {
             <Users className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-base font-bold text-neutral-900">Staff HR, Advances & Waiter Commissions</h1>
+            <h1 className="text-base font-bold text-neutral-900">Reception Desk, Order Coupons & Staff HR</h1>
             <p className="text-xs text-neutral-500">
-              Integrated payroll engine with automatic commission transfer and advance deductions
+              Verify customer & waiter service coupon codes, settle tables, and manage staff payroll & commissions
             </p>
           </div>
         </div>
@@ -64,10 +89,22 @@ export const HrPayrollView: React.FC = () => {
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-2 border-b border-neutral-200 pb-2">
+      <div className="flex items-center gap-2 border-b border-neutral-200 pb-2 overflow-x-auto">
+        <button
+          onClick={() => setActiveTab('coupons')}
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors shrink-0 inline-flex items-center gap-1.5 ${
+            activeTab === 'coupons'
+              ? 'bg-neutral-900 text-white shadow-xs'
+              : 'text-neutral-600 hover:bg-neutral-200'
+          }`}
+        >
+          <Ticket className="w-3.5 h-3.5" />
+          <span>Reception · Service Coupons ({orders.length})</span>
+        </button>
+
         <button
           onClick={() => setActiveTab('payroll')}
-          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors ${
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors shrink-0 ${
             activeTab === 'payroll'
               ? 'bg-neutral-900 text-white shadow-xs'
               : 'text-neutral-600 hover:bg-neutral-200'
@@ -78,7 +115,7 @@ export const HrPayrollView: React.FC = () => {
 
         <button
           onClick={() => setActiveTab('commissions')}
-          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors ${
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors shrink-0 ${
             activeTab === 'commissions'
               ? 'bg-neutral-900 text-white shadow-xs'
               : 'text-neutral-600 hover:bg-neutral-200'
@@ -89,7 +126,7 @@ export const HrPayrollView: React.FC = () => {
 
         <button
           onClick={() => setActiveTab('advances')}
-          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors ${
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors shrink-0 ${
             activeTab === 'advances'
               ? 'bg-neutral-900 text-white shadow-xs'
               : 'text-neutral-600 hover:bg-neutral-200'
@@ -99,21 +136,219 @@ export const HrPayrollView: React.FC = () => {
         </button>
       </div>
 
+      {/* Tab 0: Reception Service Coupon Verification & Front Desk Orders */}
+      {activeTab === 'coupons' && (
+        <div className="bg-white rounded-2xl p-5 sm:p-6 border border-neutral-200/90 shadow-xs space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-neutral-900">
+                Front Desk Service Coupon Verification
+              </h3>
+              <p className="text-xs text-neutral-500">
+                Match a customer or waiter coupon code (e.g. SV-4827) to verify items, accept payment, and release service
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative w-full sm:w-64">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="text"
+                  value={couponSearch}
+                  onChange={(e) => setCouponSearch(e.target.value)}
+                  placeholder="Enter coupon code, order #, table..."
+                  className="w-full pl-8 pr-3 py-2 text-xs bg-neutral-50 border border-neutral-200 rounded-xl outline-hidden focus:ring-2 focus:ring-neutral-900 font-medium"
+                />
+              </div>
+
+              <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl text-[11px] font-bold">
+                {(['all', 'unpaid', 'active', 'completed'] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => setCouponFilter(f)}
+                    className={`px-2.5 py-1 rounded-lg capitalize transition-colors ${
+                      couponFilter === f
+                        ? 'bg-white text-neutral-900 shadow-2xs'
+                        : 'text-neutral-500 hover:text-neutral-900'
+                    }`}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {filteredReceptionOrders.length === 0 ? (
+            <div className="py-10 text-center text-xs text-neutral-500 border border-dashed border-neutral-200 rounded-xl">
+              No service coupons matched "{couponSearch}".
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {filteredReceptionOrders.map((order) => {
+                const couponCode =
+                  order.serviceCouponCode || `SV-${order.orderNumber.replace('#', '')}`;
+                const waiterObj = waiters.find(
+                  (w) => w.id === (order.servingWaiterId || order.referralWaiterId)
+                );
+
+                return (
+                  <div
+                    key={order.id}
+                    className="rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 flex flex-col justify-between gap-3"
+                  >
+                    <div className="space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 border border-dashed border-amber-300 text-amber-950">
+                          <Ticket className="w-3.5 h-3.5 text-amber-600" />
+                          <span className="font-mono font-extrabold text-xs tracking-wider">
+                            {couponCode}
+                          </span>
+                        </div>
+
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md uppercase ${
+                            order.status === 'completed'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : order.status === 'ready'
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {order.status}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-neutral-900">
+                          {order.orderNumber} · {order.customerName || 'Walk-in Guest'}
+                        </span>
+                        <span className="text-[11px] font-mono text-neutral-500 flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {new Date(order.createdAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+
+                      <div className="text-[11px] text-neutral-600 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="font-semibold capitalize">
+                          {order.type.replace('_', ' ')}
+                        </span>
+                        {order.tableNumber && <span>· Table {order.tableNumber}</span>}
+                        {waiterObj && <span>· Waiter: {waiterObj.name}</span>}
+                      </div>
+
+                      <div className="bg-white rounded-lg border border-neutral-200/80 p-2.5 space-y-1 text-[11px]">
+                        {order.items.map((item, idx) => (
+                          <div key={`${item.menuItemId}-${idx}`} className="flex justify-between text-neutral-700">
+                            <span className="truncate pr-2">
+                              {item.quantity}× {item.name}
+                            </span>
+                            <span className="font-mono tabular-nums shrink-0">
+                              {formatMoney(item.price * item.quantity)}
+                            </span>
+                          </div>
+                        ))}
+                        {order.tax > 0 && (
+                          <div className="flex justify-between text-neutral-500 pt-1 border-t border-neutral-100">
+                            <span>VAT ({Math.round((order.taxRate || 0.18) * 100)}%)</span>
+                            <span className="font-mono tabular-nums">{formatMoney(order.tax)}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between font-bold text-neutral-900 pt-1 border-t border-neutral-200">
+                          <span>Total Due</span>
+                          <span className="font-mono tabular-nums">{formatMoney(order.total)}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <span
+                        className={`text-[10px] font-bold px-2 py-1 rounded ${
+                          order.paymentStatus === 'paid'
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-rose-50 text-rose-700 border border-rose-200'
+                        }`}
+                      >
+                        {order.paymentStatus === 'paid'
+                          ? `PAID (${(order.paymentMethod || 'cash').toUpperCase()})`
+                          : 'UNPAID'}
+                      </span>
+
+                      <div className="flex items-center gap-1.5">
+                        {order.paymentStatus !== 'paid' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => processPayment(order.id, 'cash', order.total)}
+                              className="px-2 py-1 text-[11px] font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center gap-1"
+                              title="Settle Cash at Reception"
+                            >
+                              <Banknote className="w-3 h-3" />
+                              <span>Cash</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => processPayment(order.id, 'mpesa', order.total)}
+                              className="px-2 py-1 text-[11px] font-bold rounded-lg bg-blue-600 hover:bg-blue-700 text-white inline-flex items-center gap-1"
+                              title="Settle Mobile Money at Reception"
+                            >
+                              <Smartphone className="w-3 h-3" />
+                              <span>M-Pesa</span>
+                            </button>
+                          </>
+                        )}
+
+                        {order.status !== 'completed' && (
+                          <button
+                            type="button"
+                            onClick={() => updateOrderStatus(order.id, 'completed')}
+                            className="px-2.5 py-1 text-[11px] font-bold rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white inline-flex items-center gap-1"
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>Serve</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Tab 1: Consolidated Payroll Summary */}
       {activeTab === 'payroll' && (
         <div className="bg-white rounded-2xl p-6 border border-neutral-200/90 shadow-xs space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <div>
               <h3 className="text-sm font-bold text-neutral-900">November 2026 Payroll Run</h3>
               <p className="text-xs text-neutral-500">Basic salary + eligible sales commission minus advances</p>
             </div>
             <button
-              onClick={() => alert('Payroll run exported to Excel & TRA tax formats.')}
+              onClick={() => setExportNotice('Payroll run prepared in TZS & TRA statutory format.')}
               className="px-3 py-1.5 text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg hover:bg-emerald-100"
             >
               Export TRA Tax Format
             </button>
           </div>
+          {exportNotice && (
+            <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-800 flex items-center justify-between">
+              <span>{exportNotice}</span>
+              <button
+                type="button"
+                onClick={() => setExportNotice(null)}
+                className="text-emerald-700 font-bold hover:underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
 
           <div className="overflow-x-auto">
             <table className="w-full text-xs text-left">
@@ -177,9 +412,14 @@ export const HrPayrollView: React.FC = () => {
         <div className="bg-white rounded-2xl p-6 border border-neutral-200/90 shadow-xs space-y-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-neutral-100 pb-4">
             <div>
-              <h3 className="text-sm font-bold text-neutral-900">Waiter Sales Attribution & 5% Net Rule</h3>
+              <h3 className="text-sm font-bold text-neutral-900">
+                Waiter Sales Attribution ·{' '}
+                {defaultCommissionMode === 'percent'
+                  ? `${defaultCommissionValue}% of Paid Net Sales`
+                  : `${formatMoney(defaultCommissionValue)} Fixed / Paid Order`}
+              </h3>
               <p className="text-xs text-neutral-500">
-                Calculated strictly from completed and sufficiently paid customer orders
+                Credited strictly from paid customer orders (supports manager per-order % or fixed overrides)
               </p>
             </div>
 
@@ -207,18 +447,20 @@ export const HrPayrollView: React.FC = () => {
                       <span className="text-[10px] font-mono text-neutral-400">{waiter.referralCode}</span>
                     </div>
                     <span className="text-[10px] bg-amber-100 text-amber-800 font-semibold px-2 py-0.5 rounded">
-                      5% Commission
+                      {defaultCommissionMode === 'percent'
+                        ? `${defaultCommissionValue}% Commission`
+                        : `${formatMoney(defaultCommissionValue)} / Order`}
                     </span>
                   </div>
 
                   <div className="space-y-1 text-xs">
                     <div className="flex justify-between">
-                      <span className="text-neutral-500">Total Attributed Sales:</span>
+                      <span className="text-neutral-500">Paid Net Sales:</span>
                       <span className="font-mono font-semibold">{formatMoney(stats.todaySales)}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-neutral-500">Completed Orders:</span>
-                      <span className="font-mono">{stats.completedOrdersCount} orders</span>
+                      <span className="text-neutral-500">Paid Orders Credited:</span>
+                      <span className="font-mono">{stats.completedOrdersCount} paid</span>
                     </div>
                     <div className="flex justify-between pt-1 border-t border-neutral-200">
                       <span className="text-neutral-700 font-semibold">Earned Commission:</span>
@@ -233,6 +475,16 @@ export const HrPayrollView: React.FC = () => {
                       <span className="font-mono text-blue-700">{formatMoney(stats.pendingCommission)}</span>
                     </div>
                   </div>
+
+                  {stats.pendingCommission > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => settleWaiterCommission(waiter.id)}
+                      className="w-full py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-[11px] font-bold transition-colors cursor-pointer"
+                    >
+                      Settle Payout ({formatMoney(stats.pendingCommission)})
+                    </button>
+                  )}
                 </div>
               );
             })}

@@ -1,15 +1,18 @@
 export type OrderType = 'dine_in' | 'pickup' | 'delivery';
 
 export type OrderStatus =
+  | 'draft'
   | 'pending'
   | 'confirmed'
   | 'sent_to_kitchen'
+  | 'accepted'
   | 'preparing'
   | 'ready'
   | 'served'
   | 'dispatched'
   | 'completed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'rejected';
 
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid' | 'refunded';
 
@@ -49,6 +52,8 @@ export interface MenuItem {
   tags?: string[];
 }
 
+export type OrderItemStatus = 'pending' | 'accepted' | 'preparing' | 'ready' | 'served' | 'rejected';
+
 export interface OrderItem {
   menuItemId: string;
   name: string;
@@ -57,15 +62,103 @@ export interface OrderItem {
   portion?: string;
   selectedModifiers: ModifierItem[];
   customerNotes?: string;
+  customInstructions?: string;
+  extraCharge?: number;
+  isCustomItem?: boolean;
+  promotedToMenuId?: string;
   station: KitchenStation;
-  status: 'pending' | 'preparing' | 'ready';
+  status: OrderItemStatus;
+  rejectionReason?: string;
+  rejectedBy?: string;
+  rejectedAt?: string;
 }
+
+export interface PaymentTransaction {
+  id: string;
+  orderId: string;
+  method: Exclude<PaymentMethod, 'split'>;
+  amount: number;
+  receivedBy: string;
+  transactionRef?: string;
+  timestamp: string;
+  isRefund?: boolean;
+}
+
+export interface OrderAdjustment {
+  id: string;
+  orderId: string;
+  type: 'addition' | 'discount' | 'price_change' | 'void_item' | 'cancellation' | 'refund';
+  originalAmount: number;
+  newAmount: number;
+  difference: number;
+  reason: string;
+  requestedBy: string;
+  approvedBy?: string;
+  status: 'approved' | 'pending' | 'rejected';
+  timestamp: string;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  orderId: string;
+  orderNumber: string;
+  actionType: 'discount' | 'void_item' | 'price_change' | 'cancel_order' | 'refund';
+  requestedBy: string;
+  requestedRole: Role;
+  details: string;
+  amountImpact: number;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewedBy?: string;
+  reviewedAt?: string;
+  createdAt: string;
+  payload?: {
+    discountType?: 'percent' | 'fixed';
+    discountValue?: number;
+    itemIndex?: number;
+    newUnitPrice?: number;
+  };
+}
+
+export interface AuditLogEntry {
+  id: string;
+  orderId?: string;
+  orderNumber?: string;
+  actor: string;
+  actorRole: Role;
+  action: string;
+  details: string;
+  timestamp: string;
+}
+
+export interface OrderStatusHistoryItem {
+  status: OrderStatus;
+  actor: string;
+  note?: string;
+  timestamp: string;
+}
+
+export interface DiscrepancyAlert {
+  id: string;
+  severity: 'critical' | 'warning';
+  type: 'served_unpaid' | 'rejected_item' | 'unapproved_adjustment' | 'overdue_open' | 'partial_balance';
+  orderId: string;
+  orderNumber: string;
+  title: string;
+  detail: string;
+  amountImpact: number;
+}
+
+export type CommissionMode = 'percent' | 'fixed';
 
 export interface Order {
   id: string;
   orderNumber: string; // e.g. #F0027
+  kotNumber?: string; // e.g. KOT-154647
+  serviceCouponCode?: string; // e.g. SV-4827 (for easy counter/waiter/kitchen/reception service verification)
   tenantId: string;
   type: OrderType;
+  priority?: 'normal' | 'rush' | 'vip';
   tableNumber?: string;
   customerName: string;
   customerPhone?: string;
@@ -77,6 +170,7 @@ export interface Order {
   referralWaiterId?: string; // Waiter whose link was used or QR was scanned
   servingWaiterId?: string; // Waiter who physically served the order
   subtotal: number;
+  originalAmount?: number;
   discount: number; // monetary discount amount
   discountType?: 'percent' | 'fixed';
   discountValue?: number; // e.g. 10 for 10% or 5000 for 5,000 TZS
@@ -88,6 +182,20 @@ export interface Order {
   donation: number;
   total: number;
   paidAmount: number;
+  payments?: PaymentTransaction[];
+  adjustments?: OrderAdjustment[];
+  statusHistory?: OrderStatusHistoryItem[];
+  cancellationRecord?: {
+    cancelledBy: string;
+    approvedBy?: string;
+    reason: string;
+    timestamp: string;
+  };
+  commissionMode?: CommissionMode;
+  commissionValue?: number; // e.g. 5 for 5%, or 2000 for TZS 2,000 fixed per order
+  commissionAmount?: number; // Snapshot in TZS credited once order is paid
+  commissionConfiguredBy?: string; // Manager / Owner / Auto Rule
+  commissionUpdatedAt?: string;
   notes?: string;
   createdAt: string;
   updatedAt: string;

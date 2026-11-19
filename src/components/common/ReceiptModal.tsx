@@ -30,7 +30,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ order, isOpen, onClo
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
             <span className="text-xs font-bold uppercase tracking-wider text-neutral-800">
-              Official Tax Receipt
+              {order.tax > 0 ? 'Official Tax Receipt' : 'Official Sales Receipt'}
             </span>
           </div>
           <button
@@ -53,6 +53,14 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ order, isOpen, onClo
               <p className="text-[11px] text-neutral-500 mt-0.5">{currentTenant.address}</p>
               <p className="text-[11px] text-neutral-500">Tel: {currentTenant.phone}</p>
               <p className="text-[10px] text-neutral-400 mt-1">TIN: 139-408-221 · VRN: 40019283-Z</p>
+            </div>
+
+            {/* Service Coupon Code Highlight */}
+            <div className="my-2.5 py-2 px-3 rounded-lg bg-amber-50 border border-dashed border-amber-400 flex items-center justify-between text-[11px]">
+              <span className="font-bold text-amber-950 uppercase">Service Coupon:</span>
+              <span className="font-extrabold text-sm tracking-wider text-neutral-900">
+                {order.serviceCouponCode || `SV-${order.orderNumber.replace('#', '')}`}
+              </span>
             </div>
 
             {/* Order Meta */}
@@ -141,19 +149,13 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ order, isOpen, onClo
                 </div>
               )}
 
-              {/* Tax line with exemption or zero status */}
-              <div className="flex justify-between text-neutral-600">
-                <span>
-                  {order.isTaxExempt || order.tax === 0 ? (
-                    <span className="text-amber-800 font-semibold">VAT: EXEMPT / REMOVED (0%)</span>
-                  ) : (
-                    <span>VAT (18% Incl.):</span>
-                  )}
-                </span>
-                <span className="tabular-nums">
-                  {order.isTaxExempt || order.tax === 0 ? '0' : formatMoney(order.tax)}
-                </span>
-              </div>
+              {/* Tax line only included when tax is enabled/applied */}
+              {order.tax > 0 && (
+                <div className="flex justify-between text-neutral-600">
+                  <span>VAT ({Math.round((order.taxRate || 0.18) * 100)}%):</span>
+                  <span className="tabular-nums">{formatMoney(order.tax)}</span>
+                </div>
+              )}
 
               {order.deliveryFee > 0 && (
                 <div className="flex justify-between text-neutral-600">
