@@ -1,23 +1,14 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Flame,
-  ChefHat,
   AlertTriangle,
   CheckCircle2,
   X,
-  ArrowRight,
   ArrowLeftRight,
   ShieldAlert,
-  Layers,
-  Scale,
-  Sparkles,
-  Info,
-  Clock,
-  Warehouse,
-  Store,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { Recipe, MissingStockItem } from '../../types/restaurant';
+import { Recipe } from '../../types/restaurant';
 
 interface BatchCookingModalProps {
   isOpen: boolean;
@@ -32,6 +23,8 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
 }) => {
   const {
     ingredients,
+    recipes,
+    subRecipeBatches,
     menuItems,
     formatMoney,
     validateBatchKitchenStock,
@@ -47,39 +40,84 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
   const [isManagerOverride, setIsManagerOverride] = useState<boolean>(false);
   const [overrideReason, setOverrideReason] = useState<string>('');
   const [requisitionSuccessMessage, setRequisitionSuccessMessage] = useState<string | null>(null);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+
+  const isSemiStandardized = recipe.productionMethod === 'semi_standardized';
+  const [adjustActualInputs, setAdjustActualInputs] = useState<boolean>(isSemiStandardized);
+  const [actualInputs, setActualInputs] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setBatchMultiplier(1.0);
+    setActualPlatesInput(recipe.batchYieldPlates || 100);
+    setAdjustActualInputs(recipe.productionMethod === 'semi_standardized');
+    setErrorBanner(null);
+    setRequisitionSuccessMessage(null);
+    setIsManagerOverride(false);
+    setOverrideReason('');
+
+    const defaults: Record<string, number> = {};
+    recipe.ingredients.forEach((ri) => {
+      if (!ri.isSubRecipe) {
+        const stdQty = ri.batchQuantity ?? ri.quantity * (recipe.batchYieldPlates || 1);
+        defaults[ri.ingredientId] = Math.round(stdQty * 100) / 100;
+      }
+    });
+    setActualInputs(defaults);
+  }, [isOpen, recipe]);
+
+  const handleScaleChange = (mult: number) => {
+    setBatchMultiplier(mult);
+    setActualPlatesInput(Math.round((recipe.batchYieldPlates || 100) * mult));
+    const scaled: Record<string, number> = {};
+    recipe.ingredients.forEach((ri) => {
+      if (!ri.isSubRecipe) {
+        const stdQty = (ri.batchQuantity ?? ri.quantity * (recipe.batchYieldPlates || 1)) * mult;
+        scaled[ri.ingredientId] = Math.round(stdQty * 100) / 100;
+      }
+    });
+    setActualInputs(scaled);
+  };
 
   const targetDish = menuItems.find((m) => m.id === recipe.menuItemId);
   const targetYield = Math.round((recipe.batchYieldPlates || 100) * batchMultiplier);
+  const yieldUnitLabel = recipe.yieldUnit || (recipe.isSubRecipe ? 'grams' : 'plates');
 
-  // Validate Kitchen Stock in real-time
   const validation = useMemo(() => {
-    return validateBatchKitchenStock(recipe.id, batchMultiplier);
-  }, [recipe.id, batchMultiplier, ingredients, validateBatchKitchenStock]);
+    return validateBatchKitchenStock(
+      recipe.id,
+      batchMultiplier,
+      adjustActualInputs ? actualInputs : undefined
+    );
+  }, [recipe.id, batchMultiplier, adjustActualInputs, actualInputs, ingredients, subRecipeBatches, validateBatchKitchenStock]);
 
   if (!isOpen) return null;
 
-  const missingItems = validation.missingItems.filter((m) => m.status !== 'ok');
-
-  // Handle One-Click Requisition
   const handleAutoRequisition = () => {
     setRequisitionSuccessMessage(null);
-    const success = createRequisitionForMissing(validation.missingItems, 'Immediate Batch Cooking Requisition');
+    setErrorBanner(null);
+    const success = createRequisitionForMissing(
+      validation.missingItems.filter((m) => !m.isSubRecipe),
+      'Immediate Batch Cooking Requisition'
+    );
     if (success) {
-      setRequisitionSuccessMessage('Stock successfully transferred from Main Store to Kitchen Floor!');
+      setRequisitionSuccessMessage('Missing raw ingredients transferred from Main Store to Kitchen Floor.');
+    } else {
+      setErrorBanner('Could not complete automatic store requisition — check store stock or sub-recipe batch inventory.');
     }
   };
 
-  // Handle Cook Batch
   const handleConfirmCook = (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorBanner(null);
 
     if (!validation.canCook && !isManagerOverride) {
-      alert('Cannot cook batch: raw ingredients are missing or not transferred to Kitchen.');
+      setErrorBanner('Cannot record batch: required ingredients or sub-recipes are short in Kitchen.');
       return;
     }
 
     if (isManagerOverride && !overrideReason.trim()) {
-      alert('Manager override requires a mandatory audit reason (e.g. Emergency shift stock transfer paper pending).');
+      setErrorBanner('Manager override requires an audit reason.');
       return;
     }
 
@@ -87,6 +125,7 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
       recipeId: recipe.id,
       batches: batchMultiplier,
       actualPlatesProduced: actualPlatesInput || targetYield,
+      actualInputs: adjustActualInputs ? actualInputs : undefined,
       chefName,
       managerOverride: isManagerOverride,
       overrideReason: isManagerOverride ? overrideReason : undefined,
@@ -95,218 +134,256 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
     if (res.success) {
       onClose();
     } else {
-      alert(res.error || 'Failed to record batch production.');
+      setErrorBanner(res.error || 'Failed to record batch production.');
     }
   };
 
+  const unitCostDisplay =
+    actualPlatesInput > 0 ? validation.totalCost / actualPlatesInput : 0;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-white rounded-3xl max-w-2xl w-full border border-neutral-200 shadow-2xl overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-xs overflow-y-auto">
+      <div className="bg-white rounded-2xl max-w-3xl w-full border border-neutral-200 overflow-hidden flex flex-col max-h-[92vh]">
         {/* Header */}
-        <div className="p-5 sm:p-6 border-b border-neutral-100 flex items-center justify-between bg-gradient-to-r from-orange-50 via-amber-50 to-white">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-orange-600 text-white flex items-center justify-center shadow-sm">
-              <Flame className="w-5 h-5" />
+        <div className="px-6 py-4 border-b border-neutral-200 flex items-center justify-between bg-white">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-orange-600 text-white flex items-center justify-center shrink-0">
+              <Flame className="w-4 h-4" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-extrabold text-neutral-900">
-                  Cook Batch Production (Kitchen Pot / Buffet)
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-bold text-neutral-900">
+                  {recipe.isSubRecipe ? 'Produce Sub-Recipe Batch' : 'Cook Production Batch'}
                 </h2>
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-orange-100 text-orange-800 border border-orange-200">
-                  Batch: {recipe.batchYieldPlates} Plates Base
+                <span className="text-neutral-300">·</span>
+                <span className="text-xs font-mono text-neutral-600">
+                  {recipe.code || recipe.id} · Base {recipe.batchYieldPlates} {yieldUnitLabel}
                 </span>
+                {isSemiStandardized && (
+                  <>
+                    <span className="text-neutral-300">·</span>
+                    <span className="text-xs font-semibold text-amber-700">Semi-Standardized</span>
+                  </>
+                )}
               </div>
-              <p className="text-xs text-neutral-500">
-                Menu Item: <strong className="text-neutral-900">{recipe.name || targetDish?.name}</strong> · Sell Price: {formatMoney(targetDish?.price || 8000)}
+              <p className="text-xs text-neutral-500 mt-0.5 truncate">
+                {recipe.name || targetDish?.name}
+                {!recipe.isSubRecipe && targetDish ? ` · Menu Sell Price: ${formatMoney(targetDish.price)}` : ''}
               </p>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="p-2 text-neutral-400 hover:text-neutral-700 rounded-xl hover:bg-neutral-100 transition-colors"
+            className="p-2 text-neutral-400 hover:text-neutral-700 rounded-lg hover:bg-neutral-100 cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Body */}
-        <form onSubmit={handleConfirmCook} className="p-6 space-y-5">
-          {/* Batch Multiplier Controls */}
-          <div className="bg-neutral-50 rounded-2xl p-4 border border-neutral-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <form onSubmit={handleConfirmCook} className="p-6 space-y-5 overflow-y-auto">
+          {errorBanner && (
+            <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-900 text-xs font-semibold flex items-center justify-between gap-2">
+              <span>{errorBanner}</span>
+              <button type="button" onClick={() => setErrorBanner(null)} className="text-red-700 hover:underline">
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Batch Scale & Semi-Standardized Toggle */}
+          <div className="bg-neutral-50 rounded-xl p-4 border border-neutral-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div>
-              <span className="text-xs font-bold text-neutral-800">Select Batch Scale:</span>
-              <p className="text-[11px] text-neutral-500">Cooks bulk pot and deducts real raw stock from Kitchen</p>
+              <div className="text-xs font-bold text-neutral-900">Batch Scale</div>
+              <p className="text-[11px] text-neutral-500">
+                Deducts kitchen raw materials &amp; prepared sub-recipes upon confirmation
+              </p>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
               {[0.5, 1.0, 2.0].map((mult) => (
                 <button
                   key={mult}
                   type="button"
-                  onClick={() => {
-                    setBatchMultiplier(mult);
-                    setActualPlatesInput(Math.round((recipe.batchYieldPlates || 100) * mult));
-                  }}
-                  className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all ${
+                  onClick={() => handleScaleChange(mult)}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap cursor-pointer ${
                     batchMultiplier === mult
-                      ? 'bg-orange-500 text-white shadow-xs'
+                      ? 'bg-orange-600 text-white'
                       : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
                   }`}
                 >
-                  {mult} Batch ({Math.round((recipe.batchYieldPlates || 100) * mult)} plates)
+                  {mult}x ({Math.round((recipe.batchYieldPlates || 100) * mult)} {yieldUnitLabel})
                 </button>
               ))}
             </div>
           </div>
 
-          {/* BLOCKING VALIDATION ALERT (Exact requirement from User) */}
+          {/* Method 2 / Editable Actual Inputs Section */}
+          <div className="border border-neutral-200 rounded-xl overflow-hidden">
+            <div className="px-4 py-2.5 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between gap-3">
+              <div className="text-xs font-bold text-neutral-900">
+                Ingredients &amp; Sub-Recipes Required ({recipe.ingredients.length})
+              </div>
+              <label className="flex items-center gap-2 text-xs font-semibold text-neutral-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={adjustActualInputs}
+                  onChange={(e) => setAdjustActualInputs(e.target.checked)}
+                  className="rounded text-orange-600 w-3.5 h-3.5"
+                />
+                <span>Adjust Actual Input Quantities</span>
+              </label>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
+                  <tr>
+                    <th className="py-2 px-3">Material / Sub-Recipe</th>
+                    <th className="py-2 px-3 text-right">Standard Qty</th>
+                    <th className="py-2 px-3 text-right">Actual Issued</th>
+                    <th className="py-2 px-3 text-right">Kitchen / Pool Avail</th>
+                    <th className="py-2 px-3 text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {recipe.ingredients.map((ri, idx) => {
+                    const stdQty = (ri.batchQuantity ?? ri.quantity * (recipe.batchYieldPlates || 1)) * batchMultiplier;
+                    const missingRow = validation.missingItems.find((m) =>
+                      ri.isSubRecipe ? m.subRecipeId === ri.subRecipeId : m.ingredientId === ri.ingredientId
+                    );
+                    const unit = missingRow?.unit || ri.batchUnit || 'units';
+                    const actualVal = ri.isSubRecipe
+                      ? stdQty
+                      : adjustActualInputs
+                      ? actualInputs[ri.ingredientId] ?? stdQty
+                      : stdQty;
+                    const sr = ri.isSubRecipe ? recipes.find((r) => r.id === ri.subRecipeId) : null;
+                    const label = ri.isSubRecipe ? `${sr?.name || ri.subRecipeId} (Sub-Recipe)` : missingRow?.ingredientName || ri.ingredientId;
+
+                    const isOk = !missingRow || missingRow.status === 'ok';
+                    const matchingTransit = !ri.isSubRecipe && missingRow?.inTransitQty
+                      ? stockMovements.find((m) => m.ingredientId === ri.ingredientId && m.transferStatus === 'in_transit')
+                      : null;
+
+                    return (
+                      <tr key={idx}>
+                        <td className="py-2 px-3 font-semibold text-neutral-900">
+                          <div>{label}</div>
+                          {missingRow?.substituteIngredientName && !isOk && (
+                            <div className="text-[11px] text-amber-700 font-normal">
+                              Substitute available: {missingRow.substituteIngredientName} (
+                              {(missingRow.substituteKitchenQty || 0).toLocaleString()} {unit})
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-right font-mono tabular-nums text-neutral-600">
+                          {stdQty.toLocaleString()} {unit}
+                        </td>
+                        <td className="py-2 px-3 text-right font-mono tabular-nums">
+                          {adjustActualInputs && !ri.isSubRecipe ? (
+                            <input
+                              type="number"
+                              step="any"
+                              min={0}
+                              value={actualVal}
+                              onChange={(e) =>
+                                setActualInputs((prev) => ({
+                                  ...prev,
+                                  [ri.ingredientId]: Math.max(0, parseFloat(e.target.value) || 0),
+                                }))
+                              }
+                              className="w-24 bg-neutral-50 border border-neutral-300 rounded px-2 py-1 text-right font-mono font-bold tabular-nums"
+                            />
+                          ) : (
+                            <span className="font-bold text-neutral-900">
+                              {actualVal.toLocaleString()} {unit}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3 text-right font-mono tabular-nums text-neutral-700">
+                          {(missingRow?.availableKitchenQty ?? 0).toLocaleString()} {unit}
+                        </td>
+                        <td className="py-2 px-3 text-right">
+                          {isOk ? (
+                            <span className="text-emerald-700 font-semibold">Ready</span>
+                          ) : (
+                            <div className="inline-flex flex-col items-end gap-1">
+                              <span className="text-red-700 font-bold">
+                                Short {missingRow?.shortageQty.toLocaleString()} {unit}
+                              </span>
+                              {matchingTransit && (
+                                <button
+                                  type="button"
+                                  onClick={() => confirmStockTransferReceipt(matchingTransit.id, chefName)}
+                                  className="px-2 py-0.5 bg-blue-600 text-white rounded text-[11px] font-semibold cursor-pointer"
+                                >
+                                  Confirm Receipt
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Shortage Requisition Bar */}
           {!validation.canCook && (
-            <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4.5 space-y-3 animate-in fade-in">
-              <div className="flex items-center gap-2 text-red-900">
-                <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />
-                <h3 className="text-sm font-extrabold">
-                  Cannot cook {batchMultiplier} batch of {recipe.name || 'Dish'}. Missing items in Kitchen:
-                </h3>
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5 text-xs text-red-900">
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-bold">Kitchen Stock Shortage Detected</div>
+                  <p className="text-red-800 mt-0.5">
+                    Transfer missing raw materials from Main Store before cooking, or produce required sub-recipe batches first.
+                  </p>
+                </div>
               </div>
 
-              {/* Multi-item breakdown */}
-              <div className="bg-white rounded-xl p-3 border border-red-200 divide-y divide-red-100 text-xs">
-                {validation.missingItems.map((item, idx) => {
-                  const isNotTransferred = item.status === 'not_transferred';
-                  const isInsufficient = item.status === 'insufficient';
-                  const isOk = item.status === 'ok';
-
-                  // Format to human-friendly display units (e.g. grams -> kg)
-                  const displayReq = item.unit === 'grams' ? `${item.requiredQty / 1000} kg` : item.unit === 'ml' ? `${item.requiredQty / 1000} L` : `${item.requiredQty} ${item.unit}`;
-                  const displayAvail = item.unit === 'grams' ? `${item.availableKitchenQty / 1000} kg` : item.unit === 'ml' ? `${item.availableKitchenQty / 1000} L` : `${item.availableKitchenQty} ${item.unit}`;
-                  const displayShort = item.unit === 'grams' ? `${item.shortageQty / 1000} kg` : item.unit === 'ml' ? `${item.shortageQty / 1000} L` : `${item.shortageQty} ${item.unit}`;
-                  const displayStore = item.unit === 'grams' ? `${item.storeAvailableQty / 1000} kg` : item.unit === 'ml' ? `${item.storeAvailableQty / 1000} L` : `${item.storeAvailableQty} ${item.unit}`;
-                  const displayInTransit = item.inTransitQty ? (item.unit === 'grams' ? `${item.inTransitQty / 1000} kg` : item.unit === 'ml' ? `${item.inTransitQty / 1000} L` : `${item.inTransitQty} ${item.unit}`) : null;
-
-                  const matchingInTransitMovement = item.inTransitQty
-                    ? stockMovements.find((m) => m.ingredientId === item.ingredientId && m.transferStatus === 'in_transit')
-                    : null;
-
-                  return (
-                    <div key={idx} className="py-2.5 first:pt-0 last:pb-0 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                      <div className="font-semibold text-neutral-900 flex items-center gap-2">
-                        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isOk ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                        <div>
-                          <div className="font-bold text-xs">{item.ingredientName}</div>
-                          <div className="text-[10px] text-neutral-500">
-                            Store Room Stock: <strong>{displayStore}</strong>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 flex-wrap font-mono text-xs">
-                        {isNotTransferred && (
-                          <div className="text-right">
-                            <span className="text-red-700 font-bold block">
-                              Required: {displayReq} · Available in Kitchen: 0 {item.unit === 'grams' ? 'kg' : item.unit}
-                            </span>
-                            <span className="bg-red-100 text-red-800 px-2 py-0.5 rounded text-[10px] uppercase font-bold inline-block mt-0.5">
-                              ❌ Not transferred to Kitchen
-                            </span>
-                          </div>
-                        )}
-
-                        {isInsufficient && (
-                          <div className="text-right">
-                            <span className="text-amber-800 font-bold block">
-                              Required: {displayReq} · Available: {displayAvail}
-                            </span>
-                            <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-[10px] uppercase font-bold inline-block mt-0.5">
-                              ❌ Short by {displayShort}
-                            </span>
-                          </div>
-                        )}
-
-                        {isOk && (
-                          <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded">
-                            ✓ OK (available {displayAvail} in Kitchen)
-                          </span>
-                        )}
-
-                        {/* In-Transit Receipt Button */}
-                        {matchingInTransitMovement && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              confirmStockTransferReceipt(matchingInTransitMovement.id, chefName);
-                            }}
-                            className="px-2.5 py-1 text-[11px] font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-xs transition-colors flex items-center gap-1 cursor-pointer"
-                          >
-                            <span>Confirm Receipt ({displayInTransit})</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Action: Create Requisition */}
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-1">
-                <p className="text-[11px] text-red-700 font-medium">
-                  Rule: Raw stock must be formally transferred from <strong>Main Storage</strong> to <strong>Kitchen Floor</strong> before cooking.
-                </p>
-
+              {validation.missingItems.some((m) => m.status !== 'ok' && !m.isSubRecipe && m.storeAvailableQty > 0) && (
                 <button
                   type="button"
                   onClick={handleAutoRequisition}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                  className="px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   <ArrowLeftRight className="w-3.5 h-3.5" />
-                  <span>Create Requisition for Missing Items</span>
+                  <span>Transfer Missing from Store</span>
                 </button>
-              </div>
-
-              {requisitionSuccessMessage && (
-                <div className="p-2.5 bg-emerald-100 border border-emerald-300 rounded-xl text-xs text-emerald-900 font-bold flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>{requisitionSuccessMessage}</span>
-                </div>
               )}
             </div>
           )}
 
-          {/* Validation Passed Card */}
-          {validation.canCook && (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-center gap-3">
-              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-              <div className="text-xs text-emerald-900">
-                <div className="font-bold">All {validation.missingItems.length} ingredients are transferred & available in Kitchen!</div>
-                <p className="text-emerald-700">
-                  Ready to cook {targetYield} plates of {recipe.name}. Total raw batch cost: <strong>{formatMoney(validation.totalCost)}</strong> ({formatMoney(Math.round(validation.totalCost / targetYield))} per plate).
-                </p>
-              </div>
+          {requisitionSuccessMessage && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 font-semibold flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{requisitionSuccessMessage}</span>
             </div>
           )}
 
-          {/* Real-life Case 1: Actual Yield Variance (e.g. 95 plates instead of 100) */}
+          {/* Yield & Staff Inputs */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-xs font-semibold text-neutral-700 flex items-center justify-between">
-                <span>Actual Plates Produced:</span>
-                <span className="text-[10px] text-neutral-400">Target: {targetYield}</span>
+                <span>Actual Usable Output ({yieldUnitLabel})</span>
+                <span className="text-[11px] text-neutral-500 font-mono">Target: {targetYield}</span>
               </label>
               <input
                 type="number"
                 min={1}
                 value={actualPlatesInput}
-                onChange={(e) => setActualPlatesInput(parseInt(e.target.value) || targetYield)}
-                className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono font-bold"
+                onChange={(e) => setActualPlatesInput(Math.max(1, parseInt(e.target.value) || targetYield))}
+                className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono font-bold tabular-nums"
               />
-              <span className="text-[10px] text-neutral-400">
-                If kitchen produces 90 or 95 plates, system recalculates real cost per plate for this batch.
-              </span>
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-neutral-700">Executive Chef on Shift:</label>
+              <label className="text-xs font-semibold text-neutral-700">Prepared / Cooked By</label>
               <input
                 type="text"
                 required
@@ -314,79 +391,71 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
                 onChange={(e) => setChefName(e.target.value)}
                 className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
               />
-              <span className="text-[10px] text-neutral-400">
-                Records responsible staff member in production ledger.
-              </span>
             </div>
           </div>
 
-          {/* Manager Override Checkbox (Optional fallback rule from User) */}
+          {/* Manager Override */}
           {!validation.canCook && (
-            <div className="p-3.5 bg-neutral-100 rounded-2xl border border-neutral-200 space-y-2">
+            <div className="p-3.5 bg-neutral-50 rounded-xl border border-neutral-200 space-y-2">
               <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-neutral-800">
                 <input
                   type="checkbox"
                   checked={isManagerOverride}
                   onChange={(e) => setIsManagerOverride(e.target.checked)}
-                  className="rounded text-orange-600 focus:ring-orange-500"
+                  className="rounded text-orange-600"
                 />
                 <ShieldAlert className="w-4 h-4 text-orange-600" />
-                <span>Manager Permission Override (Emergency cooking with stock transfer pending)</span>
+                <span>Manager Override (Log emergency production with pending transfer)</span>
               </label>
 
               {isManagerOverride && (
-                <div className="space-y-1 pt-1 animate-in fade-in">
-                  <input
-                    type="text"
-                    required
-                    placeholder="Enter mandatory audit reason (e.g. Emergency shift lunch rush, storekeeper paper pending)"
-                    value={overrideReason}
-                    onChange={(e) => setOverrideReason(e.target.value)}
-                    className="w-full p-2 text-xs bg-white border border-neutral-300 rounded-xl text-neutral-900"
-                  />
-                  <p className="text-[10px] text-neutral-500">
-                    Logged in Master Audit Trail. Transfer must be completed immediately after shift.
-                  </p>
-                </div>
+                <input
+                  type="text"
+                  required
+                  placeholder="Mandatory audit reason..."
+                  value={overrideReason}
+                  onChange={(e) => setOverrideReason(e.target.value)}
+                  className="w-full p-2 text-xs bg-white border border-neutral-300 rounded-lg text-neutral-900"
+                />
               )}
             </div>
           )}
 
-          {/* Cost Rollup Preview */}
-          <div className="bg-neutral-50 rounded-2xl p-4 border border-neutral-200 grid grid-cols-3 gap-3 text-center">
+          {/* Cost Summary */}
+          <div className="bg-neutral-50 rounded-xl p-4 border border-neutral-200 grid grid-cols-3 gap-3 text-center">
             <div>
-              <span className="text-[10px] uppercase font-bold text-neutral-400">Batch COGS</span>
-              <div className="text-sm font-extrabold font-mono text-neutral-900">
+              <span className="text-[11px] font-semibold text-neutral-500">Total Batch COGS</span>
+              <div className="text-sm font-bold font-mono tabular-nums text-neutral-900 mt-0.5">
                 {formatMoney(validation.totalCost)}
               </div>
             </div>
-
             <div>
-              <span className="text-[10px] uppercase font-bold text-neutral-400">Cost / Plate</span>
-              <div className="text-sm font-extrabold font-mono text-blue-700">
-                {formatMoney(actualPlatesInput > 0 ? Math.round(validation.totalCost / actualPlatesInput) : 0)}
+              <span className="text-[11px] font-semibold text-neutral-500">
+                Cost / {recipe.isSubRecipe ? yieldUnitLabel : 'Plate'}
+              </span>
+              <div className="text-sm font-bold font-mono tabular-nums text-blue-700 mt-0.5">
+                {recipe.isSubRecipe
+                  ? `${unitCostDisplay.toFixed(2)} TZS`
+                  : formatMoney(Math.round(unitCostDisplay))}
               </div>
             </div>
-
             <div>
-              <span className="text-[10px] uppercase font-bold text-neutral-400">Food Cost %</span>
-              <div className="text-sm font-extrabold font-mono text-emerald-700">
-                {(
-                  ((validation.totalCost / (actualPlatesInput || targetYield)) /
-                    (targetDish?.price || 8000)) *
-                  100
-                ).toFixed(1)}
-                %
+              <span className="text-[11px] font-semibold text-neutral-500">
+                {recipe.isSubRecipe ? 'Yield Ratio' : 'Food Cost %'}
+              </span>
+              <div className="text-sm font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
+                {recipe.isSubRecipe
+                  ? `${((actualPlatesInput / Math.max(1, targetYield)) * 100).toFixed(0)}%`
+                  : `${((unitCostDisplay / Math.max(1, targetDish?.price || 8000)) * 100).toFixed(1)}%`}
               </div>
             </div>
           </div>
 
-          {/* Actions */}
-          <div className="pt-2 flex items-center justify-end gap-3 border-t">
+          <div className="pt-2 flex items-center justify-end gap-3 border-t border-neutral-200">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2.5 text-xs font-bold text-neutral-600 hover:bg-neutral-100 rounded-xl transition-colors"
+              className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-xl whitespace-nowrap cursor-pointer"
             >
               Cancel
             </button>
@@ -394,16 +463,14 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
             <button
               type="submit"
               disabled={!validation.canCook && !isManagerOverride}
-              className={`px-6 py-2.5 font-bold text-xs rounded-xl shadow-sm transition-all flex items-center gap-2 ${
+              className={`px-5 py-2.5 font-bold text-xs rounded-xl flex items-center gap-2 whitespace-nowrap ${
                 validation.canCook || isManagerOverride
-                  ? 'bg-orange-600 hover:bg-orange-700 text-white cursor-pointer active:scale-95'
+                  ? 'bg-orange-600 hover:bg-orange-700 text-white cursor-pointer'
                   : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
               }`}
             >
               <Flame className="w-4 h-4" />
-              <span>
-                Confirm Batch ({actualPlatesInput} plates) & Deduct Kitchen Stock
-              </span>
+              <span>Confirm Batch ({actualPlatesInput} {yieldUnitLabel})</span>
             </button>
           </div>
         </form>

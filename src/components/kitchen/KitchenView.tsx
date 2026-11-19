@@ -62,6 +62,8 @@ export const KitchenView: React.FC = () => {
     ingredients,
     transferStock,
     formatMoney,
+    subRecipeBatches,
+    bomDeductionPolicy,
   } = useRestaurant();
 
   const [viewMode, setViewMode] = useState<'board' | 'list'>('board');
@@ -466,10 +468,23 @@ export const KitchenView: React.FC = () => {
             </button>
           </div>
 
-          <span className="text-[11px] font-medium text-slate-500 inline-flex items-center gap-1 shrink-0">
-            <Utensils className="w-3 h-3 text-slate-400" />
-            <span>{stationLabel}</span>
-          </span>
+          <div className="flex items-center gap-2.5 shrink-0">
+            <span
+              className={`text-[10px] font-semibold ${
+                order.stockDeducted ? 'text-emerald-700' : 'text-slate-500'
+              }`}
+            >
+              {order.stockDeducted
+                ? 'Stock Deducted'
+                : bomDeductionPolicy === 'on_kitchen_start'
+                ? 'Deducts on Start'
+                : 'Awaiting Deduction'}
+            </span>
+            <span className="text-[11px] font-medium text-slate-500 inline-flex items-center gap-1">
+              <Utensils className="w-3 h-3 text-slate-400" />
+              <span>{stationLabel}</span>
+            </span>
+          </div>
         </div>
       </div>
     );
@@ -698,6 +713,47 @@ export const KitchenView: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Prepared Sub-Recipe Batches Strip (Sauces & Pre-Prep Bases) */}
+            {subRecipeBatches.filter((b) => b.status !== 'reversed').length > 0 && (
+              <div className="space-y-2 pb-2 border-b border-slate-800">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-slate-200 uppercase tracking-wider text-[11px]">
+                    Prepared Sub-Recipe Batches (Sauces, Marinades &amp; Bases)
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    Consumed by finished BOM dishes via FEFO without double-deducting raw materials
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+                  {subRecipeBatches
+                    .filter((b) => b.status !== 'reversed')
+                    .map((batch) => (
+                      <div
+                        key={batch.id}
+                        className="p-3 rounded-xl border border-slate-800 bg-[#0B1220] flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-white truncate">
+                            {batch.name}
+                          </div>
+                          <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                            {batch.batchNumber} · Exp {batch.expiresAt.slice(0, 10)}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-xs font-mono font-extrabold text-emerald-400 tabular-nums">
+                            {batch.remainingQty.toLocaleString()} / {batch.producedQty.toLocaleString()} {batch.unit}
+                          </div>
+                          <div className="text-[10px] font-mono text-slate-400 tabular-nums">
+                            {formatMoney(Math.round(batch.costPerUnit))}/{batch.unit}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
 
             {/* Full Readable Ingredient Cards Grid (Zero Name Truncation) */}
             {(() => {

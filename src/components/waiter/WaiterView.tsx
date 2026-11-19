@@ -28,6 +28,7 @@ import {
   Send,
   Ban,
   Flame,
+  FastForward,
 } from 'lucide-react';
 import { useRestaurant, CartItem } from '../../context/RestaurantContext';
 import { QrCodeModal } from '../common/QrCodeModal';
@@ -48,6 +49,7 @@ export const WaiterView: React.FC = () => {
     submitOrder,
     submitDraftToKitchen,
     updateOrderStatus,
+    fastForwardOrderToServed,
     updateTableStatus,
     processPayment,
     requestApproval,
@@ -74,6 +76,7 @@ export const WaiterView: React.FC = () => {
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [blockedTableNotice, setBlockedTableNotice] = useState<string | null>(null);
   const [tableActionNotice, setTableActionNotice] = useState<string | null>(null);
+  const [noticePayOrderId, setNoticePayOrderId] = useState<string | null>(null);
 
   // Fast Waiter Collect Payment & Complete Service Sheet (supports partial/split + ref)
   const [paymentOrder, setPaymentOrder] = useState<Order | null>(null);
@@ -274,6 +277,22 @@ export const WaiterView: React.FC = () => {
     setCashTendered(remaining);
     setTxRefDraft('');
     setCompleteServiceOnPay(true);
+  };
+
+  const handleFastServeToServed = (order: Order) => {
+    const ok = fastForwardOrderToServed(order.id, currentWaiter.name);
+    if (!ok) return;
+    const isUnpaid = order.paymentStatus !== 'paid';
+    setNoticePayOrderId(isUnpaid ? order.id : null);
+    setTableActionNotice(
+      isUnpaid
+        ? `${order.orderNumber} processed all statuses up to Served — ready to continue to Paid.`
+        : `${order.orderNumber} processed all statuses up to Served.`
+    );
+    setTimeout(() => {
+      setTableActionNotice(null);
+      setNoticePayOrderId(null);
+    }, 6500);
   };
 
   const handleConfirmWaiterPayment = (e: React.FormEvent) => {
@@ -564,15 +583,40 @@ export const WaiterView: React.FC = () => {
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain md:overflow-visible">
         <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 pt-4 pb-8 md:pb-10 space-y-5">
         {tableActionNotice && (
-          <div className="bg-emerald-600 text-white text-xs font-semibold px-4 py-3 rounded-2xl flex items-center justify-between gap-3">
+          <div className="bg-emerald-600 text-white text-xs font-semibold px-4 py-3 rounded-2xl flex flex-wrap items-center justify-between gap-2.5">
             <span>{tableActionNotice}</span>
-            <button
-              onClick={() => setTableActionNotice(null)}
-              className="p-1 text-emerald-100 hover:text-white"
-              aria-label="Dismiss notice"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {noticePayOrderId && (() => {
+                const payTarget = stats.myOrders.find(
+                  (o) => o.id === noticePayOrderId && o.paymentStatus !== 'paid'
+                );
+                if (!payTarget) return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openPaymentSheet(payTarget);
+                      setTableActionNotice(null);
+                      setNoticePayOrderId(null);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-white text-emerald-800 hover:bg-emerald-50 font-extrabold text-xs inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                  >
+                    <Banknote className="w-3.5 h-3.5" />
+                    <span>Continue to Pay</span>
+                  </button>
+                );
+              })()}
+              <button
+                onClick={() => {
+                  setTableActionNotice(null);
+                  setNoticePayOrderId(null);
+                }}
+                className="p-1 text-emerald-100 hover:text-white cursor-pointer"
+                aria-label="Dismiss notice"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -729,11 +773,27 @@ export const WaiterView: React.FC = () => {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                          {order.status !== 'draft' &&
+                            order.status !== 'served' &&
+                            order.status !== 'completed' &&
+                            order.status !== 'cancelled' &&
+                            order.status !== 'rejected' && (
+                              <button
+                                type="button"
+                                onClick={() => handleFastServeToServed(order)}
+                                title="Process all kitchen statuses up to Served (helps busy kitchen)"
+                                className="min-h-[40px] px-3 bg-amber-500 hover:bg-amber-600 text-neutral-950 text-xs font-bold rounded-xl shrink-0 cursor-pointer inline-flex items-center gap-1 whitespace-nowrap"
+                              >
+                                {order.status !== 'ready' && <FastForward className="w-3.5 h-3.5" />}
+                                <span>{order.status === 'ready' ? 'Serve' : 'Process → Served'}</span>
+                              </button>
+                            )}
+
                           {order.paymentStatus !== 'paid' && (
                             <button
                               onClick={() => openPaymentSheet(order)}
-                              className="min-h-[40px] px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shrink-0 cursor-pointer inline-flex items-center gap-1"
+                              className="min-h-[40px] px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shrink-0 cursor-pointer inline-flex items-center gap-1 whitespace-nowrap"
                             >
                               <Banknote className="w-3.5 h-3.5" />
                               <span>Pay</span>
@@ -742,19 +802,10 @@ export const WaiterView: React.FC = () => {
 
                           {order.paymentStatus === 'paid' && (
                             <button
-                              onClick={() => updateOrderStatus(order.id, 'completed')}
-                              className="min-h-[40px] px-3 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold rounded-xl shrink-0 cursor-pointer"
+                              onClick={() => updateOrderStatus(order.id, 'completed', currentWaiter.name)}
+                              className="min-h-[40px] px-3 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold rounded-xl shrink-0 cursor-pointer whitespace-nowrap"
                             >
                               Complete
-                            </button>
-                          )}
-
-                          {order.status === 'ready' && order.paymentStatus !== 'paid' && (
-                            <button
-                              onClick={() => updateOrderStatus(order.id, 'served')}
-                              className="min-h-[40px] px-3 bg-amber-500 hover:bg-amber-600 text-neutral-950 text-xs font-bold rounded-xl shrink-0 cursor-pointer"
-                            >
-                              Serve
                             </button>
                           )}
                         </div>
@@ -1033,27 +1084,35 @@ export const WaiterView: React.FC = () => {
                               </>
                             )}
 
+                            {!isDraft &&
+                              !isCancelled &&
+                              order.status !== 'served' &&
+                              order.status !== 'completed' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleFastServeToServed(order)}
+                                  title="Process all kitchen statuses up to Served (helps busy kitchen)"
+                                  className="min-h-[42px] px-3.5 bg-amber-500 hover:bg-amber-600 text-neutral-950 font-bold rounded-xl text-xs transition-colors cursor-pointer inline-flex items-center gap-1.5 whitespace-nowrap"
+                                >
+                                  {!isReady && <FastForward className="w-3.5 h-3.5" />}
+                                  <span>{isReady ? 'Serve' : 'Process → Served'}</span>
+                                </button>
+                              )}
+
                             {!isDraft && !isCancelled && !isPaid && order.status !== 'completed' && (
                               <button
                                 onClick={() => openPaymentSheet(order)}
-                                className="min-h-[42px] px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                                className="min-h-[42px] px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer inline-flex items-center gap-1.5 whitespace-nowrap"
                               >
                                 <Banknote className="w-4 h-4" />
                                 <span>{order.paidAmount > 0 ? 'Collect Bal' : 'Take Payment'}</span>
                               </button>
                             )}
-                            {isReady && !isPaid && (
-                              <button
-                                onClick={() => updateOrderStatus(order.id, 'served', currentWaiter.name)}
-                                className="min-h-[42px] px-3.5 bg-amber-500 hover:bg-amber-600 text-neutral-950 font-bold rounded-xl text-xs transition-colors cursor-pointer"
-                              >
-                                Serve
-                              </button>
-                            )}
+
                             {isPaid && order.status !== 'completed' && !isCancelled && !isDraft && (
                               <button
                                 onClick={() => updateOrderStatus(order.id, 'completed', currentWaiter.name)}
-                                className="min-h-[42px] px-4 bg-neutral-900 hover:bg-neutral-800 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                                className="min-h-[42px] px-4 bg-neutral-900 hover:bg-neutral-800 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer inline-flex items-center gap-1.5 whitespace-nowrap"
                               >
                                 <CheckCircle2 className="w-4 h-4" />
                                 <span>Complete</span>

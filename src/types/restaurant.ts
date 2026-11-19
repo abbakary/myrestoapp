@@ -30,6 +30,12 @@ export type KitchenStation =
 
 export type Role = 'owner' | 'manager' | 'cashier' | 'reception' | 'waiter' | 'kitchen' | 'customer';
 
+export type ProductionMethod = 'recipe_bom' | 'semi_standardized' | 'direct_stock';
+
+export type RecipeStatus = 'draft' | 'testing' | 'approved' | 'archived';
+
+export type BomDeductionPolicy = 'on_kitchen_start' | 'on_order_submit' | 'on_payment';
+
 export interface ModifierItem {
   id: string;
   name: string;
@@ -155,7 +161,7 @@ export interface Order {
   id: string;
   orderNumber: string; // e.g. #F0027
   kotNumber?: string; // e.g. KOT-154647
-  serviceCouponCode?: string; // e.g. SV-4827 (for easy counter/waiter/kitchen/reception service verification)
+  serviceCouponCode?: string; // e.g. SV-4827
   tenantId: string;
   type: OrderType;
   priority?: 'normal' | 'rush' | 'vip';
@@ -167,16 +173,16 @@ export interface Order {
   status: OrderStatus;
   paymentStatus: PaymentStatus;
   paymentMethod?: PaymentMethod;
-  referralWaiterId?: string; // Waiter whose link was used or QR was scanned
-  servingWaiterId?: string; // Waiter who physically served the order
+  referralWaiterId?: string;
+  servingWaiterId?: string;
   subtotal: number;
   originalAmount?: number;
-  discount: number; // monetary discount amount
+  discount: number;
   discountType?: 'percent' | 'fixed';
-  discountValue?: number; // e.g. 10 for 10% or 5000 for 5,000 TZS
+  discountValue?: number;
   discountReason?: string;
   tax: number;
-  taxRate?: number; // e.g. 0.18 or 0 if tax removed
+  taxRate?: number;
   isTaxExempt?: boolean;
   deliveryFee: number;
   donation: number;
@@ -192,10 +198,13 @@ export interface Order {
     timestamp: string;
   };
   commissionMode?: CommissionMode;
-  commissionValue?: number; // e.g. 5 for 5%, or 2000 for TZS 2,000 fixed per order
-  commissionAmount?: number; // Snapshot in TZS credited once order is paid
-  commissionConfiguredBy?: string; // Manager / Owner / Auto Rule
+  commissionValue?: number;
+  commissionAmount?: number;
+  commissionConfiguredBy?: string;
   commissionUpdatedAt?: string;
+  stockDeducted?: boolean;
+  stockDeductionStage?: string;
+  reversedStock?: boolean;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -216,10 +225,52 @@ export interface Waiter {
   name: string;
   phone: string;
   email: string;
-  referralCode: string; // e.g. WAITER_JOHN
+  referralCode: string;
   avatar?: string;
   active: boolean;
-  commissionRate: number; // e.g. 0.05 (5%)
+  commissionRate: number;
+}
+
+export interface AdvanceRecord {
+  id: string;
+  amount: number;
+  date: string;
+  approved: boolean;
+  status?: 'pending' | 'approved' | 'rejected' | 'deducted' | 'repaid';
+  reason: string;
+  approvedBy?: string;
+  repaymentMonth?: string;
+  deductedInPayrollId?: string;
+}
+
+export interface PayrollPaymentRecord {
+  id: string;
+  period: string; // e.g. '2026-11'
+  employeeId: string;
+  employeeName: string;
+  basicSalary: number;
+  allowances: number;
+  commission: number;
+  grossPay: number;
+  nssfDeduction: number;
+  payeTax: number;
+  advanceDeducted: number;
+  netPaid: number;
+  method: 'bank_transfer' | 'mpesa' | 'cash';
+  reference: string;
+  paidAt: string;
+  paidBy: string;
+}
+
+export interface CommissionPayoutLog {
+  id: string;
+  waiterId: string;
+  waiterName: string;
+  amount: number;
+  method: 'cash' | 'mpesa' | 'bank_transfer';
+  reference: string;
+  settledAt: string;
+  settledBy: string;
 }
 
 export interface Employee {
@@ -227,36 +278,67 @@ export interface Employee {
   employeeNumber: string;
   name: string;
   phone: string;
+  email?: string;
   role: Role;
   position: string;
   branch: string;
   salaryType: 'monthly' | 'daily' | 'hourly';
   baseSalary: number;
+  allowances?: number;
+  tinNumber?: string;
+  nssfNumber?: string;
+  bankAccount?: string;
+  paymentMethod?: 'bank_transfer' | 'mpesa' | 'cash';
   joinedDate: string;
   status: 'active' | 'on_leave' | 'inactive';
-  advances: { id: string; amount: number; date: string; approved: boolean; reason: string }[];
+  advances: AdvanceRecord[];
 }
 
 export interface Ingredient {
   id: string;
   name: string;
   purchaseUnit: string; // e.g. "20L Container", "25kg Bag", "Crate"
-  consumptionUnit: string; // e.g. "ml", "grams", "bottle"
+  consumptionUnit: string; // e.g. "ml", "grams", "bottle", "pcs"
   conversionRatio: number; // 1 purchaseUnit = X consumptionUnits
   costPerPurchaseUnit: number;
+  lastUnitCost?: number; // Latest invoice unit cost in consumption units
+  valuationMethod?: 'weighted_avg' | 'fifo';
   currentStockUnits: number; // total = storeStockUnits + kitchenStockUnits
   storeStockUnits: number; // Main warehouse / store stock
   kitchenStockUnits: number; // Kitchen floor / daily operations stock
   minimumThreshold: number;
   supplier: string;
   category?: 'Produce' | 'Meat & Seafood' | 'Dry Goods' | 'Oils & Dairy' | 'Beverages';
+  allergens?: string[];
+  shelfLifeDays?: number;
+  directConsumptionOnly?: boolean; // e.g. frying oil, charcoal, cleaning supplies
+}
+
+export interface StockBatchLot {
+  id: string;
+  ingredientId: string;
+  lotNumber: string;
+  location: 'main_store' | 'kitchen';
+  initialQty: number;
+  remainingQty: number;
+  unit: string;
+  unitCost: number; // cost per consumption unit
+  receivedDate: string;
+  expiryDate?: string;
+  supplier?: string;
+  invoiceRef?: string;
 }
 
 export type MovementType =
   | 'purchase_intake'
   | 'kitchen_consumption'
+  | 'direct_consumption'
+  | 'production_issue'
+  | 'production_output'
+  | 'production_reversal'
   | 'wastage_spoilage'
   | 'manual_adjustment'
+  | 'reconciliation_adjustment'
   | 'stock_transfer';
 
 export interface StockMovement {
@@ -268,7 +350,7 @@ export interface StockMovement {
   unit: string;
   costImpact: number;
   date: string;
-  reference?: string; // e.g. "PO-8819", "Order #F0027", "Manager Audit", "TRF-KITCHEN-01"
+  reference?: string;
   reason?: string;
   recordedBy: string;
   sourceLocation?: 'main_store' | 'kitchen';
@@ -276,6 +358,10 @@ export interface StockMovement {
   transferStatus?: 'in_transit' | 'received' | 'rejected';
   receivedAt?: string;
   receivedBy?: string;
+  batchNumber?: string;
+  recipeId?: string;
+  isReversed?: boolean;
+  reversalOfId?: string;
 }
 
 export interface AppNotification {
@@ -291,13 +377,34 @@ export interface AppNotification {
 
 export interface RecipeIngredient {
   ingredientId: string;
-  quantity: number; // in consumption units per single plate (auto: batchQuantity / batchYieldPlates)
-  batchQuantity?: number; // e.g. 20,000g for 20kg batch
-  batchUnit?: string; // e.g. "kg", "L", "pcs", "g"
+  quantity: number; // in consumption units per single plate (or per unit for sub-recipe)
+  batchQuantity?: number; // e.g. 20000 for 20kg batch
+  batchUnit?: string; // e.g. "kg", "L", "pcs", "g", "ml", "portions"
   yieldPercentage?: number; // e.g. 90% for onions, 55% for whole fish
   notes?: string;
-  isSubRecipe?: boolean; // sub-recipe flag (e.g. Beef stew base used inside Wali Nyama, Ugali Nyama)
+  isSubRecipe?: boolean;
   subRecipeId?: string;
+  subRecipeQuantity?: number; // e.g. 50g Tomato Sauce per plate, or 1 portion Beef Stew
+  subRecipeUnit?: string; // e.g. "grams", "ml", "portions"
+  substituteIngredientId?: string;
+  isOptional?: boolean;
+}
+
+export interface RecipeVariant {
+  id: string;
+  name: string; // Matches MenuItem portion name e.g. "Small", "Regular", "Large"
+  portionMultiplier: number; // e.g. 0.75, 1.0, 1.4
+  ingredientOverrides?: { ingredientId: string; quantity: number }[];
+  notes?: string;
+}
+
+export interface RecipeModifierRule {
+  id: string;
+  modifierName: string; // e.g. "Extra Chicken Piece", "No Onions", "Boiled Egg Add-on"
+  action: 'add' | 'remove' | 'substitute';
+  ingredientId: string;
+  quantityDelta: number; // positive for add, or absolute quantity to remove/replace
+  substituteIngredientId?: string;
 }
 
 export interface RecipeVersionHistoryItem {
@@ -312,7 +419,9 @@ export interface RecipeVersionHistoryItem {
   foodCostPercentage: number;
   name?: string;
   cookingMethod?: 'batch_cooking' | 'on_sale_order';
+  productionMethod?: ProductionMethod;
   preparationInstructions?: string;
+  cookingInstructions?: string;
   archivedAt?: string;
   archivedBy?: string;
   totalCostPerPlate?: number;
@@ -320,19 +429,49 @@ export interface RecipeVersionHistoryItem {
 
 export interface Recipe {
   id: string;
+  code?: string; // e.g. "RCP-001", "SUB-001"
   menuItemId?: string;
   name?: string;
-  batchYieldPlates: number; // Mandatory: Number of plates batch produces (e.g. 100 plates for Wali Nyama)
-  version: number; // Recipe versioning (v1, v2)
-  cookingMethod: 'batch_cooking' | 'on_sale_order'; // Batch pot/buffet vs made-to-order
+  category?: string;
+  productionLocation?: KitchenStation | 'prep_kitchen';
+  productionMethod?: ProductionMethod; // Method 1: recipe_bom | Method 2: semi_standardized | Method 3: direct_stock
+  status?: RecipeStatus; // draft | testing | approved | archived
+  standardPortionSize?: string; // e.g. "350g Plate", "5 kg Usable"
+  yieldUnit?: string; // "plates" | "grams" | "ml" | "portions"
+  expectedYieldPct?: number; // e.g. 92
+  batchYieldPlates: number; // Portions or usable qty produced by 1 standard batch
+  version: number;
+  cookingMethod: 'batch_cooking' | 'on_sale_order';
   ingredients: RecipeIngredient[];
   preparationInstructions?: string;
-  isSubRecipe?: boolean; // allow sub-recipes (e.g. "Beef Stew Base" used in Wali Nyama, Ugali Nyama)
-  history?: RecipeVersionHistoryItem[]; // Recipe version history
+  cookingInstructions?: string;
+  allergens?: string[];
+  shelfLifeHours?: number;
+  variants?: RecipeVariant[];
+  modifierRules?: RecipeModifierRule[];
+  isSubRecipe?: boolean;
+  history?: RecipeVersionHistoryItem[];
   isAiGenerated?: boolean;
   aiConfidence?: number;
   approvedBy?: string;
   approvedAt?: string;
+  costSnapshotAt?: string;
+}
+
+export interface SubRecipeStockBatch {
+  id: string;
+  batchNumber: string; // e.g. "SUB-20261119-01"
+  subRecipeId: string;
+  name: string;
+  producedQty: number;
+  remainingQty: number;
+  unit: string; // "grams" | "ml" | "portions"
+  totalCost: number;
+  costPerUnit: number; // TZS per gram/ml/portion
+  preparedAt: string;
+  expiresAt: string;
+  preparedBy: string;
+  status: 'available' | 'low' | 'expired' | 'consumed' | 'reversed';
 }
 
 export interface BlockedCookingAttempt {
@@ -354,6 +493,7 @@ export interface DailyReconciliationItem {
   openingKitchenStock: number;
   transferredToKitchen: number;
   theoreticalUsage: number;
+  actualUsage?: number;
   expectedClosingStock: number;
   actualCountedStock: number;
   varianceQty: number;
@@ -369,31 +509,54 @@ export interface MissingStockItem {
   requiredQty: number; // in consumption units
   availableKitchenQty: number;
   storeAvailableQty: number;
-  inTransitQty?: number; // Stock currently in transit from store awaiting kitchen confirmation
+  inTransitQty?: number;
   unit: string;
   status: 'not_transferred' | 'insufficient' | 'ok';
   shortageQty: number;
+  isSubRecipe?: boolean;
+  subRecipeId?: string;
+  substituteIngredientId?: string;
+  substituteIngredientName?: string;
+  substituteKitchenQty?: number;
 }
 
 export interface ProductionLog {
   id: string;
+  batchNumber?: string;
   recipeId: string;
+  recipeVersion?: number;
   menuItemId: string;
   dishName: string;
-  batchesCooked: number; // e.g. 1 batch or 0.5 batch
-  targetYieldPlates: number; // e.g. 100
-  actualPlatesProduced: number; // e.g. 90 plates (allows real yield variance)
+  productionType?: 'batch_finished' | 'sub_recipe' | 'semi_standardized';
+  batchesCooked: number;
+  targetYieldPlates: number;
+  actualPlatesProduced: number;
+  unitLabel?: string;
   totalCost: number;
   costPerPlate: number;
   cookedBy: string;
   timestamp: string;
+  expiryDate?: string;
   remainingPlates: number;
+  status?: 'completed' | 'partial' | 'reversed';
+  reversedAt?: string;
+  reversedBy?: string;
+  reversalReason?: string;
   ingredientsConsumed: {
     ingredientId: string;
     ingredientName: string;
     quantity: number;
     unit: string;
     cost: number;
+    isSubRecipe?: boolean;
+    subRecipeId?: string;
+  }[];
+  actualInputAdjustments?: {
+    ingredientId: string;
+    ingredientName: string;
+    standardQty: number;
+    actualQty: number;
+    unit: string;
   }[];
   managerOverride?: boolean;
   overrideReason?: string;
@@ -429,12 +592,12 @@ export interface AiParsedLineItem {
   rawIngredientName: string;
   matchedIngredientId: string | null;
   matchedIngredientName: string;
-  confidence: number; // 0 - 100
+  confidence: number;
   quantityPerBatch: number;
   rawUnit: string;
-  normalizedBaseQuantity: number; // consumption unit per 1 plate
+  normalizedBaseQuantity: number;
   baseUnit: string;
-  typicalYieldPercentage: number; // e.g. 90%
+  typicalYieldPercentage: number;
   notes?: string;
   isAnomaly: boolean;
   anomalyReason?: string;
@@ -460,7 +623,7 @@ export interface RestaurantTenant {
   logo: string;
   bannerImage: string;
   currency: 'TZS' | 'USD';
-  currencyRate: number; // 1 USD = 2600 TZS
-  taxRate: number; // 0.18 for 18% VAT
+  currencyRate: number;
+  taxRate: number;
   deliveryFee: number;
 }

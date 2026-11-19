@@ -9,6 +9,7 @@ import {
   Recipe,
   Order,
   OrderStatus,
+  OrderStatusHistoryItem,
   OrderType,
   PaymentMethod,
   Role,
@@ -29,6 +30,13 @@ import {
   ApprovalRequest,
   AuditLogEntry,
   DiscrepancyAlert,
+  BomDeductionPolicy,
+  StockBatchLot,
+  SubRecipeStockBatch,
+  OrderItem,
+  MovementType,
+  PayrollPaymentRecord,
+  CommissionPayoutLog,
 } from '../types/restaurant';
 import {
   INITIAL_TENANTS,
@@ -48,6 +56,8 @@ import {
   INITIAL_DAILY_RECONCILIATION,
   INITIAL_AUDIT_LOGS,
   INITIAL_APPROVAL_REQUESTS,
+  INITIAL_STOCK_LOTS,
+  INITIAL_SUB_RECIPE_BATCHES,
 } from '../data/mockData';
 import { parseAppDeepLink, notifyFlutterHost } from '../utils/mobileEnvironment';
 
@@ -99,7 +109,14 @@ interface RestaurantContextType {
     isPaidEligible: boolean;
     configuredBy: string;
   };
-  settleWaiterCommission: (waiterId: string, amount?: number) => void;
+  settleWaiterCommission: (
+    waiterId: string,
+    amount?: number,
+    options?: { method?: 'cash' | 'mpesa' | 'bank_transfer'; reference?: string; settledBy?: string }
+  ) => void;
+  commissionPayouts: CommissionPayoutLog[];
+  toggleWaiterActive: (waiterId: string) => void;
+  assignOrderWaiter: (orderId: string, waiterId: string) => void;
   orders: Order[];
   tables: Table[];
   menuItems: MenuItem[];
@@ -169,6 +186,7 @@ interface RestaurantContextType {
   }) => Order;
   submitDraftToKitchen: (orderId: string, actorName?: string) => void;
   updateOrderStatus: (orderId: string, status: OrderStatus, actorName?: string, note?: string) => void;
+  fastForwardOrderToServed: (orderId: string, actorName?: string) => boolean;
   updateOrderItemStatus: (orderId: string, itemIndex: number, itemStatus: OrderItemStatus, actorName?: string) => void;
   rejectOrderItem: (orderId: string, itemIndex: number, kitchenStaff: string, reason: string) => void;
   processPayment: (
@@ -208,7 +226,8 @@ interface RestaurantContextType {
     quantityUnits: number,
     cost: number,
     supplier: string,
-    invoiceRef: string
+    invoiceRef: string,
+    expiryDate?: string
   ) => void;
   recordWastage: (
     ingredientId: string,
@@ -216,9 +235,25 @@ interface RestaurantContextType {
     reason: string,
     location?: 'kitchen' | 'main_store'
   ) => void;
+  recordDirectConsumption: (params: {
+    ingredientId: string;
+    quantityUnits: number;
+    location: 'kitchen' | 'main_store';
+    reason: string;
+    recordedBy?: string;
+  }) => boolean;
   addNewIngredient: (ingredient: Omit<Ingredient, 'id'>) => Ingredient;
   saveRecipe: (recipe: Recipe, auditLog?: Omit<BomAuditLog, 'id' | 'timestamp'>) => void;
   deleteRecipe: (recipeId: string) => void;
+  bomDeductionPolicy: BomDeductionPolicy;
+  setBomDeductionPolicy: (policy: BomDeductionPolicy) => void;
+  stockLots: StockBatchLot[];
+  subRecipeBatches: SubRecipeStockBatch[];
+  computeRecipeUnitCost: (recipeId: string) => {
+    batchCost: number;
+    unitCost: number;
+    perPlateCost: number;
+  };
   bomAuditLogs: BomAuditLog[];
   productionLogs: ProductionLog[];
   preparedDishStocks: PreparedDishStock[];
@@ -227,13 +262,18 @@ interface RestaurantContextType {
   dailyReconciliations: DailyReconciliationItem[];
   updateDailyReconciliationCount: (ingredientId: string, actualCount: number, notes?: string) => void;
   commitDailyReconciliation: (staffName?: string) => { success: boolean; totalVarianceCost: number };
+  recomputeDailyVariance: () => void;
   handleLeftoverPreparedPlates: (
     menuItemId: string,
     platesCount: number,
     action: 'return_to_store' | 'log_as_waste',
     reason?: string
   ) => boolean;
-  validateBatchKitchenStock: (recipeId: string, batches: number) => {
+  validateBatchKitchenStock: (
+    recipeId: string,
+    batches: number,
+    actualInputs?: Record<string, number>
+  ) => {
     canCook: boolean;
     missingItems: MissingStockItem[];
     totalCost: number;
@@ -243,13 +283,52 @@ interface RestaurantContextType {
     recipeId: string;
     batches: number;
     actualPlatesProduced?: number;
+    actualInputs?: Record<string, number>;
     chefName?: string;
     managerOverride?: boolean;
     overrideReason?: string;
   }) => { success: boolean; error?: string; log?: ProductionLog };
+  reverseProductionBatch: (
+    productionLogId: string,
+    reason: string,
+    actor?: string
+  ) => { success: boolean; error?: string };
   createRequisitionForMissing: (missingItems: MissingStockItem[], shift?: string) => boolean;
-  addAdvanceRequest: (employeeId: string, amount: number, reason: string) => void;
-  approveAdvance: (employeeId: string, advanceId: string) => void;
+  addAdvanceRequest: (
+    employeeId: string,
+    amount: number,
+    reason: string,
+    options?: { autoApprove?: boolean; repaymentMonth?: string; approvedBy?: string }
+  ) => void;
+  approveAdvance: (employeeId: string, advanceId: string, approvedBy?: string) => void;
+  rejectAdvance: (employeeId: string, advanceId: string, reason?: string) => void;
+  markAdvanceRepaid: (employeeId: string, advanceId: string) => void;
+  updateAdvance: (employeeId: string, advanceId: string, amount: number, reason: string) => void;
+  addEmployee: (emp: Omit<Employee, 'id' | 'employeeNumber' | 'advances'>) => Employee;
+  updateEmployee: (employeeId: string, updates: Partial<Employee>) => void;
+  payrollPayments: PayrollPaymentRecord[];
+  calculateEmployeePayroll: (
+    employeeId: string,
+    period?: string
+  ) => {
+    basicSalary: number;
+    allowances: number;
+    commission: number;
+    grossPay: number;
+    nssfDeduction: number;
+    payeTax: number;
+    approvedAdvances: number;
+    netPayable: number;
+    isPaidForPeriod: boolean;
+    paymentRecord?: PayrollPaymentRecord;
+  };
+  recordPayrollPayment: (params: {
+    period: string;
+    employeeIds: string[];
+    method: 'bank_transfer' | 'mpesa' | 'cash';
+    referencePrefix?: string;
+    paidBy?: string;
+  }) => PayrollPaymentRecord[];
   calculateWaiterStats: (waiterId: string) => {
     myOrders: Order[];
     todaySales: number;
@@ -302,7 +381,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [menuItems, setMenuItems] = useState<MenuItem[]>(INITIAL_MENU_ITEMS);
   const [ingredients, setIngredients] = useState<Ingredient[]>(INITIAL_INGREDIENTS);
   const [stockMovements, setStockMovements] = useState<StockMovement[]>(INITIAL_STOCK_MOVEMENTS);
+  const [stockLots, setStockLots] = useState<StockBatchLot[]>(INITIAL_STOCK_LOTS);
   const [recipes, setRecipes] = useState<Recipe[]>(INITIAL_RECIPES);
+  const [subRecipeBatches, setSubRecipeBatches] = useState<SubRecipeStockBatch[]>(INITIAL_SUB_RECIPE_BATCHES);
+  const [bomDeductionPolicy, setBomDeductionPolicy] = useState<BomDeductionPolicy>('on_kitchen_start');
   const [bomAuditLogs, setBomAuditLogs] = useState<BomAuditLog[]>(INITIAL_BOM_AUDIT_LOGS);
   const [productionLogs, setProductionLogs] = useState<ProductionLog[]>(INITIAL_PRODUCTION_LOGS);
   const [preparedDishStocks, setPreparedDishStocks] = useState<PreparedDishStock[]>(INITIAL_PREPARED_DISH_STOCKS);
@@ -310,6 +392,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [dailyReconciliations, setDailyReconciliations] = useState<DailyReconciliationItem[]>(INITIAL_DAILY_RECONCILIATION);
   const [waiters, setWaiters] = useState<Waiter[]>(INITIAL_WAITERS);
   const [employees, setEmployees] = useState<Employee[]>(INITIAL_EMPLOYEES);
+  const [payrollPayments, setPayrollPayments] = useState<PayrollPaymentRecord[]>([]);
+  const [commissionPayouts, setCommissionPayouts] = useState<CommissionPayoutLog[]>([]);
 
   // Initialize cart empty when opened directly into Customer Portal, otherwise seed Cashier POS demo ticket
   const [cart, setCart] = useState<CartItem[]>(() => {
@@ -446,85 +530,379 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setCart([]);
   };
 
-  // Deduct ingredients from kitchen stock (and store if needed)
-  const deductIngredientsForOrder = (orderItems: CartItem[], orderNum: string) => {
+  // Recursive / Sub-recipe-aware BOM Costing Helper (Live from Master Data + Sub-Recipe Batches)
+  const computeRecipeUnitCost = (recipeId: string, visited: Set<string> = new Set()): {
+    batchCost: number;
+    unitCost: number;
+    perPlateCost: number;
+  } => {
+    if (visited.has(recipeId)) return { batchCost: 0, unitCost: 0, perPlateCost: 0 };
+    const nextVisited = new Set(visited);
+    nextVisited.add(recipeId);
+
+    const recipe = recipes.find((r) => r.id === recipeId);
+    if (!recipe) return { batchCost: 0, unitCost: 0, perPlateCost: 0 };
+
+    const yieldQty = Math.max(1, recipe.batchYieldPlates || 1);
+    let batchCost = 0;
+
+    recipe.ingredients.forEach((ri) => {
+      const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
+      if (ri.isSubRecipe && ri.subRecipeId) {
+        const subQtyForBatch = ri.subRecipeQuantity ?? ri.batchQuantity ?? (ri.quantity * yieldQty);
+        // Prefer active sub-recipe batch cost if available, else compute from sub-recipe BOM
+        const activeSubBatches = subRecipeBatches.filter(
+          (sb) => sb.subRecipeId === ri.subRecipeId && sb.status !== 'reversed' && sb.remainingQty > 0
+        );
+        const subUnitCost =
+          activeSubBatches.length > 0
+            ? activeSubBatches[0].costPerUnit
+            : computeRecipeUnitCost(ri.subRecipeId, nextVisited).unitCost;
+        batchCost += (subQtyForBatch / yieldFactor) * subUnitCost;
+      } else {
+        const ing = ingredients.find((i) => i.id === ri.ingredientId);
+        if (ing && ing.conversionRatio > 0) {
+          const ingUnitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+          const batchQty = ri.batchQuantity ?? (ri.quantity * yieldQty);
+          batchCost += (batchQty / yieldFactor) * ingUnitCost;
+        }
+      }
+    });
+
+    const roundedBatch = Math.round(batchCost);
+    const unitCost = batchCost / yieldQty;
+    return {
+      batchCost: roundedBatch,
+      unitCost,
+      perPlateCost: Math.round(unitCost),
+    };
+  };
+
+  // FEFO / FIFO Stock Lot deduction helper
+  const consumeStockLots = (
+    ingredientId: string,
+    qtyToDeduct: number,
+    location: 'kitchen' | 'main_store'
+  ) => {
+    if (qtyToDeduct <= 0) return;
+    setStockLots((prev) => {
+      let remaining = qtyToDeduct;
+      // Sort FEFO (earliest expiry first), then FIFO (earliest receivedDate first)
+      const matchingIds = prev
+        .filter((lot) => lot.ingredientId === ingredientId && lot.location === location && lot.remainingQty > 0)
+        .sort((a, b) => {
+          if (a.expiryDate && b.expiryDate) return a.expiryDate.localeCompare(b.expiryDate);
+          if (a.expiryDate) return -1;
+          if (b.expiryDate) return 1;
+          return a.receivedDate.localeCompare(b.receivedDate);
+        })
+        .map((l) => l.id);
+
+      const deductions = new Map<string, number>();
+      for (const lotId of matchingIds) {
+        if (remaining <= 0) break;
+        const lot = prev.find((l) => l.id === lotId);
+        if (!lot) continue;
+        const take = Math.min(lot.remainingQty, remaining);
+        deductions.set(lotId, take);
+        remaining -= take;
+      }
+
+      if (deductions.size === 0) return prev;
+      return prev.map((lot) => {
+        const take = deductions.get(lot.id);
+        return take ? { ...lot, remainingQty: Math.max(0, lot.remainingQty - take) } : lot;
+      });
+    });
+  };
+
+  // Unified Order Stock Deduction Engine (Zero Double-Deduction, Sub-Recipe & Variant/Modifier Aware)
+  const deductStockForOrderLines = (
+    orderItems: Array<{
+      menuItemId: string;
+      name: string;
+      quantity: number;
+      portion?: string;
+      selectedModifiers?: ModifierItem[];
+      customerNotes?: string;
+      customInstructions?: string;
+      status?: OrderItemStatus;
+    }>,
+    orderNum: string,
+    stageLabel: string
+  ) => {
     const newMovements: StockMovement[] = [];
     const lowKitchenAlerts: string[] = [];
+    const subRecipeDeductions: { subRecipeId: string; qty: number; dishName: string }[] = [];
+    const batchPlateDeductions: { menuItemId: string; qty: number }[] = [];
+    const ingredientDeductions: {
+      ingredientId: string;
+      qty: number;
+      reason: string;
+      type: MovementType;
+    }[] = [];
 
-    setIngredients((prevIngredients) => {
-      const updated = [...prevIngredients];
-      orderItems.forEach((ci) => {
-        const recipe = recipes.find((r) => r.menuItemId === ci.menuItem.id);
-        if (recipe && recipe.cookingMethod === 'batch_cooking') {
-          // Dish is cooked in advance batches: raw stock was already deducted at cooking time!
-          // Deduct from the live prepared plates pool
-          setPreparedDishStocks((prev) =>
-            prev.map((p) => {
-              if (p.menuItemId === ci.menuItem.id) {
-                const newAvailable = Math.max(0, p.preparedPlatesAvailable - ci.quantity);
-                return {
-                  ...p,
-                  preparedPlatesAvailable: newAvailable,
-                  totalSoldToday: p.totalSoldToday + ci.quantity,
-                  status: newAvailable === 0 ? 'out_of_stock' : newAvailable <= 10 ? 'low' : 'ready',
-                };
-              }
-              return p;
-            })
+    const activeLines = orderItems.filter((li) => li.status !== 'rejected');
+
+    activeLines.forEach((li) => {
+      const recipe = recipes.find((r) => r.menuItemId === li.menuItemId);
+
+      // Method 3 / Un-recipied packaged drinks direct 1:1 deduction (BOM is optional!)
+      if (!recipe) {
+        if (li.menuItemId === 'menu-soda-bottle' || li.name.toLowerCase().includes('soda')) {
+          ingredientDeductions.push({
+            ingredientId: 'ing-soda',
+            qty: li.quantity,
+            reason: `Direct stock consumption (${li.quantity}x ${li.name} · ${stageLabel})`,
+            type: 'direct_consumption',
+          });
+        }
+        return;
+      }
+
+      if (recipe.status === 'archived') return;
+
+      // Batch-cooked dish: deduct ONLY from pre-prepared plates pool & production log remainingPlates (NEVER raw ingredients again!)
+      if (recipe.cookingMethod === 'batch_cooking') {
+        const variant = li.portion
+          ? recipe.variants?.find((v) => v.name.toLowerCase() === li.portion?.toLowerCase())
+          : undefined;
+        const plateScale = variant ? (variant.portionMultiplier >= 1.4 ? 1.5 : 1) : 1;
+        batchPlateDeductions.push({
+          menuItemId: li.menuItemId,
+          qty: Math.round(li.quantity * plateScale * 10) / 10,
+        });
+        return;
+      }
+
+      // Made-to-order BOM: scale by Portion Variant + apply Modifier Rules
+      const variant = li.portion
+        ? recipe.variants?.find((v) => v.name.toLowerCase() === li.portion?.toLowerCase())
+        : undefined;
+      const portionMultiplier = variant?.portionMultiplier ?? 1.0;
+
+      const combinedNotes = `${li.customerNotes || ''} ${li.customInstructions || ''}`.toLowerCase();
+      const modNames = (li.selectedModifiers || []).map((m) => m.name.toLowerCase());
+
+      // Track per-ingredient net quantity for this line item
+      const perLineRawQty = new Map<string, number>();
+
+      recipe.ingredients.forEach((ri) => {
+        const override = variant?.ingredientOverrides?.find((ov) => ov.ingredientId === ri.ingredientId);
+        const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
+
+        if (ri.isSubRecipe && ri.subRecipeId) {
+          const perPlateSubQty =
+            (ri.subRecipeQuantity && recipe.batchYieldPlates > 0
+              ? ri.subRecipeQuantity / recipe.batchYieldPlates
+              : ri.quantity) * portionMultiplier;
+          const totalSubQty = Math.round((perPlateSubQty / yieldFactor) * li.quantity * 100) / 100;
+          if (totalSubQty > 0) {
+            subRecipeDeductions.push({
+              subRecipeId: ri.subRecipeId,
+              qty: totalSubQty,
+              dishName: `${li.quantity}x ${li.name}${li.portion ? ` (${li.portion})` : ''}`,
+            });
+          }
+          return;
+        }
+
+        const basePerPlate = override ? override.quantity : ri.quantity * portionMultiplier;
+        const grossPerPlate = basePerPlate / yieldFactor;
+        const totalQty = grossPerPlate * li.quantity;
+
+        // Check if primary ingredient is out in kitchen and an approved substitute is configured
+        const primaryIng = ingredients.find((i) => i.id === ri.ingredientId);
+        let targetIngId = ri.ingredientId;
+        if (
+          primaryIng &&
+          (primaryIng.kitchenStockUnits ?? 0) < totalQty &&
+          ri.substituteIngredientId
+        ) {
+          const subIng = ingredients.find((i) => i.id === ri.substituteIngredientId);
+          if (subIng && (subIng.kitchenStockUnits ?? 0) >= totalQty) {
+            targetIngId = subIng.id;
+          }
+        }
+
+        perLineRawQty.set(targetIngId, (perLineRawQty.get(targetIngId) || 0) + totalQty);
+      });
+
+      // Apply Recipe Modifier Rules (Extra Chicken, Boiled Egg, No Onions, etc.)
+      (recipe.modifierRules || []).forEach((rule) => {
+        const ruleLower = rule.modifierName.toLowerCase();
+        const isTriggered =
+          modNames.some((mn) => mn.includes(ruleLower) || ruleLower.includes(mn)) ||
+          combinedNotes.includes(ruleLower);
+        if (!isTriggered) return;
+
+        if (rule.action === 'add') {
+          perLineRawQty.set(
+            rule.ingredientId,
+            (perLineRawQty.get(rule.ingredientId) || 0) + rule.quantityDelta * li.quantity
           );
-        } else if (recipe) {
-          // Made-to-order: each sale deducts raw ingredients from kitchen floor stock
-          recipe.ingredients.forEach((ri) => {
-            const ingIndex = updated.findIndex((ing) => ing.id === ri.ingredientId);
-            if (ingIndex > -1) {
-              const deduction = ri.quantity * ci.quantity;
-              const ing = updated[ingIndex];
-              const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+        } else if (rule.action === 'remove') {
+          const cur = perLineRawQty.get(rule.ingredientId) || 0;
+          perLineRawQty.set(rule.ingredientId, Math.max(0, cur - rule.quantityDelta * li.quantity));
+        } else if (rule.action === 'substitute' && rule.substituteIngredientId) {
+          const cur = perLineRawQty.get(rule.ingredientId) || 0;
+          const removed = Math.min(cur, rule.quantityDelta * li.quantity);
+          perLineRawQty.set(rule.ingredientId, Math.max(0, cur - removed));
+          perLineRawQty.set(
+            rule.substituteIngredientId,
+            (perLineRawQty.get(rule.substituteIngredientId) || 0) + removed
+          );
+        }
+      });
 
-              // Primary deduction comes from active kitchenStockUnits
-              let currentKitchen = ing.kitchenStockUnits ?? 0;
-              let currentStore = ing.storeStockUnits ?? Math.max(0, ing.currentStockUnits - currentKitchen);
-
-              let newKitchen = currentKitchen - deduction;
-              let newStore = currentStore;
-
-              if (newKitchen < 0) {
-                // Kitchen floor was short — absorb deficit from main storage
-                const deficit = -newKitchen;
-                newStore = Math.max(0, currentStore - deficit);
-                newKitchen = 0;
-                lowKitchenAlerts.push(`${ing.name} (Kitchen line ran out, drawn from Store)`);
-              } else if (newKitchen <= ing.minimumThreshold * 0.25) {
-                lowKitchenAlerts.push(`${ing.name} (${newKitchen.toLocaleString()} ${ing.consumptionUnit} left in kitchen)`);
-              }
-
-              updated[ingIndex] = {
-                ...ing,
-                kitchenStockUnits: newKitchen,
-                storeStockUnits: newStore,
-                currentStockUnits: Math.max(0, newKitchen + newStore),
-              };
-
-              newMovements.push({
-                id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-                ingredientId: ing.id,
-                ingredientName: ing.name,
-                type: 'kitchen_consumption',
-                quantityDelta: -deduction,
-                unit: ing.consumptionUnit,
-                costImpact: Math.round(unitCost * deduction),
-                date: new Date().toISOString().split('T')[0],
-                reference: `Order ${orderNum}`,
-                reason: `Kitchen consumption for ${ci.quantity}x ${ci.menuItem.name}`,
-                recordedBy: 'Auto Kitchen BOM Engine',
-                sourceLocation: 'kitchen',
-              });
-            }
+      perLineRawQty.forEach((rawQty, ingId) => {
+        const rounded = Math.round(rawQty);
+        if (rounded > 0) {
+          ingredientDeductions.push({
+            ingredientId: ingId,
+            qty: rounded,
+            reason: `BOM consumption for ${li.quantity}x ${li.name}${li.portion ? ` (${li.portion})` : ''} · ${stageLabel}`,
+            type: 'kitchen_consumption',
           });
         }
       });
-      return updated;
     });
+
+    // 1. Deduct batch-cooked finished plates & update ProductionLog remainingPlates FIFO
+    if (batchPlateDeductions.length > 0) {
+      setPreparedDishStocks((prev) =>
+        prev.map((p) => {
+          const match = batchPlateDeductions.filter((b) => b.menuItemId === p.menuItemId);
+          if (match.length === 0) return p;
+          const sumQty = match.reduce((s, b) => s + b.qty, 0);
+          const newAvailable = Math.max(0, p.preparedPlatesAvailable - sumQty);
+          return {
+            ...p,
+            preparedPlatesAvailable: newAvailable,
+            totalSoldToday: p.totalSoldToday + sumQty,
+            status: newAvailable === 0 ? 'out_of_stock' : newAvailable <= 10 ? 'low' : 'ready',
+          };
+        })
+      );
+
+      setProductionLogs((prev) => {
+        const remainingNeed = new Map<string, number>();
+        batchPlateDeductions.forEach((b) => {
+          remainingNeed.set(b.menuItemId, (remainingNeed.get(b.menuItemId) || 0) + b.qty);
+        });
+        return prev.map((pl) => {
+          if (pl.status === 'reversed' || pl.productionType === 'sub_recipe') return pl;
+          const need = remainingNeed.get(pl.menuItemId) || 0;
+          if (need <= 0 || pl.remainingPlates <= 0) return pl;
+          const take = Math.min(pl.remainingPlates, need);
+          remainingNeed.set(pl.menuItemId, need - take);
+          return {
+            ...pl,
+            remainingPlates: Math.max(0, pl.remainingPlates - take),
+          };
+        });
+      });
+    }
+
+    // 2. Deduct Sub-Recipe prepared stock batches (FEFO by expiresAt, never raw ingredients again!)
+    if (subRecipeDeductions.length > 0) {
+      const todayStr = new Date().toISOString().split('T')[0];
+      setSubRecipeBatches((prev) => {
+        const copy = prev.map((b) => ({ ...b }));
+        subRecipeDeductions.forEach((ded) => {
+          let rem = ded.qty;
+          const candidates = copy
+            .filter((b) => b.subRecipeId === ded.subRecipeId && b.remainingQty > 0 && b.status !== 'reversed' && b.status !== 'expired')
+            .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
+          for (const batch of candidates) {
+            if (rem <= 0) break;
+            const take = Math.min(batch.remainingQty, rem);
+            batch.remainingQty = Math.round((batch.remainingQty - take) * 100) / 100;
+            batch.status =
+              batch.remainingQty <= 0
+                ? 'consumed'
+                : batch.remainingQty <= batch.producedQty * 0.2
+                ? 'low'
+                : 'available';
+            rem -= take;
+
+            newMovements.push({
+              id: `sm-sub-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              ingredientId: batch.subRecipeId,
+              ingredientName: `${batch.name} [Sub-Recipe]`,
+              type: 'kitchen_consumption',
+              quantityDelta: -take,
+              unit: batch.unit,
+              costImpact: Math.round(take * batch.costPerUnit),
+              date: todayStr,
+              reference: `Order ${orderNum}`,
+              batchNumber: batch.batchNumber,
+              recipeId: batch.subRecipeId,
+              reason: `Sub-recipe batch deduction for ${ded.dishName} (${stageLabel})`,
+              recordedBy: 'Auto Kitchen BOM Engine',
+              sourceLocation: 'kitchen',
+            });
+          }
+        });
+        return copy;
+      });
+    }
+
+    // 3. Deduct Raw Ingredients & FEFO/FIFO lots
+    if (ingredientDeductions.length > 0) {
+      setIngredients((prevIngredients) => {
+        const updated = [...prevIngredients];
+        ingredientDeductions.forEach((ded) => {
+          const ingIndex = updated.findIndex((ing) => ing.id === ded.ingredientId);
+          if (ingIndex === -1) return;
+          const ing = updated[ingIndex];
+          const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+
+          const currentKitchen = ing.kitchenStockUnits ?? 0;
+          const currentStore = ing.storeStockUnits ?? Math.max(0, ing.currentStockUnits - currentKitchen);
+
+          let newKitchen = currentKitchen - ded.qty;
+          let newStore = currentStore;
+
+          if (newKitchen < 0) {
+            const deficit = -newKitchen;
+            newStore = Math.max(0, currentStore - deficit);
+            newKitchen = 0;
+            lowKitchenAlerts.push(`${ing.name} (Kitchen line ran out, drawn from Store)`);
+            consumeStockLots(ing.id, currentKitchen, 'kitchen');
+            consumeStockLots(ing.id, deficit, 'main_store');
+          } else {
+            consumeStockLots(ing.id, ded.qty, 'kitchen');
+            if (newKitchen <= ing.minimumThreshold * 0.25) {
+              lowKitchenAlerts.push(`${ing.name} (${newKitchen.toLocaleString()} ${ing.consumptionUnit} left in kitchen)`);
+            }
+          }
+
+          updated[ingIndex] = {
+            ...ing,
+            kitchenStockUnits: newKitchen,
+            storeStockUnits: newStore,
+            currentStockUnits: Math.max(0, newKitchen + newStore),
+          };
+
+          newMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            ingredientId: ing.id,
+            ingredientName: ing.name,
+            type: ded.type,
+            quantityDelta: -ded.qty,
+            unit: ing.consumptionUnit,
+            costImpact: Math.round(unitCost * ded.qty),
+            date: new Date().toISOString().split('T')[0],
+            reference: `Order ${orderNum}`,
+            reason: ded.reason,
+            recordedBy: 'Auto Kitchen BOM Engine',
+            sourceLocation: 'kitchen',
+          });
+        });
+        return updated;
+      });
+    }
 
     if (newMovements.length > 0) {
       setStockMovements((prev) => [...newMovements, ...prev]);
@@ -539,6 +917,23 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         actionLabel: 'Transfer Stock',
       });
     }
+  };
+
+  // Backwards-compatible wrapper
+  const deductIngredientsForOrder = (orderItems: CartItem[], orderNum: string) => {
+    deductStockForOrderLines(
+      orderItems.map((ci) => ({
+        menuItemId: ci.menuItem.id,
+        name: ci.menuItem.name,
+        quantity: ci.quantity,
+        portion: ci.selectedPortion?.name,
+        selectedModifiers: ci.selectedModifiers,
+        customerNotes: ci.customerNotes,
+        customInstructions: ci.customInstructions,
+      })),
+      orderNum,
+      'Order Submit'
+    );
   };
 
   const submitOrder = (params: {
@@ -651,6 +1046,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ]
         : existingDraft?.payments || [];
 
+    const shouldDeductNow =
+      !params.asDraft &&
+      (bomDeductionPolicy === 'on_order_submit' ||
+        (bomDeductionPolicy === 'on_payment' && Boolean(params.markAsPaid)));
+
     const newOrder: Order = {
       id: orderId,
       orderNumber: nextOrderNum,
@@ -705,6 +1105,12 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? `Auto Rule (${defaultCommissionValue}% Net)`
           : `Auto Rule (${formatMoney(defaultCommissionValue)} Fixed)`,
       commissionUpdatedAt: nowIso,
+      stockDeducted: shouldDeductNow || existingDraft?.stockDeducted || false,
+      stockDeductionStage: shouldDeductNow
+        ? bomDeductionPolicy === 'on_payment'
+          ? 'On Payment'
+          : 'Order Submit'
+        : existingDraft?.stockDeductionStage,
       notes: params.notes,
       createdAt: existingDraft?.createdAt || nowIso,
       updatedAt: nowIso,
@@ -727,7 +1133,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
 
     if (!params.asDraft) {
-      deductIngredientsForOrder(sourceItems, nextOrderNum);
+      if (shouldDeductNow && !existingDraft?.stockDeducted) {
+        deductIngredientsForOrder(sourceItems, nextOrderNum);
+      }
       setSoundAlertTriggered(true);
       addNotification({
         title: `New Order ${nextOrderNum} (${serviceCouponCode})`,
@@ -776,6 +1184,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const draft = orders.find((o) => o.id === orderId);
     if (!draft || draft.status !== 'draft') return;
     const nowIso = new Date().toISOString();
+    const deductNow = !draft.stockDeducted && bomDeductionPolicy === 'on_order_submit';
 
     setOrders((prev) =>
       prev.map((o) =>
@@ -783,6 +1192,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? {
               ...o,
               status: 'sent_to_kitchen',
+              stockDeducted: o.stockDeducted || deductNow,
+              stockDeductionStage: deductNow ? 'Order Submit' : o.stockDeductionStage,
               updatedAt: nowIso,
               statusHistory: [
                 ...(o.statusHistory || []),
@@ -797,6 +1208,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : o
       )
     );
+
+    if (deductNow) {
+      deductStockForOrderLines(draft.items, draft.orderNumber, 'Draft Dispatch');
+    }
 
     if (draft.type === 'dine_in' && draft.tableNumber) {
       setTables((prev) =>
@@ -835,6 +1250,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   ) => {
     const nowIso = new Date().toISOString();
     const target = orders.find((o) => o.id === orderId);
+    const shouldDeductOnKitchenTransition =
+      Boolean(target) &&
+      !target?.stockDeducted &&
+      bomDeductionPolicy === 'on_kitchen_start' &&
+      (status === 'accepted' || status === 'preparing' || status === 'ready' || status === 'served' || status === 'completed');
+
+    if (shouldDeductOnKitchenTransition && target) {
+      deductStockForOrderLines(target.items, target.orderNumber, `Kitchen ${status}`);
+    }
 
     setOrders((prev) =>
       prev.map((ord) => {
@@ -873,6 +1297,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             ...ord,
             status,
             items: updatedItems,
+            stockDeducted: ord.stockDeducted || shouldDeductOnKitchenTransition,
+            stockDeductionStage:
+              shouldDeductOnKitchenTransition && !ord.stockDeductionStage
+                ? `Kitchen ${status}`
+                : ord.stockDeductionStage,
             updatedAt: nowIso,
             statusHistory: [
               ...(ord.statusHistory || []),
@@ -891,7 +1320,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         actor: actorName,
         actorRole: activeRole,
         action: `STATUS_${status.toUpperCase()}`,
-        details: `Order ${target.orderNumber} moved from ${target.status} to ${status}${note ? ` (${note})` : ''}.`,
+        details: `Order ${target.orderNumber} moved from ${target.status} to ${status}${
+          shouldDeductOnKitchenTransition ? ' · BOM Stock Deducted' : ''
+        }${note ? ` (${note})` : ''}.`,
       });
     }
 
@@ -908,6 +1339,80 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   };
 
+  const fastForwardOrderToServed = (
+    orderId: string,
+    actorName: string = 'Waiter'
+  ): boolean => {
+    const target = orders.find((o) => o.id === orderId);
+    if (
+      !target ||
+      target.status === 'draft' ||
+      target.status === 'cancelled' ||
+      target.status === 'rejected' ||
+      target.status === 'served' ||
+      target.status === 'completed'
+    ) {
+      return false;
+    }
+
+    const nowIso = new Date().toISOString();
+    const pipeline: OrderStatus[] = ['accepted', 'preparing', 'ready', 'served'];
+    const currentIdx = pipeline.indexOf(target.status);
+    const stepsToRecord: OrderStatus[] =
+      currentIdx >= 0 ? pipeline.slice(currentIdx + 1) : pipeline;
+
+    const shouldDeductNow =
+      !target.stockDeducted &&
+      (bomDeductionPolicy === 'on_kitchen_start' || bomDeductionPolicy === 'on_order_submit');
+
+    if (shouldDeductNow) {
+      deductStockForOrderLines(target.items, target.orderNumber, 'Waiter Fast-Serve');
+    }
+
+    const newHistoryEntries: OrderStatusHistoryItem[] = stepsToRecord.map((stage) => ({
+      status: stage,
+      actor: `${actorName} (Waiter Assist)`,
+      note:
+        stage === 'served'
+          ? 'Processed all kitchen stages up to Served (kitchen busy assist)'
+          : 'Auto-advanced via Waiter Fast-Serve',
+      timestamp: nowIso,
+    }));
+
+    setOrders((prev) =>
+      prev.map((ord) => {
+        if (ord.id !== orderId) return ord;
+        return {
+          ...ord,
+          status: 'served',
+          items: ord.items.map((it) =>
+            it.status !== 'rejected' ? { ...it, status: 'served' as const } : it
+          ),
+          stockDeducted: ord.stockDeducted || shouldDeductNow,
+          stockDeductionStage:
+            shouldDeductNow && !ord.stockDeductionStage
+              ? 'Waiter Fast-Serve'
+              : ord.stockDeductionStage,
+          updatedAt: nowIso,
+          statusHistory: [...(ord.statusHistory || []), ...newHistoryEntries],
+        };
+      })
+    );
+
+    logAuditEvent({
+      orderId: target.id,
+      orderNumber: target.orderNumber,
+      actor: actorName,
+      actorRole: 'waiter',
+      action: 'WAITER_FAST_FORWARD_SERVED',
+      details: `Order ${target.orderNumber} fast-processed from ${target.status} through ${stepsToRecord.join(
+        ' → '
+      )} by ${actorName}${shouldDeductNow ? ' · BOM Stock Deducted' : ''}.`,
+    });
+
+    return true;
+  };
+
   const updateOrderItemStatus = (
     orderId: string,
     itemIndex: number,
@@ -915,6 +1420,17 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     actorName: string = 'Kitchen Staff'
   ) => {
     const nowIso = new Date().toISOString();
+    const target = orders.find((o) => o.id === orderId);
+    const shouldDeductNow =
+      Boolean(target) &&
+      !target?.stockDeducted &&
+      bomDeductionPolicy === 'on_kitchen_start' &&
+      (itemStatus === 'accepted' || itemStatus === 'preparing' || itemStatus === 'ready' || itemStatus === 'served');
+
+    if (shouldDeductNow && target) {
+      deductStockForOrderLines(target.items, target.orderNumber, `Kitchen ${itemStatus}`);
+    }
+
     setOrders((prev) =>
       prev.map((ord) => {
         if (ord.id === orderId) {
@@ -941,6 +1457,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             ...ord,
             items: updatedItems,
             status: newOrderStatus,
+            stockDeducted: ord.stockDeducted || shouldDeductNow,
+            stockDeductionStage:
+              shouldDeductNow && !ord.stockDeductionStage
+                ? `Kitchen ${itemStatus}`
+                : ord.stockDeductionStage,
             updatedAt: nowIso,
             statusHistory:
               newOrderStatus !== ord.status
@@ -1071,6 +1592,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       isRefund: options?.isRefund,
     };
 
+    const shouldDeductOnPayNow =
+      !options?.isRefund &&
+      Boolean(targetOrder) &&
+      !targetOrder?.stockDeducted &&
+      willBeFullyPaid &&
+      (bomDeductionPolicy === 'on_payment' ||
+        (Boolean(options?.completeService) && bomDeductionPolicy === 'on_kitchen_start'));
+
+    if (shouldDeductOnPayNow && targetOrder) {
+      deductStockForOrderLines(
+        targetOrder.items,
+        targetOrder.orderNumber,
+        bomDeductionPolicy === 'on_payment' ? 'On Payment' : 'Service Completion'
+      );
+    }
+
     setOrders((prev) =>
       prev.map((ord) => {
         if (ord.id === orderId) {
@@ -1097,6 +1634,13 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               ? 'served'
               : ord.status;
 
+          const updatedItems =
+            isFullyPaid && options?.completeService
+              ? ord.items.map((it) =>
+                  it.status !== 'rejected' ? { ...it, status: 'served' as const } : it
+                )
+              : ord.items;
+
           return {
             ...ord,
             paymentStatus: options?.isRefund && newPaidAmount === 0 ? 'refunded' : isFullyPaid ? 'paid' : newPaidAmount > 0 ? 'partial' : 'unpaid',
@@ -1104,6 +1648,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             paidAmount: newPaidAmount,
             payments: updatedPayments,
             status: nextStatus,
+            items: updatedItems,
+            stockDeducted: ord.stockDeducted || shouldDeductOnPayNow,
+            stockDeductionStage:
+              shouldDeductOnPayNow && !ord.stockDeductionStage
+                ? bomDeductionPolicy === 'on_payment'
+                  ? 'On Payment'
+                  : 'Service Completion'
+                : ord.stockDeductionStage,
             commissionMode: mode,
             commissionValue: val,
             commissionAmount: computedComm,
@@ -1225,6 +1777,31 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (!target || target.status === 'cancelled') return;
     const nowIso = new Date().toISOString();
 
+    // Controlled Stock Return: Only restore recoverable prepared plates if order had deducted stock and wasn't already served
+    if (target.stockDeducted && !target.reversedStock) {
+      const recoverableBatchItems = target.items.filter((it) => {
+        if (it.status === 'rejected' || it.status === 'served') return false;
+        const r = recipes.find((rec) => rec.menuItemId === it.menuItemId);
+        return r?.cookingMethod === 'batch_cooking';
+      });
+      if (recoverableBatchItems.length > 0) {
+        setPreparedDishStocks((prev) =>
+          prev.map((p) => {
+            const matchQty = recoverableBatchItems
+              .filter((bi) => bi.menuItemId === p.menuItemId)
+              .reduce((s, bi) => s + bi.quantity, 0);
+            if (matchQty <= 0) return p;
+            return {
+              ...p,
+              preparedPlatesAvailable: p.preparedPlatesAvailable + matchQty,
+              totalSoldToday: Math.max(0, p.totalSoldToday - matchQty),
+              status: 'ready',
+            };
+          })
+        );
+      }
+    }
+
     setOrders((prev) =>
       prev.map((ord) => {
         if (ord.id !== orderId) return ord;
@@ -1244,6 +1821,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return {
           ...ord,
           status: 'cancelled',
+          reversedStock: ord.stockDeducted ? true : ord.reversedStock,
           adjustments: [...(ord.adjustments || []), adj],
           cancellationRecord: {
             cancelledBy: actor,
@@ -1256,7 +1834,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             {
               status: 'cancelled',
               actor,
-              note: `Cancelled (${reason}) · Approved by ${approvedBy}`,
+              note: `Cancelled (${reason}) · Approved by ${approvedBy}${
+                !ord.stockDeducted ? ' · No stock deducted yet' : ''
+              }`,
               timestamp: nowIso,
             },
           ],
@@ -1281,7 +1861,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       actor,
       actorRole: activeRole,
       action: 'ORDER_CANCELLED_CONTROLLED',
-      details: `Order ${target.orderNumber} (${formatMoney(target.total)}) marked cancelled (record retained). Reason: ${reason}. Approved by: ${approvedBy}.`,
+      details: `Order ${target.orderNumber} (${formatMoney(target.total)}) marked cancelled (record retained). ${
+        target.stockDeducted
+          ? 'Prep already started: consumption logged / recoverable batch plates returned.'
+          : 'Zero stock deduction occurred (cancelled before kitchen prep).'
+      } Reason: ${reason}. Approved by: ${approvedBy}.`,
     });
   };
 
@@ -1566,12 +2150,23 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     quantityUnits: number,
     cost: number,
     supplier: string,
-    invoiceRef: string
+    invoiceRef: string,
+    expiryDate?: string
   ) => {
     const ing = ingredients.find((i) => i.id === ingredientId);
-    if (!ing) return;
+    if (!ing || quantityUnits <= 0) return;
 
-    // Delivery always lands into Main Store
+    const todayStr = new Date().toISOString().split('T')[0];
+    const incomingUnitCost = quantityUnits > 0 && cost > 0 ? cost / quantityUnits : ing.costPerPurchaseUnit / ing.conversionRatio;
+    const existingQty = Math.max(0, ing.currentStockUnits);
+    const existingUnitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+    const weightedUnitCost =
+      existingQty + quantityUnits > 0
+        ? (existingQty * existingUnitCost + quantityUnits * incomingUnitCost) / (existingQty + quantityUnits)
+        : incomingUnitCost;
+    const updatedCostPerPurchase = Math.round(weightedUnitCost * ing.conversionRatio);
+
+    // Delivery always lands into Main Store & updates weighted-average valuation
     setIngredients((prev) =>
       prev.map((item) => {
         if (item.id === ingredientId) {
@@ -1582,11 +2177,35 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             storeStockUnits: updatedStore,
             kitchenStockUnits: kStock,
             currentStockUnits: updatedStore + kStock,
+            costPerPurchaseUnit: updatedCostPerPurchase,
+            lastUnitCost: Math.round(incomingUnitCost * 100) / 100,
           };
         }
         return item;
       })
     );
+
+    const computedExpiry =
+      expiryDate ||
+      (ing.shelfLifeDays
+        ? new Date(Date.now() + ing.shelfLifeDays * 86400000).toISOString().split('T')[0]
+        : undefined);
+    const lotNumber = `LOT-${ing.id.replace('ing-', '').slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-4)}`;
+    const newLot: StockBatchLot = {
+      id: `lot-${Date.now()}`,
+      ingredientId,
+      lotNumber,
+      location: 'main_store',
+      initialQty: quantityUnits,
+      remainingQty: quantityUnits,
+      unit: ing.consumptionUnit,
+      unitCost: Math.round(incomingUnitCost * 100) / 100,
+      receivedDate: todayStr,
+      expiryDate: computedExpiry,
+      supplier: supplier || ing.supplier,
+      invoiceRef: invoiceRef || `PO-${Math.floor(10000 + Math.random() * 90000)}`,
+    };
+    setStockLots((prev) => [newLot, ...prev]);
 
     // Record formal Stock Movement
     const movement: StockMovement = {
@@ -1597,9 +2216,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       quantityDelta: quantityUnits,
       unit: ing.consumptionUnit,
       costImpact: cost,
-      date: new Date().toISOString().split('T')[0],
-      reference: invoiceRef || `PO-${Math.floor(10000 + Math.random() * 90000)}`,
-      reason: `Received into Main Store from ${supplier || ing.supplier}`,
+      date: todayStr,
+      reference: invoiceRef || newLot.invoiceRef,
+      batchNumber: lotNumber,
+      reason: `Received into Main Store from ${supplier || ing.supplier} (Weighted Avg recalculated to ${formatMoney(updatedCostPerPurchase)} / ${ing.purchaseUnit})`,
       recordedBy: 'David Kasambala (Manager)',
       destinationLocation: 'main_store',
     };
@@ -1607,8 +2227,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setStockMovements((prev) => [movement, ...prev]);
 
     addNotification({
-      title: 'Goods Received in Main Store',
-      message: `+${quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} added to Main Storage.`,
+      title: 'Goods Received & Recipe Costs Synced',
+      message: `+${quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} (${lotNumber}) received. Unit cost recalculated for live BOM recipes.`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'View Store Inventory',
@@ -1623,6 +2243,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   ) => {
     const ing = ingredients.find((i) => i.id === ingredientId);
     if (!ing) return;
+
+    consumeStockLots(ingredientId, quantityUnits, location);
 
     setIngredients((prev) =>
       prev.map((item) => {
@@ -1672,6 +2294,73 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       actionRole: 'manager',
       actionLabel: 'View Spoilage Log',
     });
+  };
+
+  // Method 3: Direct Stock Consumption Without BOM (e.g. deep-fryer oil, cleaning/prep consumables, un-recipied items)
+  const recordDirectConsumption = (params: {
+    ingredientId: string;
+    quantityUnits: number;
+    location: 'kitchen' | 'main_store';
+    reason: string;
+    recordedBy?: string;
+  }): boolean => {
+    const ing = ingredients.find((i) => i.id === params.ingredientId);
+    if (!ing || params.quantityUnits <= 0) return false;
+
+    const available =
+      params.location === 'kitchen' ? ing.kitchenStockUnits ?? 0 : ing.storeStockUnits ?? 0;
+    if (params.quantityUnits > available) return false;
+
+    consumeStockLots(params.ingredientId, params.quantityUnits, params.location);
+
+    setIngredients((prev) =>
+      prev.map((item) => {
+        if (item.id !== params.ingredientId) return item;
+        const kStock =
+          params.location === 'kitchen'
+            ? Math.max(0, (item.kitchenStockUnits ?? 0) - params.quantityUnits)
+            : item.kitchenStockUnits ?? 0;
+        const sStock =
+          params.location === 'main_store'
+            ? Math.max(0, (item.storeStockUnits ?? 0) - params.quantityUnits)
+            : item.storeStockUnits ?? 0;
+        return {
+          ...item,
+          kitchenStockUnits: kStock,
+          storeStockUnits: sStock,
+          currentStockUnits: kStock + sStock,
+        };
+      })
+    );
+
+    const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+    const costImpact = Math.round(unitCost * params.quantityUnits);
+    const movement: StockMovement = {
+      id: `sm-dir-${Date.now()}`,
+      ingredientId: ing.id,
+      ingredientName: ing.name,
+      type: 'direct_consumption',
+      quantityDelta: -params.quantityUnits,
+      unit: ing.consumptionUnit,
+      costImpact,
+      date: new Date().toISOString().split('T')[0],
+      reference: `DIR-${Math.floor(1000 + Math.random() * 9000)}`,
+      reason: params.reason || 'Direct operational consumption (Non-BOM)',
+      recordedBy: params.recordedBy || 'Chef Hamisi Juma',
+      sourceLocation: params.location,
+    };
+
+    setStockMovements((prev) => [movement, ...prev]);
+
+    addNotification({
+      title: 'Direct Stock Consumption Logged',
+      message: `${params.quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} consumed directly (${formatMoney(costImpact)}).`,
+      type: 'stock',
+      actionRole: 'manager',
+      actionLabel: 'View Movement Ledger',
+    });
+
+    return true;
   };
 
   // Stock Transfer between Main Store and Kitchen Floor
@@ -2027,35 +2716,102 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     );
   };
 
-  // ATOMIC VALIDATION: Check Kitchen Stock Availability for Batch Cooking
-  const validateBatchKitchenStock = (recipeId: string, batches: number = 1) => {
+  // ATOMIC VALIDATION: Check Kitchen Stock & Prepared Sub-Recipe Batches for Production
+  const validateBatchKitchenStock = (
+    recipeId: string,
+    batches: number = 1,
+    actualInputs?: Record<string, number>
+  ) => {
     const recipe = recipes.find((r) => r.id === recipeId);
     if (!recipe) {
       return { canCook: false, missingItems: [], totalCost: 0, targetYieldPlates: 0 };
     }
 
     const multiplier = Math.max(0.1, batches);
-    const targetYieldPlates = Math.round((recipe.batchYieldPlates || 100) * multiplier);
+    const targetYieldPlates = Math.round((recipe.batchYieldPlates || 1) * multiplier);
     let totalCost = 0;
 
     const missingItems: MissingStockItem[] = recipe.ingredients.map((ri) => {
+      const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
+
+      // Sub-Recipe Input Line (resolves against prepared SubRecipeStockBatch, never double-deducting raw!)
+      if (ri.isSubRecipe && ri.subRecipeId) {
+        const subRec = recipes.find((r) => r.id === ri.subRecipeId);
+        const subName = subRec?.name || 'Prepared Sub-Recipe';
+        const subUnit = ri.subRecipeUnit || subRec?.yieldUnit || 'portions';
+        const baseSubReq =
+          (ri.subRecipeQuantity ?? ri.batchQuantity ?? (ri.quantity * (recipe.batchYieldPlates || 1))) *
+          multiplier;
+        const standardReq = Math.round(baseSubReq / yieldFactor);
+        const requiredQty =
+          actualInputs && actualInputs[ri.subRecipeId] !== undefined
+            ? Math.max(0, Math.round(actualInputs[ri.subRecipeId]))
+            : standardReq;
+
+        const availableSubBatches = subRecipeBatches.filter(
+          (sb) =>
+            sb.subRecipeId === ri.subRecipeId &&
+            sb.remainingQty > 0 &&
+            sb.status !== 'reversed' &&
+            sb.status !== 'expired'
+        );
+        const availableKitchenQty = Math.round(
+          availableSubBatches.reduce((sum, sb) => sum + sb.remainingQty, 0)
+        );
+        const subUnitCost =
+          availableSubBatches.length > 0
+            ? availableSubBatches[0].costPerUnit
+            : computeRecipeUnitCost(ri.subRecipeId).unitCost;
+
+        totalCost += Math.round(requiredQty * subUnitCost);
+
+        let status: 'not_transferred' | 'insufficient' | 'ok' = 'ok';
+        let shortageQty = 0;
+        if (availableKitchenQty <= 0) {
+          status = 'not_transferred';
+          shortageQty = requiredQty;
+        } else if (availableKitchenQty < requiredQty) {
+          status = 'insufficient';
+          shortageQty = requiredQty - availableKitchenQty;
+        }
+
+        return {
+          ingredientId: ri.subRecipeId,
+          ingredientName: `${subName} (Prepared Sub-Recipe)`,
+          requiredQty,
+          availableKitchenQty,
+          storeAvailableQty: 0,
+          inTransitQty: 0,
+          unit: subUnit,
+          status,
+          shortageQty,
+          isSubRecipe: true,
+          subRecipeId: ri.subRecipeId,
+        };
+      }
+
+      // Raw Ingredient Input Line
       const ing = ingredients.find((i) => i.id === ri.ingredientId);
       const ingredientName = ing ? ing.name : 'Unknown Ingredient';
       const unit = ing ? ing.consumptionUnit : 'units';
       const unitCost = ing ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
 
-      // Base quantity calculation: batchQuantity or per-plate * batchYield
       const rawRequired = (ri.batchQuantity ?? (ri.quantity * (recipe.batchYieldPlates || 1))) * multiplier;
-      const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
-      const requiredQty = Math.round(rawRequired / yieldFactor);
+      const standardReq = Math.round(rawRequired / yieldFactor);
+      const requiredQty =
+        actualInputs && actualInputs[ri.ingredientId] !== undefined
+          ? Math.max(0, Math.round(actualInputs[ri.ingredientId]))
+          : standardReq;
 
       const availableKitchenQty = ing?.kitchenStockUnits ?? 0;
       const storeAvailableQty = ing?.storeStockUnits ?? 0;
-
-      // Calculate in-transit quantity awaiting kitchen receipt confirmation
       const inTransitQty = stockMovements
         .filter((m) => m.ingredientId === ri.ingredientId && m.transferStatus === 'in_transit')
         .reduce((sum, m) => sum + Math.abs(m.quantityDelta), 0);
+
+      const subIng = ri.substituteIngredientId
+        ? ingredients.find((i) => i.id === ri.substituteIngredientId)
+        : undefined;
 
       totalCost += Math.round(requiredQty * unitCost);
 
@@ -2080,6 +2836,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         unit,
         status,
         shortageQty,
+        substituteIngredientId: subIng?.id,
+        substituteIngredientName: subIng?.name,
+        substituteKitchenQty: subIng?.kitchenStockUnits ?? 0,
       };
     });
 
@@ -2093,11 +2852,12 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
   };
 
-  // COOK BATCH PRODUCTION: All-or-nothing atomic deduction from Kitchen Stock
+  // COOK BATCH PRODUCTION: Supports Finished Batches, Sub-Recipes, and Method 2 Semi-Standardized Input Overrides
   const cookBatchProduction = (params: {
     recipeId: string;
     batches: number;
     actualPlatesProduced?: number;
+    actualInputs?: Record<string, number>;
     chefName?: string;
     managerOverride?: boolean;
     overrideReason?: string;
@@ -2105,16 +2865,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const recipe = recipes.find((r) => r.id === params.recipeId);
     if (!recipe) return { success: false, error: 'Recipe not found in Master Data' };
 
-    const validation = validateBatchKitchenStock(params.recipeId, params.batches);
+    const validation = validateBatchKitchenStock(params.recipeId, params.batches, params.actualInputs);
+    const stdValidation = params.actualInputs
+      ? validateBatchKitchenStock(params.recipeId, params.batches)
+      : validation;
 
-    // If validation fails and not manager override -> BLOCK ATOMICALLY & LOG PROCESS AUDIT
     if (!validation.canCook && !params.managerOverride) {
       const blockedReasons = validation.missingItems
         .filter((m) => m.status !== 'ok')
         .map(
           (m) =>
             `${m.ingredientName}: required ${m.requiredQty.toLocaleString()} ${m.unit}, available ${m.availableKitchenQty.toLocaleString()} ${m.unit} (${
-              m.status === 'not_transferred' ? 'not transferred to kitchen' : `short by ${m.shortageQty.toLocaleString()} ${m.unit}`
+              m.isSubRecipe
+                ? 'cook sub-recipe batch first'
+                : m.status === 'not_transferred'
+                ? 'not transferred to kitchen'
+                : `short by ${m.shortageQty.toLocaleString()} ${m.unit}`
             })`
         )
         .join('; ');
@@ -2135,7 +2901,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
       addNotification({
         title: 'Batch Cooking Blocked',
-        message: `Attempt to cook ${recipe.name} blocked: raw ingredients not transferred to kitchen floor.`,
+        message: `Attempt to cook ${recipe.name} blocked: missing raw stock or sub-recipe batch in Kitchen.`,
         type: 'kitchen',
         actionRole: 'manager',
         actionLabel: 'View Blocked Logs',
@@ -2147,134 +2913,399 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       };
     }
 
-    const actualPlates = params.actualPlatesProduced || validation.targetYieldPlates;
-    const costPerPlate = actualPlates > 0 ? Math.round(validation.totalCost / actualPlates) : 0;
+    const actualOutputQty = params.actualPlatesProduced || validation.targetYieldPlates;
+    const costPerUnit = actualOutputQty > 0 ? validation.totalCost / actualOutputQty : 0;
+    const costPerPlate = Math.round(costPerUnit);
     const today = new Date().toISOString().split('T')[0];
     const timestampStr = `${today} ${new Date().toTimeString().substring(0, 5)}`;
-    const consumedDetails: {
-      ingredientId: string;
-      ingredientName: string;
-      quantity: number;
-      unit: string;
-      cost: number;
-    }[] = [];
+    const expiryDt = recipe.shelfLifeHours
+      ? new Date(Date.now() + recipe.shelfLifeHours * 3600000)
+          .toISOString()
+          .replace('T', ' ')
+          .substring(0, 16)
+      : undefined;
+    const batchNumber = `${recipe.isSubRecipe ? 'SUB' : 'BATCH'}-${(recipe.code || recipe.id.slice(-3)).replace(/[^A-Z0-9]/gi, '').slice(0, 4).toUpperCase()}-${Date.now().toString().slice(-4)}`;
+
+    const consumedDetails: ProductionLog['ingredientsConsumed'] = [];
+    const inputAdjustments: NonNullable<ProductionLog['actualInputAdjustments']> = [];
     const newMovements: StockMovement[] = [];
 
-    // All-or-nothing: deduct each required line from kitchen stock
-    setIngredients((prev) => {
-      const copy = [...prev];
-      validation.missingItems.forEach((req) => {
-        const idx = copy.findIndex((ing) => ing.id === req.ingredientId);
-        if (idx >= 0) {
-          const ing = copy[idx];
-          const kStock = Math.max(0, (ing.kitchenStockUnits ?? 0) - req.requiredQty);
-          const sStock = ing.storeStockUnits ?? 0;
-          const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
-          const lineCost = Math.round(unitCost * req.requiredQty);
+    const rawRequirements = validation.missingItems.filter((m) => !m.isSubRecipe);
+    const subRequirements = validation.missingItems.filter((m) => m.isSubRecipe && m.subRecipeId);
+
+    // Record Semi-Standardized actual vs standard input variances
+    validation.missingItems.forEach((req, idx) => {
+      const stdReq = stdValidation.missingItems[idx]?.requiredQty ?? req.requiredQty;
+      if (stdReq !== req.requiredQty) {
+        inputAdjustments.push({
+          ingredientId: req.ingredientId,
+          ingredientName: req.ingredientName,
+          standardQty: stdReq,
+          actualQty: req.requiredQty,
+          unit: req.unit,
+        });
+      }
+    });
+
+    // 1. Deduct Sub-Recipe Inputs (FEFO)
+    if (subRequirements.length > 0) {
+      setSubRecipeBatches((prev) => {
+        const copy = prev.map((b) => ({ ...b }));
+        subRequirements.forEach((req) => {
+          let rem = req.requiredQty;
+          const candidates = copy
+            .filter(
+              (b) =>
+                b.subRecipeId === req.subRecipeId &&
+                b.remainingQty > 0 &&
+                b.status !== 'reversed' &&
+                b.status !== 'expired'
+            )
+            .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
+
+          let subLineCost = 0;
+          for (const sb of candidates) {
+            if (rem <= 0) break;
+            const take = Math.min(sb.remainingQty, rem);
+            sb.remainingQty = Math.round((sb.remainingQty - take) * 100) / 100;
+            sb.status =
+              sb.remainingQty <= 0
+                ? 'consumed'
+                : sb.remainingQty <= sb.producedQty * 0.2
+                ? 'low'
+                : 'available';
+            subLineCost += Math.round(take * sb.costPerUnit);
+            rem -= take;
+          }
 
           consumedDetails.push({
-            ingredientId: ing.id,
-            ingredientName: ing.name,
+            ingredientId: req.ingredientId,
+            ingredientName: req.ingredientName,
             quantity: req.requiredQty,
-            unit: ing.consumptionUnit,
-            cost: lineCost,
+            unit: req.unit,
+            cost: subLineCost,
+            isSubRecipe: true,
+            subRecipeId: req.subRecipeId,
           });
 
-          copy[idx] = {
-            ...ing,
-            kitchenStockUnits: kStock,
-            currentStockUnits: kStock + sStock,
-          };
-
           newMovements.push({
-            id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-            ingredientId: ing.id,
-            ingredientName: ing.name,
-            type: 'kitchen_consumption',
+            id: `sm-prod-sub-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+            ingredientId: req.ingredientId,
+            ingredientName: req.ingredientName,
+            type: 'production_issue',
             quantityDelta: -req.requiredQty,
-            unit: ing.consumptionUnit,
-            costImpact: lineCost,
+            unit: req.unit,
+            costImpact: subLineCost,
             date: today,
-            reference: `PROD-${actualPlates}P`,
-            reason: `Batch cooking ${params.batches} batch (${actualPlates} plates) of ${recipe.name || 'Dish'}`,
+            reference: batchNumber,
+            batchNumber,
+            recipeId: recipe.id,
+            reason: `Issued prepared sub-recipe into ${batchNumber} (${recipe.name})`,
             recordedBy: params.chefName || 'Executive Chef Juma',
             sourceLocation: 'kitchen',
           });
-        }
+        });
+        return copy;
       });
-      return copy;
-    });
+    }
+
+    // 2. Deduct Raw Ingredients from Kitchen Stock + FEFO/FIFO lots
+    if (rawRequirements.length > 0) {
+      setIngredients((prev) => {
+        const copy = [...prev];
+        rawRequirements.forEach((req) => {
+          const idx = copy.findIndex((ing) => ing.id === req.ingredientId);
+          if (idx >= 0) {
+            const ing = copy[idx];
+            const kStock = Math.max(0, (ing.kitchenStockUnits ?? 0) - req.requiredQty);
+            const sStock = ing.storeStockUnits ?? 0;
+            const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+            const lineCost = Math.round(unitCost * req.requiredQty);
+
+            consumeStockLots(ing.id, req.requiredQty, 'kitchen');
+
+            consumedDetails.push({
+              ingredientId: ing.id,
+              ingredientName: ing.name,
+              quantity: req.requiredQty,
+              unit: ing.consumptionUnit,
+              cost: lineCost,
+            });
+
+            copy[idx] = {
+              ...ing,
+              kitchenStockUnits: kStock,
+              currentStockUnits: kStock + sStock,
+            };
+
+            newMovements.push({
+              id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              ingredientId: ing.id,
+              ingredientName: ing.name,
+              type: 'production_issue',
+              quantityDelta: -req.requiredQty,
+              unit: ing.consumptionUnit,
+              costImpact: lineCost,
+              date: today,
+              reference: batchNumber,
+              batchNumber,
+              recipeId: recipe.id,
+              reason: `Batch production ${batchNumber} (${actualOutputQty.toLocaleString()} ${recipe.yieldUnit || 'plates'}) of ${recipe.name || 'Dish'}`,
+              recordedBy: params.chefName || 'Executive Chef Juma',
+              sourceLocation: 'kitchen',
+            });
+          }
+        });
+        return copy;
+      });
+    }
+
+    // 3. Output Stage: Sub-Recipe Stock Batch OR Finished Prepared Dish Pool
+    const targetMenuItemId = recipe.menuItemId || recipe.id;
+    if (recipe.isSubRecipe) {
+      const outputUnit = recipe.yieldUnit || 'grams';
+      const newSubBatch: SubRecipeStockBatch = {
+        id: `subb-${Date.now()}`,
+        batchNumber,
+        subRecipeId: recipe.id,
+        name: recipe.name || 'Prepared Sub-Recipe',
+        producedQty: actualOutputQty,
+        remainingQty: actualOutputQty,
+        unit: outputUnit,
+        totalCost: validation.totalCost,
+        costPerUnit: Math.round(costPerUnit * 100) / 100,
+        preparedAt: timestampStr,
+        expiresAt: expiryDt || `${today} 23:59`,
+        preparedBy: params.chefName || 'Executive Chef Juma',
+        status: 'available',
+      };
+      setSubRecipeBatches((prev) => [newSubBatch, ...prev]);
+
+      newMovements.push({
+        id: `sm-out-${Date.now()}`,
+        ingredientId: recipe.id,
+        ingredientName: `${recipe.name} [Prepared Sub-Recipe]`,
+        type: 'production_output',
+        quantityDelta: actualOutputQty,
+        unit: outputUnit,
+        costImpact: validation.totalCost,
+        date: today,
+        reference: batchNumber,
+        batchNumber,
+        recipeId: recipe.id,
+        reason: `Produced sub-recipe batch ${batchNumber} (${formatMoney(Math.round(costPerUnit * 100) / 100)}/${outputUnit})`,
+        recordedBy: params.chefName || 'Executive Chef Juma',
+        destinationLocation: 'kitchen',
+      });
+    } else {
+      setPreparedDishStocks((prev) => {
+        const exists = prev.find((p) => p.menuItemId === targetMenuItemId);
+        if (exists) {
+          return prev.map((p) =>
+            p.menuItemId === targetMenuItemId
+              ? {
+                  ...p,
+                  preparedPlatesAvailable: p.preparedPlatesAvailable + actualOutputQty,
+                  totalCookedToday: p.totalCookedToday + actualOutputQty,
+                  lastCookedAt: timestampStr,
+                  status: 'ready',
+                }
+              : p
+          );
+        }
+        return [
+          {
+            menuItemId: targetMenuItemId,
+            dishName: recipe.name || 'Dish',
+            preparedPlatesAvailable: actualOutputQty,
+            totalCookedToday: actualOutputQty,
+            totalSoldToday: 0,
+            lastCookedAt: timestampStr,
+            status: 'ready',
+          },
+          ...prev,
+        ];
+      });
+    }
 
     if (newMovements.length > 0) {
       setStockMovements((prev) => [...newMovements, ...prev]);
     }
 
-    // Save Production Log
-    const targetMenuItemId = recipe.menuItemId || recipe.id;
     const newProdLog: ProductionLog = {
       id: `prod-${Date.now()}`,
+      batchNumber,
       recipeId: recipe.id,
+      recipeVersion: recipe.version,
       menuItemId: targetMenuItemId,
       dishName: recipe.name || 'Dish',
+      productionType: recipe.isSubRecipe
+        ? 'sub_recipe'
+        : recipe.productionMethod === 'semi_standardized'
+        ? 'semi_standardized'
+        : 'batch_finished',
       batchesCooked: params.batches,
       targetYieldPlates: validation.targetYieldPlates,
-      actualPlatesProduced: actualPlates,
+      actualPlatesProduced: actualOutputQty,
+      unitLabel: recipe.yieldUnit || 'plates',
       totalCost: validation.totalCost,
       costPerPlate,
       cookedBy: params.chefName || 'Executive Chef Juma',
       timestamp: timestampStr,
-      remainingPlates: actualPlates,
+      expiryDate: expiryDt,
+      remainingPlates: actualOutputQty,
+      status: 'completed',
       ingredientsConsumed: consumedDetails,
+      actualInputAdjustments: inputAdjustments.length > 0 ? inputAdjustments : undefined,
       managerOverride: params.managerOverride,
       overrideReason: params.overrideReason,
     };
 
     setProductionLogs((prev) => [newProdLog, ...prev]);
 
-    // Update Prepared Dish Stock available pool
-    setPreparedDishStocks((prev) => {
-      const exists = prev.find((p) => p.menuItemId === targetMenuItemId);
-      if (exists) {
-        return prev.map((p) =>
-          p.menuItemId === targetMenuItemId
-            ? {
-                ...p,
-                preparedPlatesAvailable: p.preparedPlatesAvailable + actualPlates,
-                totalCookedToday: p.totalCookedToday + actualPlates,
-                lastCookedAt: timestampStr,
-                status: 'ready',
-              }
-            : p
-        );
-      }
-      return [
-        {
-          menuItemId: targetMenuItemId,
-          dishName: recipe.name || 'Dish',
-          preparedPlatesAvailable: actualPlates,
-          totalCookedToday: actualPlates,
-          totalSoldToday: 0,
-          lastCookedAt: timestampStr,
-          status: 'ready',
-        },
-        ...prev,
-      ];
-    });
-
     addNotification({
-      title: 'Batch Production Complete',
-      message: `Cooked ${actualPlates} plates of ${recipe.name} (Unit COGS: ${formatMoney(costPerPlate)}/plate). Stock deducted from Kitchen.`,
+      title: recipe.isSubRecipe ? 'Sub-Recipe Batch Prepared' : 'Batch Production Complete',
+      message: `${batchNumber}: Produced ${actualOutputQty.toLocaleString()} ${recipe.yieldUnit || 'plates'} of ${recipe.name}. Raw & sub-recipe stock updated.`,
       type: 'kitchen',
       actionRole: 'kitchen',
-      actionLabel: 'View Prepared Plates',
+      actionLabel: 'View Production Batches',
     });
 
     return { success: true, log: newProdLog };
   };
 
+  // Controlled Production Reversal (preserves complete audit trail, never deletes records)
+  const reverseProductionBatch = (
+    productionLogId: string,
+    reason: string,
+    actor: string = 'David Kasambala (Manager)'
+  ): { success: boolean; error?: string } => {
+    const log = productionLogs.find((l) => l.id === productionLogId);
+    if (!log) return { success: false, error: 'Production log not found.' };
+    if (log.status === 'reversed') return { success: false, error: 'Batch has already been reversed.' };
+
+    const today = new Date().toISOString().split('T')[0];
+    const nowStr = `${today} ${new Date().toTimeString().substring(0, 5)}`;
+
+    let recoverableRatio = 1;
+    if (log.productionType === 'sub_recipe') {
+      const subBatch = subRecipeBatches.find((sb) => sb.batchNumber === log.batchNumber);
+      if (subBatch && subBatch.producedQty > 0) {
+        recoverableRatio = subBatch.remainingQty / subBatch.producedQty;
+        setSubRecipeBatches((prev) =>
+          prev.map((sb) =>
+            sb.batchNumber === log.batchNumber ? { ...sb, remainingQty: 0, status: 'reversed' } : sb
+          )
+        );
+      }
+    } else {
+      const unSold = Math.max(0, log.remainingPlates);
+      recoverableRatio = log.actualPlatesProduced > 0 ? unSold / log.actualPlatesProduced : 0;
+      if (unSold > 0) {
+        setPreparedDishStocks((prev) =>
+          prev.map((p) => {
+            if (p.menuItemId !== log.menuItemId) return p;
+            const nextAvail = Math.max(0, p.preparedPlatesAvailable - unSold);
+            return {
+              ...p,
+              preparedPlatesAvailable: nextAvail,
+              totalCookedToday: Math.max(0, p.totalCookedToday - unSold),
+              status: nextAvail === 0 ? 'out_of_stock' : nextAvail <= 10 ? 'low' : 'ready',
+            };
+          })
+        );
+      }
+    }
+
+    // Return unconsumed portion of raw / sub-recipe inputs back to Kitchen stock and record reversal movements
+    const reversalMovements: StockMovement[] = [];
+    if (recoverableRatio > 0) {
+      log.ingredientsConsumed.forEach((ic) => {
+        const restoreQty = Math.round(ic.quantity * recoverableRatio);
+        if (restoreQty <= 0) return;
+
+        if (ic.isSubRecipe && ic.subRecipeId) {
+          setSubRecipeBatches((prev) =>
+            prev.map((sb) =>
+              sb.subRecipeId === ic.subRecipeId && sb.status !== 'reversed'
+                ? { ...sb, remainingQty: sb.remainingQty + restoreQty, status: 'available' }
+                : sb
+            )
+          );
+        } else {
+          setIngredients((prev) =>
+            prev.map((ing) =>
+              ing.id === ic.ingredientId
+                ? {
+                    ...ing,
+                    kitchenStockUnits: (ing.kitchenStockUnits ?? 0) + restoreQty,
+                    currentStockUnits: (ing.kitchenStockUnits ?? 0) + restoreQty + (ing.storeStockUnits ?? 0),
+                  }
+                : ing
+            )
+          );
+        }
+
+        reversalMovements.push({
+          id: `sm-rev-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          ingredientId: ic.ingredientId,
+          ingredientName: ic.ingredientName,
+          type: 'production_reversal',
+          quantityDelta: restoreQty,
+          unit: ic.unit,
+          costImpact: Math.round(ic.cost * recoverableRatio),
+          date: today,
+          reference: log.batchNumber || log.id,
+          batchNumber: log.batchNumber,
+          recipeId: log.recipeId,
+          reason: `Controlled batch reversal (${Math.round(recoverableRatio * 100)}% unused): ${reason}`,
+          recordedBy: actor,
+          destinationLocation: 'kitchen',
+          isReversed: true,
+        });
+      });
+    }
+
+    if (reversalMovements.length > 0) {
+      setStockMovements((prev) => [...reversalMovements, ...prev]);
+    }
+
+    setProductionLogs((prev) =>
+      prev.map((pl) =>
+        pl.id === productionLogId
+          ? {
+              ...pl,
+              remainingPlates: 0,
+              status: 'reversed',
+              reversedAt: nowStr,
+              reversedBy: actor,
+              reversalReason: reason,
+            }
+          : pl
+      )
+    );
+
+    logAuditEvent({
+      actor,
+      actorRole: 'manager',
+      action: 'PRODUCTION_BATCH_REVERSED',
+      details: `Controlled reversal of ${log.batchNumber || log.dishName} (${Math.round(recoverableRatio * 100)}% unused output restored). Reason: ${reason}`,
+    });
+
+    addNotification({
+      title: 'Production Batch Reversed',
+      message: `${log.batchNumber || log.dishName} reversed by ${actor}. Audit trail preserved.`,
+      type: 'stock',
+      actionRole: 'manager',
+      actionLabel: 'View Movement Ledger',
+    });
+
+    return { success: true };
+  };
+
   // One-Click Requisition for Missing Batch Ingredients (Store -> Kitchen)
   const createRequisitionForMissing = (missingItems: MissingStockItem[], shift: string = 'Daily Operation Prep'): boolean => {
-    const shortages = missingItems.filter((m) => m.status !== 'ok');
+    const shortages = missingItems.filter((m) => m.status !== 'ok' && !m.isSubRecipe);
     if (shortages.length === 0) return true;
 
     let transfersDone = 0;
@@ -2330,7 +3361,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
 
     const recipe = recipes.find((r) => r.menuItemId === menuItemId);
-    const cogsPerPlate = 2685;
+    const latestLog = productionLogs.find(
+      (pl) => pl.menuItemId === menuItemId && pl.status !== 'reversed' && pl.costPerPlate > 0
+    );
+    const cogsPerPlate =
+      latestLog?.costPerPlate || (recipe ? computeRecipeUnitCost(recipe.id).perPlateCost : 2500);
     const totalImpact = Math.round(platesCount * cogsPerPlate);
     const today = new Date().toISOString().split('T')[0];
 
@@ -2383,6 +3418,67 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return true;
   };
 
+  // Recompute Theoretical vs Actual Variance dynamically from live movements & physical counts (never modifies approved recipes!)
+  const recomputeDailyVariance = () => {
+    const today = new Date().toISOString().split('T')[0];
+    setDailyReconciliations((prev) => {
+      const existingMap = new Map(prev.map((item) => [item.ingredientId, item]));
+      return ingredients.slice(0, 8).map((ing) => {
+        const existing = existingMap.get(ing.id);
+        const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+        const transferredToday = stockMovements
+          .filter(
+            (m) =>
+              m.ingredientId === ing.id &&
+              m.type === 'stock_transfer' &&
+              m.destinationLocation === 'kitchen' &&
+              m.date === today
+          )
+          .reduce((s, m) => s + Math.abs(m.quantityDelta), 0);
+        const theoreticalToday = stockMovements
+          .filter(
+            (m) =>
+              m.ingredientId === ing.id &&
+              (m.type === 'kitchen_consumption' || m.type === 'production_issue' || m.type === 'direct_consumption') &&
+              m.date === today
+          )
+          .reduce((s, m) => s + Math.abs(m.quantityDelta), 0);
+
+        const opening = existing?.openingKitchenStock ?? Math.max(0, (ing.kitchenStockUnits ?? 0) + theoreticalToday - transferredToday);
+        const expectedClosing = Math.max(0, opening + transferredToday - theoreticalToday);
+        const actualCounted = existing?.actualCountedStock ?? (ing.kitchenStockUnits ?? expectedClosing);
+        const varianceQty = actualCounted - expectedClosing;
+        const varianceCost = Math.round(Math.abs(varianceQty) * unitCost);
+        let varianceType: DailyReconciliationItem['varianceType'] = 'match';
+        if (varianceQty < 0) {
+          varianceType =
+            Math.abs(varianceQty) > Math.max(1, expectedClosing) * 0.1
+              ? 'unaccounted_loss'
+              : 'over_portioning';
+        } else if (varianceQty > 0) {
+          varianceType = 'surplus';
+        }
+
+        return {
+          ingredientId: ing.id,
+          ingredientName: ing.name,
+          unit: ing.consumptionUnit,
+          openingKitchenStock: opening,
+          transferredToKitchen: transferredToday || (existing?.transferredToKitchen ?? 0),
+          theoreticalUsage: theoreticalToday || (existing?.theoreticalUsage ?? 0),
+          actualUsage: Math.max(0, opening + (transferredToday || (existing?.transferredToKitchen ?? 0)) - actualCounted),
+          expectedClosingStock: expectedClosing,
+          actualCountedStock: actualCounted,
+          varianceQty,
+          varianceCost,
+          varianceType,
+          status: existing?.status ?? 'pending',
+          notes: existing?.notes,
+        };
+      });
+    });
+  };
+
   const updateDailyReconciliationCount = (ingredientId: string, actualCount: number, notes?: string) => {
     setDailyReconciliations((prev) =>
       prev.map((item) => {
@@ -2393,13 +3489,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           const varianceCost = Math.round(Math.abs(varianceQty) * unitCost);
           let varianceType: DailyReconciliationItem['varianceType'] = 'match';
           if (varianceQty < 0) {
-            varianceType = Math.abs(varianceQty) > item.expectedClosingStock * 0.1 ? 'unaccounted_loss' : 'over_portioning';
+            varianceType = Math.abs(varianceQty) > Math.max(1, item.expectedClosingStock) * 0.1 ? 'unaccounted_loss' : 'over_portioning';
           } else if (varianceQty > 0) {
             varianceType = 'surplus';
           }
           return {
             ...item,
             actualCountedStock: actualCount,
+            actualUsage: Math.max(0, item.openingKitchenStock + item.transferredToKitchen - actualCount),
             varianceQty,
             varianceCost,
             varianceType,
@@ -2416,21 +3513,36 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const newMovements: StockMovement[] = [];
     const today = new Date().toISOString().split('T')[0];
 
+    // Sync kitchen physical stock to actual counted stock (never alters approved recipes!)
+    const countedMap = new Map(dailyReconciliations.map((d) => [d.ingredientId, d.actualCountedStock]));
+    setIngredients((prev) =>
+      prev.map((ing) => {
+        const counted = countedMap.get(ing.id);
+        if (counted === undefined) return ing;
+        const sStock = ing.storeStockUnits ?? 0;
+        return {
+          ...ing,
+          kitchenStockUnits: Math.max(0, counted),
+          currentStockUnits: Math.max(0, counted) + sStock,
+        };
+      })
+    );
+
     setDailyReconciliations((prev) =>
       prev.map((item) => {
         totalVariance += item.varianceCost;
-        if (item.varianceQty < 0) {
+        if (item.varianceQty !== 0) {
           newMovements.push({
             id: `sm-${Date.now()}-${item.ingredientId}`,
             ingredientId: item.ingredientId,
             ingredientName: item.ingredientName,
-            type: 'wastage_spoilage',
+            type: 'reconciliation_adjustment',
             quantityDelta: item.varianceQty,
             unit: item.unit,
             costImpact: item.varianceCost,
             date: today,
             reference: `RECON-${today}`,
-            reason: `Daily Kitchen Reconciliation: ${item.varianceType.replace(/_/g, ' ')} (${item.notes || 'Physical stock count variance'})`,
+            reason: `Physical closing variance (${item.varianceType.replace(/_/g, ' ')}): ${item.notes || 'End-of-day stock count'}`,
             recordedBy: staffName,
             sourceLocation: 'kitchen',
           });
@@ -2445,7 +3557,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     addNotification({
       title: 'Daily Stock Reconciliation Committed',
-      message: `Reconciliation audit finalized by ${staffName}. Variance impact: ${formatMoney(totalVariance)}.`,
+      message: `Physical closing counts synced by ${staffName}. Variance impact: ${formatMoney(totalVariance)}. Approved recipes unchanged.`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'View Audit Ledger',
@@ -2454,40 +3566,387 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return { success: true, totalVarianceCost: totalVariance };
   };
 
-  // Staff Advances & Waiter Stats
-  const addAdvanceRequest = (employeeId: string, amount: number, reason: string) => {
+  // Staff Advances, Employee Directory & Waiter Stats
+  const addAdvanceRequest = (
+    employeeId: string,
+    amount: number,
+    reason: string,
+    options?: { autoApprove?: boolean; repaymentMonth?: string; approvedBy?: string }
+  ) => {
+    const cleanAmount = Math.max(0, Math.round(Number(amount) || 0));
+    if (cleanAmount <= 0) return;
+    const isAuto = options?.autoApprove !== false;
+    const emp = employees.find((e) => e.id === employeeId);
     setEmployees((prev) =>
-      prev.map((emp) =>
-        emp.id === employeeId
+      prev.map((e) =>
+        e.id === employeeId
           ? {
-              ...emp,
+              ...e,
               advances: [
-                ...emp.advances,
+                ...e.advances,
                 {
                   id: `adv-${Date.now()}`,
-                  amount,
+                  amount: cleanAmount,
                   date: new Date().toISOString().split('T')[0],
-                  approved: true,
-                  reason,
+                  approved: isAuto,
+                  status: isAuto ? 'approved' : 'pending',
+                  reason: reason.trim() || 'Staff salary advance',
+                  approvedBy: isAuto ? options?.approvedBy || 'Manager' : undefined,
+                  repaymentMonth: options?.repaymentMonth || new Date().toISOString().slice(0, 7),
                 },
               ],
             }
-          : emp
+          : e
+      )
+    );
+    logAuditEvent({
+      actor: options?.approvedBy || 'HR / Reception',
+      actorRole: activeRole,
+      action: isAuto ? 'SALARY_ADVANCE_APPROVED' : 'SALARY_ADVANCE_REQUESTED',
+      details: `${emp?.name || employeeId}: ${formatMoney(cleanAmount)} (${reason.trim()})`,
+    });
+  };
+
+  const approveAdvance = (employeeId: string, advanceId: string, approvedBy: string = 'Manager') => {
+    const emp = employees.find((e) => e.id === employeeId);
+    const adv = emp?.advances.find((a) => a.id === advanceId);
+    setEmployees((prev) =>
+      prev.map((e) =>
+        e.id === employeeId
+          ? {
+              ...e,
+              advances: e.advances.map((a) =>
+                a.id === advanceId
+                  ? { ...a, approved: true, status: 'approved', approvedBy }
+                  : a
+              ),
+            }
+          : e
+      )
+    );
+    if (emp && adv) {
+      logAuditEvent({
+        actor: approvedBy,
+        actorRole: activeRole,
+        action: 'SALARY_ADVANCE_APPROVED',
+        details: `Approved ${formatMoney(adv.amount)} advance for ${emp.name}`,
+      });
+    }
+  };
+
+  const rejectAdvance = (employeeId: string, advanceId: string, reason?: string) => {
+    const emp = employees.find((e) => e.id === employeeId);
+    const adv = emp?.advances.find((a) => a.id === advanceId);
+    setEmployees((prev) =>
+      prev.map((e) =>
+        e.id === employeeId
+          ? {
+              ...e,
+              advances: e.advances.map((a) =>
+                a.id === advanceId
+                  ? {
+                      ...a,
+                      approved: false,
+                      status: 'rejected',
+                      reason: reason ? `${a.reason} [Rejected: ${reason}]` : a.reason,
+                    }
+                  : a
+              ),
+            }
+          : e
+      )
+    );
+    if (emp && adv) {
+      logAuditEvent({
+        actor: 'Manager',
+        actorRole: activeRole,
+        action: 'SALARY_ADVANCE_REJECTED',
+        details: `Rejected ${formatMoney(adv.amount)} advance for ${emp.name}${reason ? ` (${reason})` : ''}`,
+      });
+    }
+  };
+
+  const markAdvanceRepaid = (employeeId: string, advanceId: string) => {
+    const emp = employees.find((e) => e.id === employeeId);
+    const adv = emp?.advances.find((a) => a.id === advanceId);
+    setEmployees((prev) =>
+      prev.map((e) =>
+        e.id === employeeId
+          ? {
+              ...e,
+              advances: e.advances.map((a) =>
+                a.id === advanceId
+                  ? { ...a, approved: false, status: 'repaid' }
+                  : a
+              ),
+            }
+          : e
+      )
+    );
+    if (emp && adv) {
+      logAuditEvent({
+        actor: 'Cashier / HR',
+        actorRole: activeRole,
+        action: 'SALARY_ADVANCE_REPAID',
+        details: `${emp.name} repaid ${formatMoney(adv.amount)} advance in cash`,
+      });
+    }
+  };
+
+  const updateAdvance = (employeeId: string, advanceId: string, amount: number, reason: string) => {
+    const cleanAmount = Math.max(0, Math.round(Number(amount) || 0));
+    if (cleanAmount <= 0) return;
+    setEmployees((prev) =>
+      prev.map((e) =>
+        e.id === employeeId
+          ? {
+              ...e,
+              advances: e.advances.map((a) =>
+                a.id === advanceId ? { ...a, amount: cleanAmount, reason: reason.trim() || a.reason } : a
+              ),
+            }
+          : e
       )
     );
   };
 
-  const approveAdvance = (employeeId: string, advanceId: string) => {
+  const addEmployee = (emp: Omit<Employee, 'id' | 'employeeNumber' | 'advances'>): Employee => {
+    const nextNum = employees.length + 1;
+    const empNumber = `EMP-${String(nextNum).padStart(3, '0')}`;
+    const newEmp: Employee = {
+      ...emp,
+      id: `emp-${Date.now()}`,
+      employeeNumber: empNumber,
+      advances: [],
+    };
+    setEmployees((prev) => [...prev, newEmp]);
+
+    if (emp.role === 'waiter') {
+      const codeBase = emp.name
+        .trim()
+        .split(/\s+/)[0]
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '') || 'STAFF';
+      const newWaiter: Waiter = {
+        id: `waiter-${Date.now()}`,
+        name: emp.name,
+        phone: emp.phone,
+        email: emp.email || `${codeBase.toLowerCase()}@savannagrill.com`,
+        referralCode: `WAITER_${codeBase}_${nextNum}`,
+        active: emp.status === 'active',
+        commissionRate: defaultCommissionMode === 'percent' ? defaultCommissionValue / 100 : 0.05,
+      };
+      setWaiters((prev) => [...prev, newWaiter]);
+    }
+
+    logAuditEvent({
+      actor: 'HR / Manager',
+      actorRole: activeRole,
+      action: 'EMPLOYEE_ONBOARDED',
+      details: `Added ${newEmp.name} (${newEmp.employeeNumber} · ${newEmp.position}) at ${formatMoney(newEmp.baseSalary)}`,
+    });
+    return newEmp;
+  };
+
+  const updateEmployee = (employeeId: string, updates: Partial<Employee>) => {
+    const target = employees.find((e) => e.id === employeeId);
     setEmployees((prev) =>
-      prev.map((emp) =>
-        emp.id === employeeId
-          ? {
-              ...emp,
-              advances: emp.advances.map((a) => (a.id === advanceId ? { ...a, approved: true } : a)),
-            }
-          : emp
+      prev.map((e) => (e.id === employeeId ? { ...e, ...updates } : e))
+    );
+    if (target && updates.status) {
+      setWaiters((prev) =>
+        prev.map((w) =>
+          w.name === target.name ? { ...w, active: updates.status === 'active' } : w
+        )
+      );
+    }
+    if (target) {
+      logAuditEvent({
+        actor: 'HR / Manager',
+        actorRole: activeRole,
+        action: 'EMPLOYEE_UPDATED',
+        details: `Updated staff profile for ${updates.name || target.name}`,
+      });
+    }
+  };
+
+  const toggleWaiterActive = (waiterId: string) => {
+    setWaiters((prev) =>
+      prev.map((w) => (w.id === waiterId ? { ...w, active: !w.active } : w))
+    );
+  };
+
+  const assignOrderWaiter = (orderId: string, waiterId: string) => {
+    const waiter = waiters.find((w) => w.id === waiterId);
+    setOrders((prev) =>
+      prev.map((ord) =>
+        ord.id === orderId
+          ? { ...ord, servingWaiterId: waiterId || undefined, updatedAt: new Date().toISOString() }
+          : ord
       )
     );
+    if (waiter) {
+      logAuditEvent({
+        orderId,
+        actor: 'Reception Desk',
+        actorRole: activeRole,
+        action: 'WAITER_ASSIGNED',
+        details: `Assigned waiter ${waiter.name} to order`,
+      });
+    }
+  };
+
+  // Tanzania TRA PAYE + 10% Employee NSSF calculation helper
+  const computeTraPaye = (taxablePay: number): number => {
+    if (taxablePay <= 270000) return 0;
+    if (taxablePay <= 520000) return Math.round((taxablePay - 270000) * 0.08);
+    if (taxablePay <= 760000) return Math.round(20000 + (taxablePay - 520000) * 0.2);
+    if (taxablePay <= 1000000) return Math.round(68000 + (taxablePay - 760000) * 0.25);
+    return Math.round(128000 + (taxablePay - 1000000) * 0.3);
+  };
+
+  const calculateEmployeePayroll = (employeeId: string, period: string = '2026-11') => {
+    const emp = employees.find((e) => e.id === employeeId);
+    const paymentRecord = payrollPayments.find(
+      (p) => p.employeeId === employeeId && p.period === period
+    );
+    if (!emp) {
+      return {
+        basicSalary: 0,
+        allowances: 0,
+        commission: 0,
+        grossPay: 0,
+        nssfDeduction: 0,
+        payeTax: 0,
+        approvedAdvances: 0,
+        netPayable: 0,
+        isPaidForPeriod: false,
+      };
+    }
+
+    if (paymentRecord) {
+      return {
+        basicSalary: paymentRecord.basicSalary,
+        allowances: paymentRecord.allowances,
+        commission: paymentRecord.commission,
+        grossPay: paymentRecord.grossPay,
+        nssfDeduction: paymentRecord.nssfDeduction,
+        payeTax: paymentRecord.payeTax,
+        approvedAdvances: paymentRecord.advanceDeducted,
+        netPayable: paymentRecord.netPaid,
+        isPaidForPeriod: true,
+        paymentRecord,
+      };
+    }
+
+    const waiterMatch = waiters.find((w) => w.name === emp.name);
+    const commission = waiterMatch ? calculateWaiterStats(waiterMatch.id).earnedCommission : 0;
+    const basicSalary = emp.baseSalary;
+    const allowances = emp.allowances || 0;
+    const grossPay = basicSalary + allowances + commission;
+    const nssfDeduction = Math.round(grossPay * 0.1); // 10% NSSF employee share
+    const taxablePay = Math.max(0, grossPay - nssfDeduction);
+    const payeTax = computeTraPaye(taxablePay);
+    const approvedAdvances = emp.advances
+      .filter((a) => {
+        const st = a.status || (a.approved ? 'approved' : 'pending');
+        return st === 'approved';
+      })
+      .reduce((sum, a) => sum + a.amount, 0);
+    const netPayable = Math.max(0, grossPay - nssfDeduction - payeTax - approvedAdvances);
+
+    return {
+      basicSalary,
+      allowances,
+      commission,
+      grossPay,
+      nssfDeduction,
+      payeTax,
+      approvedAdvances,
+      netPayable,
+      isPaidForPeriod: false,
+    };
+  };
+
+  const recordPayrollPayment = (params: {
+    period: string;
+    employeeIds: string[];
+    method: 'bank_transfer' | 'mpesa' | 'cash';
+    referencePrefix?: string;
+    paidBy?: string;
+  }): PayrollPaymentRecord[] => {
+    const nowIso = new Date().toISOString();
+    const payer = params.paidBy || 'David Kasambala (Manager)';
+    const createdRecords: PayrollPaymentRecord[] = [];
+    const settledEmpIds = new Set<string>();
+
+    params.employeeIds.forEach((empId, idx) => {
+      const emp = employees.find((e) => e.id === empId);
+      if (!emp) return;
+      const calc = calculateEmployeePayroll(empId, params.period);
+      if (calc.isPaidForPeriod) return;
+
+      const rec: PayrollPaymentRecord = {
+        id: `pay-${Date.now()}-${idx}`,
+        period: params.period,
+        employeeId: emp.id,
+        employeeName: emp.name,
+        basicSalary: calc.basicSalary,
+        allowances: calc.allowances,
+        commission: calc.commission,
+        grossPay: calc.grossPay,
+        nssfDeduction: calc.nssfDeduction,
+        payeTax: calc.payeTax,
+        advanceDeducted: calc.approvedAdvances,
+        netPaid: calc.netPayable,
+        method: params.method,
+        reference: `${params.referencePrefix || 'PAY'}-${params.period}-${emp.employeeNumber}`,
+        paidAt: nowIso,
+        paidBy: payer,
+      };
+      createdRecords.push(rec);
+      settledEmpIds.add(emp.id);
+    });
+
+    if (createdRecords.length > 0) {
+      setPayrollPayments((prev) => [...createdRecords, ...prev]);
+      // Mark queued approved advances as 'deducted' so they are never double-deducted next cycle
+      setEmployees((prev) =>
+        prev.map((emp) => {
+          if (!settledEmpIds.has(emp.id)) return emp;
+          const payRec = createdRecords.find((r) => r.employeeId === emp.id);
+          return {
+            ...emp,
+            advances: emp.advances.map((adv) => {
+              const st = adv.status || (adv.approved ? 'approved' : 'pending');
+              if (st !== 'approved') return adv;
+              return {
+                ...adv,
+                status: 'deducted',
+                deductedInPayrollId: payRec?.id,
+              };
+            }),
+          };
+        })
+      );
+
+      const totalNet = createdRecords.reduce((s, r) => s + r.netPaid, 0);
+      addNotification({
+        title: `Payroll Settled (${params.period})`,
+        message: `${createdRecords.length} staff payslips paid (${formatMoney(totalNet)}) via ${params.method.replace('_', ' ').toUpperCase()}.`,
+        type: 'payroll',
+        actionRole: 'manager',
+        actionLabel: 'View Payroll',
+      });
+      logAuditEvent({
+        actor: payer,
+        actorRole: activeRole,
+        action: 'PAYROLL_DISBURSED',
+        details: `Settled ${createdRecords.length} payslips for ${params.period} totaling ${formatMoney(totalNet)} via ${params.method}`,
+      });
+    }
+
+    return createdRecords;
   };
 
   const setDefaultCommissionPolicy = (mode: CommissionMode, value: number) => {
@@ -2572,14 +4031,51 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     );
   };
 
-  const settleWaiterCommission = (waiterId: string, amount?: number) => {
+  const settleWaiterCommission = (
+    waiterId: string,
+    amount?: number,
+    options?: { method?: 'cash' | 'mpesa' | 'bank_transfer'; reference?: string; settledBy?: string }
+  ) => {
     const stats = calculateWaiterStats(waiterId);
-    const settleAmt = amount !== undefined ? Math.max(0, amount) : stats.pendingCommission;
-    if (settleAmt <= 0) return;
+    const waiter = waiters.find((w) => w.id === waiterId);
+    const rawAmt = amount !== undefined ? Math.max(0, amount) : stats.pendingCommission;
+    const settleAmt = Math.min(stats.pendingCommission, Math.round(rawAmt));
+    if (settleAmt <= 0 || !waiter) return;
+
+    const method = options?.method || 'cash';
+    const ref = options?.reference?.trim() || `COMM-${Date.now().toString().slice(-5)}`;
+    const settledBy = options?.settledBy || 'David Kasambala (Manager)';
+
     setSettledCommissionByWaiter((prev) => ({
       ...prev,
       [waiterId]: (prev[waiterId] || 0) + settleAmt,
     }));
+
+    const payout: CommissionPayoutLog = {
+      id: `cp-${Date.now()}`,
+      waiterId,
+      waiterName: waiter.name,
+      amount: settleAmt,
+      method,
+      reference: ref,
+      settledAt: new Date().toISOString(),
+      settledBy,
+    };
+    setCommissionPayouts((prev) => [payout, ...prev]);
+
+    addNotification({
+      title: `Commission Settled (${waiter.name})`,
+      message: `Paid ${formatMoney(settleAmt)} via ${method.replace('_', ' ').toUpperCase()} (Ref: ${ref}).`,
+      type: 'payroll',
+      actionRole: 'manager',
+      actionLabel: 'View Settlements',
+    });
+    logAuditEvent({
+      actor: settledBy,
+      actorRole: activeRole,
+      action: 'COMMISSION_SETTLED',
+      details: `Settled ${formatMoney(settleAmt)} waiter commission to ${waiter.name} via ${method} (${ref})`,
+    });
   };
 
   const calculateWaiterStats = (waiterId: string) => {
@@ -2656,6 +4152,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         updateOrderCommission,
         getOrderCommission,
         settleWaiterCommission,
+        commissionPayouts,
+        toggleWaiterActive,
+        assignOrderWaiter,
         orders,
         tables,
         menuItems,
@@ -2663,6 +4162,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         recipes,
         waiters,
         employees,
+        payrollPayments,
+        calculateEmployeePayroll,
+        recordPayrollPayment,
         cart,
         stockMovements,
         notifications,
@@ -2684,6 +4186,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         submitOrder,
         submitDraftToKitchen,
         updateOrderStatus,
+        fastForwardOrderToServed,
         updateOrderItemStatus,
         rejectOrderItem,
         processPayment,
@@ -2706,9 +4209,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         updateStock,
         recordStockIntake,
         recordWastage,
+        recordDirectConsumption,
         addNewIngredient,
         saveRecipe,
         deleteRecipe,
+        bomDeductionPolicy,
+        setBomDeductionPolicy,
+        stockLots,
+        subRecipeBatches,
+        computeRecipeUnitCost,
         bomAuditLogs,
         productionLogs,
         preparedDishStocks,
@@ -2717,12 +4226,19 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         dailyReconciliations,
         updateDailyReconciliationCount,
         commitDailyReconciliation,
+        recomputeDailyVariance,
         handleLeftoverPreparedPlates,
         validateBatchKitchenStock,
         cookBatchProduction,
+        reverseProductionBatch,
         createRequisitionForMissing,
         addAdvanceRequest,
         approveAdvance,
+        rejectAdvance,
+        markAdvanceRepaid,
+        updateAdvance,
+        addEmployee,
+        updateEmployee,
         calculateWaiterStats,
         cashierShift,
         soundAlertTriggered,

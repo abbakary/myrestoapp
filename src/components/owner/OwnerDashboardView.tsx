@@ -70,6 +70,10 @@ export const OwnerDashboardView: React.FC = () => {
     reviewApprovalRequest,
     promoteCustomItemToMenu,
     getOrderCommission,
+    dailyReconciliations,
+    productionLogs,
+    subRecipeBatches,
+    stockMovements,
   } = useRestaurant();
 
   // User type / persona view selector
@@ -1415,6 +1419,66 @@ export const OwnerDashboardView: React.FC = () => {
                       </span>
                     </div>
                   </div>
+
+                  {/* BOM Production COGS & Consumption Variance Control */}
+                  {(() => {
+                    const bomConsumptionCogs = stockMovements
+                      .filter(
+                        (m) =>
+                          m.type === 'kitchen_consumption' ||
+                          m.type === 'production_issue' ||
+                          m.type === 'direct_consumption' ||
+                          m.type === 'wastage_spoilage'
+                      )
+                      .reduce((sum, m) => sum + Math.abs(m.costImpact || 0), 0);
+                    const subRecipePoolValue = subRecipeBatches
+                      .filter((b) => b.status !== 'reversed' && b.remainingQty > 0)
+                      .reduce((sum, b) => sum + b.remainingQty * b.costPerUnit, 0);
+                    const netVarianceCost = dailyReconciliations.reduce(
+                      (sum, r) => sum + (r.varianceCost || 0),
+                      0
+                    );
+                    const activeBatches = productionLogs.filter((l) => l.status !== 'reversed').length;
+                    const reversedBatches = productionLogs.filter((l) => l.status === 'reversed').length;
+
+                    return (
+                      <div className="pt-2 border-t border-neutral-200 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-extrabold text-neutral-900">
+                            BOM Production COGS &amp; Stock Variance Control
+                          </span>
+                          <span className="text-[11px] font-mono text-neutral-500">
+                            {activeBatches} active batches{reversedBatches > 0 ? ` · ${reversedBatches} reversed` : ''}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-xs">
+                          <div className="p-2.5 bg-white rounded-xl border border-neutral-200">
+                            <div className="text-[11px] text-neutral-500">Ingredient Usage COGS</div>
+                            <div className="font-mono font-bold text-neutral-900 mt-0.5 tabular-nums">
+                              {formatMoney(Math.round(bomConsumptionCogs))}
+                            </div>
+                          </div>
+                          <div className="p-2.5 bg-white rounded-xl border border-neutral-200">
+                            <div className="text-[11px] text-neutral-500">Sub-Recipe Pool Value</div>
+                            <div className="font-mono font-bold text-neutral-900 mt-0.5 tabular-nums">
+                              {formatMoney(Math.round(subRecipePoolValue))}
+                            </div>
+                          </div>
+                          <div className="p-2.5 bg-white rounded-xl border border-neutral-200">
+                            <div className="text-[11px] text-neutral-500">Net Count Variance</div>
+                            <div
+                              className={`font-mono font-bold mt-0.5 tabular-nums ${
+                                netVarianceCost < 0 ? 'text-rose-700' : 'text-emerald-700'
+                              }`}
+                            >
+                              {netVarianceCost > 0 ? '+' : ''}
+                              {formatMoney(Math.round(netVarianceCost))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Pending Approvals + Custom Off-Menu Review */}

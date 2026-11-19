@@ -154,27 +154,17 @@ export const SidebarNav: React.FC = () => {
         </div>
       </div>
 
-      {/* Bottom Profile / Quick User Avatar (Matching Tony Danza in Screenshot 2) */}
+      {/* Bottom Profile / Quick User Avatar */}
       <div className="flex flex-col items-center gap-3 w-full">
-        <div
-          className="relative group cursor-pointer"
+        <button
+          type="button"
           onClick={() => setActiveRole('owner')}
           title="Tony Danza · Restaurant Owner & Admin"
+          aria-label="Tony Danza Owner Profile"
+          className="w-10 h-10 rounded-full border border-neutral-300 bg-neutral-900 text-white flex items-center justify-center font-bold text-xs tracking-tight hover:bg-neutral-800 transition-colors cursor-pointer"
         >
-          <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-orange-500/50 shadow-sm bg-neutral-200">
-            <img
-              src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80"
-              alt="Tony Danza"
-              referrerPolicy="no-referrer"
-              className="w-full h-full object-cover"
-              onError={(e) => {
-                // Fallback avatar
-                (e.target as HTMLImageElement).src = '/src/assets/images/hero_restaurant_dining_1794223268333.jpg';
-              }}
-            />
-          </div>
-          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white" />
-        </div>
+          TD
+        </button>
       </div>
     </aside>
   );

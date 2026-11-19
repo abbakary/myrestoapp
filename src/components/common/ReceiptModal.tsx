@@ -23,10 +23,10 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ order, isOpen, onClo
   const referralWaiter = waiters.find((w) => w.id === order.referralWaiterId);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-      <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden text-neutral-900 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[92vh]">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
+      <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-neutral-200 overflow-hidden text-neutral-900 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[92vh] my-auto">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-100 bg-neutral-50">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-100 bg-neutral-50 shrink-0">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
             <span className="text-xs font-bold uppercase tracking-wider text-neutral-800">
@@ -35,14 +35,14 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ order, isOpen, onClo
           </div>
           <button
             onClick={onClose}
-            className="p-1 text-neutral-400 hover:text-neutral-700 rounded-md transition-colors"
+            className="p-1 text-neutral-400 hover:text-neutral-700 rounded-md transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Thermal Receipt Paper */}
-        <div className="p-6 overflow-y-auto font-mono text-xs text-neutral-800 bg-neutral-50/30">
+        <div className="p-6 overflow-y-auto flex-1 min-h-0 font-mono text-xs text-neutral-800 bg-neutral-50/30">
           <div
             ref={printRef}
             className="bg-white p-5 rounded-lg border border-neutral-200 shadow-xs flex flex-col"
@@ -182,7 +182,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ order, isOpen, onClo
         </div>
 
         {/* Footer Action */}
-        <div className="p-4 bg-white border-t border-neutral-100 flex gap-2">
+        <div className="p-4 bg-white border-t border-neutral-100 flex gap-2 shrink-0">
           <button
             onClick={handlePrint}
             className="w-full flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs"

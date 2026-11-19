@@ -43,7 +43,15 @@ import {
   BookOpen,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { Ingredient, Recipe, StockMovement, MovementType, CommissionMode } from '../../types/restaurant';
+import {
+  Ingredient,
+  Recipe,
+  ProductionMethod,
+  RecipeStatus,
+  BomDeductionPolicy,
+  CommissionMode,
+  StockMovement,
+} from '../../types/restaurant';
 import { AiBomBuilderModal } from './AiBomBuilderModal';
 import { BatchCookingModal } from './BatchCookingModal';
 import { RecipeCardModal } from './RecipeCardModal';
@@ -78,6 +86,14 @@ export const InventoryRecipesView: React.FC = () => {
     handleLeftoverPreparedPlates,
     updateDailyReconciliationCount,
     commitDailyReconciliation,
+    recomputeDailyVariance,
+    bomDeductionPolicy,
+    setBomDeductionPolicy,
+    stockLots,
+    subRecipeBatches,
+    computeRecipeUnitCost,
+    recordDirectConsumption,
+    reverseProductionBatch,
     taxEnabled,
     setTaxEnabled,
     taxRatePct,
@@ -121,11 +137,26 @@ export const InventoryRecipesView: React.FC = () => {
   const [dateFilter, setDateFilter] = useState<'day' | 'week' | 'month' | 'all'>('week');
   const [movementTypeFilter, setMovementTypeFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedRecipeItem, setSelectedRecipeItem] = useState<string>('menu-2');
+  const [selectedRecipeItem, setSelectedRecipeItem] = useState<string>('menu-wali-nyama');
+
+  // BOM Center Sub-tabs & Filters
+  const [recipeSubTab, setRecipeSubTab] = useState<
+    'library' | 'sub_recipes' | 'batches' | 'costing_variants' | 'yield_subs' | 'variance'
+  >('library');
+  const [recipeMethodFilter, setRecipeMethodFilter] = useState<'all' | ProductionMethod>('all');
+  const [recipeStatusFilter, setRecipeStatusFilter] = useState<'all' | RecipeStatus>('all');
+  const [selectedRecipeId, setSelectedRecipeId] = useState<string>('rec-wali-nyama');
+  const [reversingLogId, setReversingLogId] = useState<string | null>(null);
+  const [reversalReason, setReversalReason] = useState<string>('');
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [confirmReturnTransfers, setConfirmReturnTransfers] = useState(false);
+  const [confirmReturnClosing, setConfirmReturnClosing] = useState(false);
+  const [showLotsTable, setShowLotsTable] = useState(false);
 
   // Modals state
   const [isIntakeModalOpen, setIsIntakeModalOpen] = useState(false);
   const [isWastageModalOpen, setIsWastageModalOpen] = useState(false);
+  const [isDirectConsumptionModalOpen, setIsDirectConsumptionModalOpen] = useState(false);
   const [isNewIngredientModalOpen, setIsNewIngredientModalOpen] = useState(false);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
 
@@ -145,12 +176,21 @@ export const InventoryRecipesView: React.FC = () => {
   const [intakeCost, setIntakeCost] = useState<number>(90000);
   const [intakeSupplier, setIntakeSupplier] = useState<string>('Mbeya Farmers Cooperative');
   const [intakeInvoiceRef, setIntakeInvoiceRef] = useState<string>('INV-2026-089');
+  const [intakeExpiryDate, setIntakeExpiryDate] = useState<string>('');
 
   // Wastage Form State
   const [wastageIngredientId, setWastageIngredientId] = useState<string>(ingredients[0]?.id || '');
   const [wastageQuantity, setWastageQuantity] = useState<number>(1500);
   const [wastageLocation, setWastageLocation] = useState<'kitchen' | 'main_store'>('kitchen');
   const [wastageReason, setWastageReason] = useState<string>('Damaged during kitchen peel prep');
+
+  // Direct Consumption Form State (Method 3: No BOM required)
+  const [directIngId, setDirectIngId] = useState<string>(
+    ingredients.find((i) => i.directConsumptionOnly || i.id === 'ing-oil')?.id || ingredients[0]?.id || ''
+  );
+  const [directQty, setDirectQty] = useState<number>(2000);
+  const [directLoc, setDirectLoc] = useState<'kitchen' | 'main_store'>('kitchen');
+  const [directReason, setDirectReason] = useState<string>('Deep fryer oil replenishment (Direct consumption)');
 
   // New Ingredient Form State
   const [newIngName, setNewIngName] = useState('');
@@ -171,8 +211,15 @@ export const InventoryRecipesView: React.FC = () => {
 
   // Batch Production & Recipe Card Modal States
   const [isBatchCookModalOpen, setIsBatchCookModalOpen] = useState(false);
+  const [batchModalRecipe, setBatchModalRecipe] = useState<Recipe | null>(null);
   const [isRecipeCardModalOpen, setIsRecipeCardModalOpen] = useState(false);
   const [recipeCardToEdit, setRecipeCardToEdit] = useState<Recipe | null>(null);
+  const [recipeCardDefaultSubRecipe, setRecipeCardDefaultSubRecipe] = useState<boolean>(false);
+
+  const showActionBanner = (type: 'success' | 'error', text: string) => {
+    setActionFeedback({ type, text });
+    setTimeout(() => setActionFeedback(null), 4500);
+  };
 
   const handleAutoSuggestCatalogue = (nameQuery?: string) => {
     const target = nameQuery || newIngName;
@@ -270,19 +317,52 @@ export const InventoryRecipesView: React.FC = () => {
       ? ((totalWastageCost / (totalConsumptionCost + totalWastageCost)) * 100).toFixed(1)
       : '0.0';
 
-  // Recipe calculation for selected dish
+  // Recipe calculation for selected dish or recipe
   const activeDish = menuItems.find((m) => m.id === selectedRecipeItem) || menuItems[0];
-  const activeRecipe = recipes.find((r) => r.menuItemId === activeDish?.id);
+  const activeRecipe =
+    recipes.find((r) => r.id === selectedRecipeId) ||
+    recipes.find((r) => r.menuItemId === activeDish?.id) ||
+    recipes[0];
 
   const recipeBreakdown = activeRecipe
     ? activeRecipe.ingredients.map((ri) => {
+        if (ri.isSubRecipe && ri.subRecipeId) {
+          const subRec = recipes.find((r) => r.id === ri.subRecipeId);
+          const subCostInfo = subRec ? computeRecipeUnitCost(subRec.id) : { unitCost: 0, batchCost: 0, perPlateCost: 0 };
+          const perPlateSubQty = ri.subRecipeQuantity ?? ri.quantity;
+          const totalCost = subCostInfo.unitCost * perPlateSubQty;
+          const batchReq = ri.batchQuantity ?? perPlateSubQty * (activeRecipe.batchYieldPlates || 1);
+          const availSubPool = subRecipeBatches
+            .filter((b) => b.subRecipeId === ri.subRecipeId && b.status !== 'reversed' && b.status !== 'expired')
+            .reduce((s, b) => s + b.remainingQty, 0);
+
+          return {
+            ingredient: undefined,
+            subRecipe: subRec,
+            isSubRecipe: true,
+            quantity: perPlateSubQty,
+            unitCost: subCostInfo.unitCost,
+            totalCost,
+            rawBatchRequired: batchReq,
+            displayBatchUnit: ri.subRecipeUnit || ri.batchUnit || subRec?.yieldUnit || 'portions',
+            batchDisplayQty: batchReq,
+            perPlateDisplayQty: perPlateSubQty,
+            kStock: availSubPool,
+            sStock: availSubPool,
+            isNotTransferred: availSubPool <= 0,
+            isShortForBatch: availSubPool < batchReq,
+            shortage: Math.max(0, batchReq - availSubPool),
+            yieldPercentage: ri.yieldPercentage || 100,
+            substituteName: undefined,
+          };
+        }
+
         const ingredient = ingredients.find((i) => i.id === ri.ingredientId);
         const unitCost = ingredient
           ? ingredient.costPerPurchaseUnit / ingredient.conversionRatio
           : 0;
         const totalCost = unitCost * ri.quantity;
 
-        // Batch calculations
         const isWeight = ingredient?.consumptionUnit === 'grams';
         const isVolume = ingredient?.consumptionUnit === 'ml';
         const rawBatchRequired = ri.batchQuantity ?? ri.quantity * (activeRecipe.batchYieldPlates || 100);
@@ -295,9 +375,14 @@ export const InventoryRecipesView: React.FC = () => {
         const isNotTransferred = kStock <= 0;
         const isShortForBatch = kStock < rawBatchRequired;
         const shortage = Math.max(0, rawBatchRequired - kStock);
+        const subIng = ri.substituteIngredientId
+          ? ingredients.find((i) => i.id === ri.substituteIngredientId)
+          : undefined;
 
         return {
           ingredient,
+          subRecipe: undefined,
+          isSubRecipe: false,
           quantity: ri.quantity,
           unitCost,
           totalCost,
@@ -310,6 +395,8 @@ export const InventoryRecipesView: React.FC = () => {
           isNotTransferred,
           isShortForBatch,
           shortage,
+          yieldPercentage: ri.yieldPercentage || 100,
+          substituteName: subIng?.name,
         };
       })
     : [];
@@ -384,15 +471,66 @@ export const InventoryRecipesView: React.FC = () => {
       Number(intakeQuantity),
       Number(intakeCost),
       intakeSupplier,
-      intakeInvoiceRef
+      intakeInvoiceRef,
+      intakeExpiryDate || undefined
     );
     setIsIntakeModalOpen(false);
+    setIntakeExpiryDate('');
+    showActionBanner('success', `Received goods (${intakeInvoiceRef}) into Main Store with weighted-avg valuation update.`);
   };
 
   const handleWastageSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     recordWastage(wastageIngredientId, Number(wastageQuantity), wastageReason, wastageLocation);
     setIsWastageModalOpen(false);
+    showActionBanner('success', 'Shrinkage / spoilage entry logged.');
+  };
+
+  const handleDirectConsumptionSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const ok = recordDirectConsumption({
+      ingredientId: directIngId,
+      quantityUnits: Number(directQty),
+      location: directLoc,
+      reason: directReason.trim() || 'Direct kitchen consumption without BOM',
+      recordedBy: 'Executive Chef Juma',
+    });
+    if (ok) {
+      setIsDirectConsumptionModalOpen(false);
+      showActionBanner('success', 'Direct stock consumption recorded without BOM.');
+    } else {
+      showActionBanner('error', 'Insufficient stock in the selected location for direct consumption.');
+    }
+  };
+
+  const handleExportMovementsCsv = (rows: StockMovement[], filename: string) => {
+    const header = ['Date', 'Ingredient', 'Type', 'Delta', 'Unit', 'Cost Impact (TZS)', 'Reference', 'Reason', 'Recorded By'];
+    const csvLines = [
+      header.join(','),
+      ...rows.map((m) =>
+        [
+          m.date,
+          `"${m.ingredientName.replace(/"/g, '""')}"`,
+          m.type,
+          m.quantityDelta,
+          m.unit,
+          m.costImpact,
+          `"${(m.reference || '').replace(/"/g, '""')}"`,
+          `"${(m.reason || '').replace(/"/g, '""')}"`,
+          `"${m.recordedBy.replace(/"/g, '""')}"`,
+        ].join(',')
+      ),
+    ];
+    const blob = new Blob([csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showActionBanner('success', `Exported ${rows.length} ledger rows to ${filename}.`);
   };
 
   const handleNewIngredientSubmit = (e: React.FormEvent) => {
@@ -420,22 +558,22 @@ export const InventoryRecipesView: React.FC = () => {
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-neutral-100/70 p-4 sm:p-6 lg:p-8 space-y-6">
       {/* Manager Top Control Bar */}
-      <div className="bg-white rounded-3xl p-5 sm:p-6 border border-neutral-200/90 shadow-xs flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+      <div className="bg-white rounded-2xl p-5 border border-neutral-200 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-orange-500/10 text-orange-600 border border-orange-200/80 flex items-center justify-center font-bold">
-            <Boxes className="w-6 h-6" />
+          <div className="w-11 h-11 rounded-xl bg-neutral-900 text-white flex items-center justify-center shrink-0">
+            <Boxes className="w-5 h-5 text-orange-400" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-extrabold text-neutral-900 tracking-tight">
-                Inventory & Food Cost Operations
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-lg font-bold text-neutral-900 tracking-tight">
+                Inventory, BOM &amp; Production Costing
               </h1>
-              <span className="text-[10px] font-mono font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
-                Multi-Location Tracking
+              <span className="text-xs text-neutral-500">
+                · Store vs Kitchen Multi-Location Control
               </span>
             </div>
-            <p className="text-xs text-neutral-500">
-              Track Main Store (Warehouse) vs Kitchen Floor (Daily Operations), manage transfer requisitions, and reconcile end-of-day balances
+            <p className="text-xs text-neutral-500 mt-0.5">
+              Connects supplier purchasing, sub-recipe prep, kitchen production batches, POS deductions, and variance audits.
             </p>
           </div>
         </div>
@@ -443,50 +581,59 @@ export const InventoryRecipesView: React.FC = () => {
         {/* Manager Action Buttons */}
         <div className="flex items-center gap-2 flex-wrap">
           <button
+            type="button"
             onClick={() => handleOpenTransferModal(ingredients[0]?.id || '')}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-colors shadow-xs"
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <ArrowLeftRight className="w-4 h-4" />
             <span>Store ↔ Kitchen Transfer</span>
           </button>
 
           <button
+            type="button"
             onClick={() => setIsIntakeModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors shadow-xs"
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <PackagePlus className="w-4 h-4" />
-            <span>Receive Goods (Intake)</span>
+            <span>Receive Goods</span>
           </button>
 
           <button
+            type="button"
+            onClick={() => setIsDirectConsumptionModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-neutral-800 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Flame className="w-4 h-4 text-orange-600" />
+            <span>Direct Consumption</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setIsWastageModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl transition-colors"
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <AlertOctagon className="w-4 h-4" />
             <span>Log Spoilage</span>
           </button>
 
           <button
+            type="button"
             onClick={() => setIsNewIngredientModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-neutral-800 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-neutral-800 bg-white border border-neutral-200 hover:bg-neutral-50 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>Add Raw Ingredient</span>
+            <span>Add Ingredient</span>
           </button>
 
-          {/* Optional Tax / VAT Config Control */}
-          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-neutral-200 bg-neutral-50">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-neutral-200 bg-neutral-50 shrink-0">
             <Percent className="w-3.5 h-3.5 text-neutral-500" />
-            <span className="text-[11px] font-bold text-neutral-700">Tax (VAT):</span>
+            <span className="text-[11px] font-bold text-neutral-700">VAT:</span>
             <button
               type="button"
               onClick={() => setTaxEnabled(!taxEnabled)}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-extrabold transition-colors cursor-pointer ${
-                taxEnabled
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300'
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                taxEnabled ? 'bg-emerald-600 text-white' : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300'
               }`}
-              title="Toggle optional VAT inclusion across Customer, Waiter, and Cashier carts"
             >
               {taxEnabled ? 'ON' : 'OFF'}
             </button>
@@ -494,7 +641,7 @@ export const InventoryRecipesView: React.FC = () => {
               <select
                 value={taxRatePct}
                 onChange={(e) => setTaxRatePct(Number(e.target.value))}
-                className="bg-white border border-neutral-200 rounded-lg px-1.5 py-0.5 text-[11px] font-mono font-bold text-neutral-800 outline-hidden cursor-pointer"
+                className="bg-white border border-neutral-200 rounded-lg px-1.5 py-0.5 text-[11px] font-mono font-bold text-neutral-800 cursor-pointer"
                 aria-label="Tax Rate Percentage"
               >
                 <option value={10}>10%</option>
@@ -505,6 +652,25 @@ export const InventoryRecipesView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {actionFeedback && (
+        <div
+          className={`px-4 py-3 rounded-xl border text-xs font-semibold flex items-center justify-between gap-3 ${
+            actionFeedback.type === 'error'
+              ? 'bg-red-50 border-red-200 text-red-900'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+          }`}
+        >
+          <span>{actionFeedback.text}</span>
+          <button
+            type="button"
+            onClick={() => setActionFeedback(null)}
+            className="text-current hover:underline cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Main Tabs Navigation */}
       <div className="flex items-center gap-2 border-b border-neutral-200 pb-2 overflow-x-auto">
@@ -885,6 +1051,65 @@ export const InventoryRecipesView: React.FC = () => {
               </table>
             </div>
           </div>
+
+          {/* FIFO / FEFO Stock Lots & Expiry Tracking */}
+          <div className="bg-white rounded-2xl p-5 border border-neutral-200 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-neutral-900">
+                  FIFO / FEFO Batch Lots &amp; Expiry Watch ({stockLots.filter((l) => l.remainingQty > 0).length} Active Lots)
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Tracks purchase batch unit costs and shelf-life expiry dates for weighted-average valuation and FEFO deduction.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLotsTable((prev) => !prev)}
+                className="px-3 py-1.5 text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                {showLotsTable ? 'Hide Lot Ledger' : 'Inspect Active Lots'}
+              </button>
+            </div>
+
+            {showLotsTable && (
+              <div className="overflow-x-auto border-t border-neutral-200 pt-3">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
+                    <tr>
+                      <th className="py-2.5 px-3">Lot #</th>
+                      <th className="py-2.5 px-3">Ingredient</th>
+                      <th className="py-2.5 px-3">Location</th>
+                      <th className="py-2.5 px-3 text-right">Remaining Qty</th>
+                      <th className="py-2.5 px-3 text-right">Unit Cost</th>
+                      <th className="py-2.5 px-3">Received</th>
+                      <th className="py-2.5 px-3">Expiry (FEFO)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {stockLots.map((lot) => {
+                      const ing = ingredients.find((i) => i.id === lot.ingredientId);
+                      return (
+                        <tr key={lot.id}>
+                          <td className="py-2.5 px-3 font-mono font-bold text-neutral-900">{lot.lotNumber}</td>
+                          <td className="py-2.5 px-3 font-semibold text-neutral-800">{ing?.name || lot.ingredientId}</td>
+                          <td className="py-2.5 px-3 text-neutral-600 capitalize">{lot.location.replace('_', ' ')}</td>
+                          <td className="py-2.5 px-3 text-right font-mono tabular-nums font-bold">
+                            {lot.remainingQty.toLocaleString()} {lot.unit}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono tabular-nums text-neutral-700">
+                            {lot.unitCost.toFixed(2)} TZS/{lot.unit}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-neutral-500">{lot.receivedDate}</td>
+                          <td className="py-2.5 px-3 font-mono text-neutral-700">{lot.expiryDate || 'Non-perishable'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -908,24 +1133,45 @@ export const InventoryRecipesView: React.FC = () => {
 
             <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
               <button
+                type="button"
                 onClick={() => handleOpenTransferModal(ingredients[0]?.id || '')}
-                className="px-4 py-2 bg-white text-blue-950 font-bold text-xs rounded-xl hover:bg-blue-50 transition-colors shadow-sm flex items-center gap-1.5"
+                className="px-4 py-2 bg-white text-blue-950 font-bold text-xs rounded-xl hover:bg-blue-50 transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
               >
                 <Plus className="w-4 h-4 text-blue-600" />
                 <span>New Stock Transfer</span>
               </button>
 
-              <button
-                onClick={() => {
-                  if (confirm('Return all active kitchen stock back to Main Storage for overnight shift close?')) {
-                    returnAllKitchenStockToStore();
-                  }
-                }}
-                className="px-4 py-2 bg-blue-800/80 hover:bg-blue-700 text-white font-bold text-xs rounded-xl border border-blue-400/40 transition-colors flex items-center gap-1.5"
-              >
-                <CheckCheck className="w-4 h-4 text-emerald-300" />
-                <span>Return All Kitchen Stock to Store</span>
-              </button>
+              {confirmReturnTransfers ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      returnAllKitchenStockToStore();
+                      setConfirmReturnTransfers(false);
+                      showActionBanner('success', 'Returned all active kitchen ingredients back to Main Storage.');
+                    }}
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl whitespace-nowrap cursor-pointer"
+                  >
+                    Confirm Return All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmReturnTransfers(false)}
+                    className="px-3 py-2 bg-white/20 hover:bg-white/30 text-white font-semibold text-xs rounded-xl whitespace-nowrap cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmReturnTransfers(true)}
+                  className="px-4 py-2 bg-blue-800/80 hover:bg-blue-700 text-white font-bold text-xs rounded-xl border border-blue-400/40 transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                >
+                  <CheckCheck className="w-4 h-4 text-emerald-300" />
+                  <span>Return All Kitchen Stock to Store</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -1104,8 +1350,9 @@ export const InventoryRecipesView: React.FC = () => {
               </div>
 
               <button
-                onClick={() => alert('Exporting Stock Transfer Log CSV...')}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
+                type="button"
+                onClick={() => handleExportMovementsCsv(transferMovements, `Stock_Transfers_${todayStr}.csv`)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors whitespace-nowrap cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export Transfer Log</span>
@@ -1200,17 +1447,37 @@ export const InventoryRecipesView: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 shrink-0 flex-wrap">
-              <button
-                onClick={() => {
-                  if (confirm('Return all remaining kitchen line ingredients back to Main Storage for shift close?')) {
-                    returnAllKitchenStockToStore();
-                  }
-                }}
-                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-colors shadow-xs flex items-center gap-1.5"
-              >
-                <CheckCheck className="w-4 h-4" />
-                <span>Return All Kitchen Stock to Main Store</span>
-              </button>
+              {confirmReturnClosing ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      returnAllKitchenStockToStore();
+                      setConfirmReturnClosing(false);
+                      showActionBanner('success', 'All remaining kitchen ingredients returned to Main Storage.');
+                    }}
+                    className="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl whitespace-nowrap cursor-pointer"
+                  >
+                    Confirm Shift Return
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmReturnClosing(false)}
+                    className="px-3 py-2.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-semibold text-xs rounded-xl whitespace-nowrap cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmReturnClosing(true)}
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                >
+                  <CheckCheck className="w-4 h-4" />
+                  <span>Return All Kitchen Stock to Main Store</span>
+                </button>
+              )}
 
               <button
                 onClick={() => window.print()}
@@ -1407,6 +1674,11 @@ export const InventoryRecipesView: React.FC = () => {
                 <option value="stock_transfer">Stock Transfers (Store ↔ Kitchen)</option>
                 <option value="purchase_intake">Purchase Intake (Deliveries)</option>
                 <option value="kitchen_consumption">Kitchen POS Consumption</option>
+                <option value="direct_consumption">Direct Stock Consumption (No BOM)</option>
+                <option value="production_issue">Batch / Sub-Recipe Production Issue</option>
+                <option value="production_output">Sub-Recipe Production Output</option>
+                <option value="production_reversal">Batch Production Reversals</option>
+                <option value="reconciliation_adjustment">Physical Count Reconciliation</option>
                 <option value="wastage_spoilage">Wastage / Spoilage</option>
                 <option value="manual_adjustment">Manual Audit Adjustments</option>
               </select>
@@ -1414,16 +1686,18 @@ export const InventoryRecipesView: React.FC = () => {
 
             <div className="flex items-center gap-2">
               <button
-                onClick={() => alert(`Exporting ${dateFilter.toUpperCase()} inventory movement report as CSV...`)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors"
+                type="button"
+                onClick={() => handleExportMovementsCsv(filteredMovements, `Stock_Movements_${dateFilter}_${todayStr}.csv`)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors whitespace-nowrap cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export CSV</span>
               </button>
 
               <button
+                type="button"
                 onClick={() => window.print()}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-neutral-900 hover:bg-neutral-800 rounded-xl transition-colors shadow-xs"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-neutral-900 hover:bg-neutral-800 rounded-xl transition-colors whitespace-nowrap cursor-pointer"
               >
                 <Printer className="w-3.5 h-3.5" />
                 <span>Print Report</span>
@@ -1552,39 +1826,66 @@ export const InventoryRecipesView: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 5: Recipe BOM Costing */}
+      {/* TAB 5: BOM, Sub-Recipes & Production Cost Center */}
       {activeTab === 'recipes' && (
-        <div className="space-y-6">
-          {/* AI BOM Architecture Banner */}
-          <div className="bg-gradient-to-r from-orange-500 via-amber-500 to-orange-600 rounded-3xl p-6 text-white shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-            <div className="space-y-1 max-w-2xl">
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-0.5 rounded-full bg-white/20 text-white font-mono text-[10px] font-bold tracking-wider uppercase border border-white/20">
-                  Core Principle: AI Proposes · Rules Calculate · Humans Approve
-                </span>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-500/80 text-white text-[10px] font-bold">
-                  {recipes.length} BOMs Configured
+        <div className="space-y-5">
+          {/* Top Operations & Deduction Policy Header */}
+          <div className="bg-white rounded-2xl p-5 border border-neutral-200 flex flex-col xl:flex-row items-start xl:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h2 className="text-base font-bold text-neutral-900">
+                  Recipe, Sub-Recipe &amp; Production Cost Management
+                </h2>
+                <span className="text-xs font-mono text-neutral-500">
+                  · {recipes.filter((r) => !r.isSubRecipe).length} Dish Recipes · {recipes.filter((r) => r.isSubRecipe).length} Sub-Recipes
                 </span>
               </div>
-              <h2 className="text-xl font-extrabold tracking-tight">
-                Bill of Materials (BOM) & Recipe Cost Rollup
-              </h2>
-              <p className="text-xs text-orange-100 leading-relaxed">
-                AI parses messy chef text, handles Tanzanian Swahili synonyms & local units (debe, gunia, tray, fungu), and matches ingredients. Deterministic code calculates unit arithmetic and margins. Humans approve all changes.
+              <p className="text-xs text-neutral-500">
+                Supports Standardized BOMs, Semi-Standardized Adjustable Batches, and Direct Stock Consumption without double-deduction.
               </p>
             </div>
 
-            <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-neutral-50 border border-neutral-200 text-xs">
+                <span className="font-semibold text-neutral-600 whitespace-nowrap">POS Stock Trigger:</span>
+                <select
+                  value={bomDeductionPolicy}
+                  onChange={(e) => {
+                    setBomDeductionPolicy(e.target.value as BomDeductionPolicy);
+                    showActionBanner('success', `Stock deduction policy set to ${e.target.value.replace(/_/g, ' ')}.`);
+                  }}
+                  className="bg-white border border-neutral-200 rounded-lg px-2 py-1 text-xs font-bold text-neutral-900 cursor-pointer"
+                >
+                  <option value="on_kitchen_start">On Kitchen Start (Recommended)</option>
+                  <option value="on_order_submit">On Order Submit</option>
+                  <option value="on_payment">On Payment</option>
+                </select>
+              </div>
+
               <button
                 type="button"
                 onClick={() => {
-                  setAiBomTargetDishId(selectedRecipeItem);
-                  setIsAiBomModalOpen(true);
+                  setRecipeCardToEdit(null);
+                  setRecipeCardDefaultSubRecipe(false);
+                  setIsRecipeCardModalOpen(true);
                 }}
-                className="px-5 py-3 bg-white text-orange-900 font-extrabold text-xs rounded-2xl shadow-lg hover:bg-orange-50 active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
+                className="px-3.5 py-2 bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
               >
-                <Sparkles className="w-4 h-4 text-orange-600" />
-                <span>Launch AI Recipe-to-BOM Creator</span>
+                <Plus className="w-3.5 h-3.5" />
+                <span>New Recipe Card</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setRecipeCardToEdit(null);
+                  setRecipeCardDefaultSubRecipe(true);
+                  setIsRecipeCardModalOpen(true);
+                }}
+                className="px-3.5 py-2 bg-white hover:bg-neutral-50 text-neutral-800 font-bold text-xs rounded-xl border border-neutral-200 flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-orange-600" />
+                <span>New Sub-Recipe</span>
               </button>
 
               <button
@@ -1593,475 +1894,978 @@ export const InventoryRecipesView: React.FC = () => {
                   setAiBomTargetDishId(selectedRecipeItem);
                   setIsAiBomModalOpen(true);
                 }}
-                className="px-4 py-3 bg-black/20 hover:bg-black/30 text-white font-bold text-xs rounded-2xl transition-all flex items-center gap-1.5"
+                className="px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
               >
-                <History className="w-4 h-4" />
-                <span>Audit Trail ({bomAuditLogs.length})</span>
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>AI Parse Notes</span>
               </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left Column: Dish Selection */}
-            <div className="bg-white rounded-3xl p-5 border border-neutral-200/90 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-bold text-neutral-900">Configured Menu Items</h3>
-                  <p className="text-xs text-neutral-500">Select any dish to inspect Bill of Materials</p>
+          {/* 6 Segmented Sub-Tabs */}
+          <div className="flex items-center gap-1 p-1 bg-neutral-200/70 rounded-xl overflow-x-auto">
+            {[
+              { id: 'library', label: 'Recipe Library' },
+              { id: 'sub_recipes', label: `Sub-Recipes & Prep (${subRecipeBatches.filter((b) => b.status !== 'reversed').length})` },
+              { id: 'batches', label: `Production Batches (${productionLogs.length})` },
+              { id: 'costing_variants', label: 'Costing & Variants' },
+              { id: 'yield_subs', label: 'Yield & Substitutions' },
+              { id: 'variance', label: 'Consumption Variance' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setRecipeSubTab(tab.id as typeof recipeSubTab)}
+                className={`px-3.5 py-2 text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                  recipeSubTab === tab.id
+                    ? 'bg-white text-neutral-900'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* SUB-TAB 1: Recipe Library (All 3 Methods + Master Card) */}
+          {recipeSubTab === 'library' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              {/* Left Column: Filterable Recipe & Direct Item Selector */}
+              <div className="bg-white rounded-2xl p-4 border border-neutral-200 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-bold text-neutral-900">Recipes &amp; Catalog Items</h3>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    value={recipeMethodFilter}
+                    onChange={(e) => setRecipeMethodFilter(e.target.value as 'all' | ProductionMethod)}
+                    className="px-2.5 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg font-medium"
+                  >
+                    <option value="all">All Methods</option>
+                    <option value="recipe_bom">Method 1: Std BOM</option>
+                    <option value="semi_standardized">Method 2: Semi-Std</option>
+                    <option value="direct_stock">Method 3: Direct</option>
+                  </select>
+                  <select
+                    value={recipeStatusFilter}
+                    onChange={(e) => setRecipeStatusFilter(e.target.value as 'all' | RecipeStatus)}
+                    className="px-2.5 py-1.5 text-xs bg-neutral-50 border border-neutral-200 rounded-lg font-medium"
+                  >
+                    <option value="all">All Statuses</option>
+                    <option value="approved">Approved</option>
+                    <option value="testing">Testing</option>
+                    <option value="draft">Draft</option>
+                    <option value="archived">Archived</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1.5 max-h-[580px] overflow-y-auto pr-1">
+                  {recipes
+                    .filter((r) => !r.isSubRecipe)
+                    .filter((r) => recipeMethodFilter === 'all' || (r.productionMethod || 'recipe_bom') === recipeMethodFilter)
+                    .filter((r) => recipeStatusFilter === 'all' || (r.status || 'approved') === recipeStatusFilter)
+                    .map((rec) => {
+                      const dish = menuItems.find((m) => m.id === rec.menuItemId);
+                      const isSel = activeRecipe?.id === rec.id;
+                      const costInfo = computeRecipeUnitCost(rec.id);
+                      const methodLabel =
+                        rec.productionMethod === 'semi_standardized'
+                          ? 'Semi-Std'
+                          : rec.productionMethod === 'direct_stock'
+                          ? 'Direct'
+                          : 'Std BOM';
+
+                      return (
+                        <button
+                          key={rec.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedRecipeId(rec.id);
+                            if (rec.menuItemId) setSelectedRecipeItem(rec.menuItemId);
+                          }}
+                          className={`w-full text-left p-3 rounded-xl border transition-colors cursor-pointer ${
+                            isSel
+                              ? 'border-orange-500 bg-orange-50/50 text-neutral-900'
+                              : 'border-neutral-200 hover:bg-neutral-50 text-neutral-800'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold text-xs truncate">{rec.name || dish?.name}</span>
+                            <span className="font-mono text-[11px] font-semibold text-neutral-500 shrink-0">
+                              {rec.code || `v${rec.version}`}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-neutral-500 mt-1 flex items-center justify-between font-mono tabular-nums">
+                            <span>
+                              {methodLabel} · {rec.status || 'approved'}
+                            </span>
+                            <span className="font-semibold text-neutral-800">
+                              Cost: {formatMoney(costInfo.perPlateCost)}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+
+                  {/* Un-recipied Direct Stock Items */}
+                  {recipeMethodFilter === 'all' || recipeMethodFilter === 'direct_stock' ? (
+                    <div className="pt-2 border-t border-neutral-200 space-y-1.5">
+                      <div className="text-[11px] font-semibold text-neutral-500 px-1">
+                        Direct-Stock Items (No BOM Needed)
+                      </div>
+                      {menuItems
+                        .filter((m) => !recipes.some((r) => r.menuItemId === m.id))
+                        .slice(0, 6)
+                        .map((item) => (
+                          <div
+                            key={item.id}
+                            className="p-2.5 rounded-xl border border-neutral-200 flex items-center justify-between gap-2 text-xs"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-semibold text-neutral-800 truncate">{item.name}</div>
+                              <div className="text-[11px] text-neutral-500 font-mono">
+                                Direct 1:1 · {formatMoney(item.price)}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedRecipeItem(item.id);
+                                setRecipeCardToEdit(null);
+                                setRecipeCardDefaultSubRecipe(false);
+                                setIsRecipeCardModalOpen(true);
+                              }}
+                              className="px-2 py-1 text-[11px] font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+                            >
+                              + Add BOM
+                            </button>
+                          </div>
+                        ))}
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
-              <div className="space-y-2 pt-2">
-                {menuItems.map((item) => {
-                  const hasRecipe = recipes.some((r) => r.menuItemId === item.id);
-                  const isSelected = selectedRecipeItem === item.id;
-
-                  return (
-                    <div
-                      key={item.id}
-                      className={`w-full p-3 rounded-2xl border text-xs flex items-center justify-between transition-all ${
-                        isSelected
-                          ? 'border-orange-500 bg-orange-50/50 text-orange-950 font-bold ring-1 ring-orange-500/20'
-                          : 'border-neutral-200 hover:bg-neutral-50 text-neutral-700'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setSelectedRecipeItem(item.id)}
-                        className="text-left flex-1"
-                      >
-                        <div className="font-bold">{item.name}</div>
-                        <div className="text-[11px] font-normal text-neutral-400 font-mono">
-                          {formatMoney(item.price)}
+              {/* Right 2 Columns: Active Standardized Recipe Card */}
+              <div className="lg:col-span-2 bg-white rounded-2xl p-6 border border-neutral-200 space-y-5">
+                {activeRecipe ? (
+                  <>
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-neutral-200 pb-4">
+                      <div>
+                        <div className="text-xs text-neutral-500 font-mono">
+                          {activeRecipe.code || activeRecipe.id} · v{activeRecipe.version} ·{' '}
+                          <span className="capitalize">{(activeRecipe.status || 'approved')}</span> ·{' '}
+                          {activeRecipe.productionMethod === 'semi_standardized'
+                            ? 'Method 2: Semi-Standardized'
+                            : activeRecipe.productionMethod === 'direct_stock'
+                            ? 'Method 3: Direct Stock'
+                            : 'Method 1: Standardized BOM'}
                         </div>
-                      </button>
+                        <h3 className="text-lg font-bold text-neutral-900 mt-1">
+                          {activeRecipe.name || activeDish?.name}
+                        </h3>
+                        <div className="text-xs text-neutral-500 mt-0.5">
+                          Yield: {activeRecipe.batchYieldPlates} {activeRecipe.yieldUnit || 'plates'}
+                          {activeRecipe.standardPortionSize ? ` · Portion: ${activeRecipe.standardPortionSize}` : ''}
+                          {activeRecipe.expectedYieldPct ? ` · Expected Yield: ${activeRecipe.expectedYieldPct}%` : ''}
+                          {activeRecipe.shelfLifeHours ? ` · Shelf Life: ${activeRecipe.shelfLifeHours}h` : ''}
+                        </div>
+                      </div>
 
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={`text-[10px] font-mono px-2 py-0.5 rounded ${
-                            hasRecipe ? 'bg-emerald-100 text-emerald-800 font-bold' : 'bg-neutral-100 text-neutral-500'
-                          }`}
+                      <div className="flex items-center gap-2 flex-wrap shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBatchModalRecipe(activeRecipe);
+                            setIsBatchCookModalOpen(true);
+                          }}
+                          className="px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
-                          {hasRecipe ? 'BOM Linked' : 'Direct Stock'}
-                        </span>
+                          <Flame className="w-3.5 h-3.5" />
+                          <span>Cook Batch ({activeRecipe.batchYieldPlates})</span>
+                        </button>
 
                         <button
                           type="button"
-                          title="Generate or revise BOM using AI"
                           onClick={() => {
-                            setAiBomTargetDishId(item.id);
-                            setSelectedRecipeItem(item.id);
-                            setIsAiBomModalOpen(true);
+                            setRecipeCardToEdit(activeRecipe);
+                            setRecipeCardDefaultSubRecipe(Boolean(activeRecipe.isSubRecipe));
+                            setIsRecipeCardModalOpen(true);
                           }}
-                          className="p-1.5 rounded-lg bg-orange-100/80 hover:bg-orange-200 text-orange-800 transition-colors"
+                          className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 font-bold text-xs rounded-xl flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
-                          <Sparkles className="w-3.5 h-3.5" />
+                          <ChefHat className="w-3.5 h-3.5" />
+                          <span>Edit Recipe Card</span>
                         </button>
                       </div>
                     </div>
-                  );
-                })}
+
+                    {/* Ingredients & Sub-Recipes Table */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left">
+                        <thead className="bg-neutral-50 text-neutral-500 font-semibold border-y border-neutral-200">
+                          <tr>
+                            <th className="py-2.5 px-3">Material / Sub-Recipe</th>
+                            <th className="py-2.5 px-3 text-right">Batch Qty</th>
+                            <th className="py-2.5 px-3 text-right">Per Serving</th>
+                            <th className="py-2.5 px-3 text-right">Yield %</th>
+                            <th className="py-2.5 px-3">Kitchen / Pool</th>
+                            <th className="py-2.5 px-3 text-right">Unit Cost</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-100">
+                          {recipeBreakdown.map((row, idx) => {
+                            const isWeightOrVol =
+                              !row.isSubRecipe &&
+                              (row.ingredient?.consumptionUnit === 'grams' || row.ingredient?.consumptionUnit === 'ml');
+                            const displayKStock = isWeightOrVol ? `${(row.kStock / 1000).toFixed(1)}` : row.kStock;
+
+                            return (
+                              <tr key={idx} className="hover:bg-neutral-50/70">
+                                <td className="py-3 px-3">
+                                  <div className="font-semibold text-neutral-900">
+                                    {row.isSubRecipe
+                                      ? `${row.subRecipe?.name || 'Prepared Base'} (Sub-Recipe)`
+                                      : row.ingredient?.name || 'Raw Ingredient'}
+                                  </div>
+                                  <div className="text-[11px] text-neutral-500">
+                                    {row.isSubRecipe
+                                      ? 'Deducted from prepared sub-recipe pool (no double deduction)'
+                                      : row.substituteName
+                                      ? `Substitute: ${row.substituteName}`
+                                      : row.ingredient?.category || 'General'}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold text-neutral-900">
+                                  {row.batchDisplayQty} {row.displayBatchUnit}
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums text-neutral-800">
+                                  {row.perPlateDisplayQty.toFixed(row.isSubRecipe ? 2 : 3)} {row.displayBatchUnit}
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums text-neutral-600">
+                                  {row.yieldPercentage}%
+                                </td>
+                                <td className="py-3 px-3 font-mono text-[11px] tabular-nums">
+                                  <span
+                                    className={`font-semibold ${
+                                      row.isNotTransferred
+                                        ? 'text-red-700'
+                                        : row.isShortForBatch
+                                        ? 'text-amber-700'
+                                        : 'text-emerald-700'
+                                    }`}
+                                  >
+                                    {displayKStock} {row.displayBatchUnit} ·{' '}
+                                    {row.isNotTransferred ? 'Empty' : row.isShortForBatch ? 'Short' : 'Ready'}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3 text-right font-mono tabular-nums font-bold text-neutral-900">
+                                  {formatMoney(Math.round(row.totalCost))}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Financial Rollup Strip */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3 border-t border-neutral-200">
+                      <div>
+                        <span className="text-[11px] font-semibold text-neutral-500">Selling Price</span>
+                        <div className="text-base font-bold font-mono tabular-nums text-neutral-900 mt-0.5">
+                          {formatMoney(sellingPrice)}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-[11px] font-semibold text-neutral-500">Ingredient Cost / Plate</span>
+                        <div className="text-base font-bold font-mono tabular-nums text-blue-700 mt-0.5">
+                          {formatMoney(Math.round(totalIngredientCost))}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-[11px] font-semibold text-neutral-500">Gross Profit</span>
+                        <div className="text-base font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
+                          {formatMoney(Math.round(grossContribution))}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-[11px] font-semibold text-neutral-500">Food Cost %</span>
+                        <div
+                          className={`text-base font-bold font-mono tabular-nums mt-0.5 ${
+                            foodCostPercentage <= 35 ? 'text-emerald-700' : 'text-amber-700'
+                          }`}
+                        >
+                          {foodCostPercentage.toFixed(1)}%
+                        </div>
+                      </div>
+                    </div>
+
+                    {(activeRecipe.preparationInstructions || activeRecipe.cookingInstructions || (activeRecipe.allergens && activeRecipe.allergens.length > 0)) && (
+                      <div className="pt-3 border-t border-neutral-200 text-xs text-neutral-600 space-y-1">
+                        {activeRecipe.preparationInstructions && (
+                          <div>
+                            <strong className="text-neutral-800">Prep SOP:</strong> {activeRecipe.preparationInstructions}
+                          </div>
+                        )}
+                        {activeRecipe.cookingInstructions && (
+                          <div>
+                            <strong className="text-neutral-800">Cooking SOP:</strong> {activeRecipe.cookingInstructions}
+                          </div>
+                        )}
+                        {activeRecipe.allergens && activeRecipe.allergens.length > 0 && (
+                          <div>
+                            <strong className="text-neutral-800">Allergens:</strong> {activeRecipe.allergens.join(' · ')}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-neutral-500 py-8 text-center">Select a recipe to inspect its BOM.</p>
+                )}
               </div>
             </div>
+          )}
 
-            {/* Right 2 Columns: BOM Breakdown & Food Cost Margin */}
-            <div className="lg:col-span-2 space-y-6">
-              <div className="bg-white rounded-3xl p-6 sm:p-7 border border-neutral-200/90 shadow-xs space-y-5">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-neutral-100 pb-4">
+          {/* SUB-TAB 2: Sub-Recipes & Intermediate Prep Stock */}
+          {recipeSubTab === 'sub_recipes' && (
+            <div className="space-y-5">
+              <div className="bg-white rounded-2xl p-5 border border-neutral-200 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">
-                        Recipe Card (BOM Master Data)
-                      </span>
-                      {activeRecipe && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">
-                          Yield: {activeRecipe.batchYieldPlates || 100} Plates (Batch) · Portion: 1 Plate
-                        </span>
-                      )}
-                      {activeRecipe?.cookingMethod === 'batch_cooking' ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-100 text-orange-800 flex items-center gap-1">
-                          <Flame className="w-3 h-3" />
-                          Batch Cooking (Pot/Buffet)
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-neutral-100 text-neutral-700">
-                          On-Sale (Made-to-Order)
-                        </span>
-                      )}
-                      {activeRecipe?.version && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono text-neutral-500 bg-neutral-100">
-                          v{activeRecipe.version}
-                        </span>
-                      )}
-                    </div>
-
-                    <h2 className="text-lg font-bold text-neutral-900 mt-1">{activeDish?.name}</h2>
-                    {activeRecipe?.approvedBy && (
-                      <p className="text-[11px] text-emerald-700 font-medium flex items-center gap-1 mt-0.5">
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                        Approved by {activeRecipe.approvedBy}
-                      </p>
-                    )}
+                    <h3 className="text-sm font-bold text-neutral-900">
+                      Sub-Recipe Formulations (Intermediate Kitchen Preparations)
+                    </h3>
+                    <p className="text-xs text-neutral-500">
+                      Prepare sauces, stocks, and stew bases in bulk. Finished dishes deduct prepared sub-recipe units directly, never double-deducting raw materials.
+                    </p>
                   </div>
-
-                  <div className="flex items-center gap-2.5 flex-wrap">
-                    {/* Cook Batch Button (Real-life production) */}
-                    {activeRecipe && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsBatchCookModalOpen(true);
-                        }}
-                        className="flex items-center gap-1.5 px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white font-extrabold text-xs rounded-xl shadow-xs transition-all active:scale-95 cursor-pointer"
-                      >
-                        <Flame className="w-3.5 h-3.5 text-white" />
-                        <span>Cook Batch ({activeRecipe.batchYieldPlates || 100} Plates)</span>
-                      </button>
-                    )}
-
-                    {/* Edit Recipe Card Button */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRecipeCardToEdit(activeRecipe || null);
-                        setIsRecipeCardModalOpen(true);
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 font-bold text-xs rounded-xl transition-colors cursor-pointer"
-                    >
-                      <ChefHat className="w-3.5 h-3.5 text-neutral-600" />
-                      <span>{activeRecipe ? 'Edit Recipe Card' : 'Create Recipe Card'}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAiBomTargetDishId(activeDish?.id || selectedRecipeItem);
-                        setIsAiBomModalOpen(true);
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-2 bg-orange-50 hover:bg-orange-100 text-orange-800 font-bold text-xs rounded-xl border border-orange-200 transition-colors cursor-pointer"
-                    >
-                      <Sparkles className="w-3.5 h-3.5 text-orange-600" />
-                      <span>AI Parse Notes</span>
-                    </button>
-
-                    <div className="text-right pl-2 border-l border-neutral-200">
-                      <span className="text-xs text-neutral-400">Sell Price:</span>
-                      <div className="text-base font-extrabold font-mono text-neutral-900">
-                        {formatMoney(sellingPrice)}
-                      </div>
-                    </div>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRecipeCardToEdit(null);
+                      setRecipeCardDefaultSubRecipe(true);
+                      setIsRecipeCardModalOpen(true);
+                    }}
+                    className="px-3.5 py-2 bg-neutral-900 text-white text-xs font-bold rounded-xl whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    + Create Sub-Recipe
+                  </button>
                 </div>
 
-                {/* Kitchen Stock Readiness Warning Alert (if any recipe line is not in kitchen) */}
-                {activeRecipe && recipeBreakdown.some((r) => r.isNotTransferred || r.isShortForBatch) && (
-                  <div className="bg-amber-50/90 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                    <div className="flex items-start gap-2.5">
-                      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                      <div className="text-xs text-amber-900">
-                        <div className="font-bold">
-                          Kitchen Stock Shortage for {activeRecipe.name || 'Dish'}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {recipes
+                    .filter((r) => r.isSubRecipe)
+                    .map((subRec) => {
+                      const costInfo = computeRecipeUnitCost(subRec.id);
+                      const activePool = subRecipeBatches
+                        .filter((b) => b.subRecipeId === subRec.id && b.status !== 'reversed' && b.status !== 'expired')
+                        .reduce((s, b) => s + b.remainingQty, 0);
+                      const unit = subRec.yieldUnit || 'grams';
+
+                      return (
+                        <div key={subRec.id} className="p-4 rounded-xl border border-neutral-200 space-y-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="text-xs font-mono text-neutral-500">
+                                {subRec.code || 'SUB'} · v{subRec.version} · Shelf life {subRec.shelfLifeHours || 24}h
+                              </div>
+                              <h4 className="text-sm font-bold text-neutral-900 mt-0.5">{subRec.name}</h4>
+                            </div>
+                            <span className="font-mono font-bold text-xs text-emerald-700 tabular-nums">
+                              {activePool.toLocaleString()} {unit} on hand
+                            </span>
+                          </div>
+
+                          <div className="text-xs text-neutral-600">
+                            Yields <strong>{subRec.batchYieldPlates.toLocaleString()} {unit}</strong> per batch ·
+                            Batch COGS <span className="font-mono font-semibold text-neutral-900">{formatMoney(costInfo.batchCost)}</span>{' '}
+                            (<span className="font-mono">{costInfo.unitCost.toFixed(2)} TZS / {unit}</span>)
+                          </div>
+
+                          <div className="flex items-center gap-2 pt-2 border-t border-neutral-100">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBatchModalRecipe(subRec);
+                                setIsBatchCookModalOpen(true);
+                              }}
+                              className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-lg whitespace-nowrap cursor-pointer"
+                            >
+                              Produce Sub-Recipe Batch
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRecipeCardToEdit(subRec);
+                                setRecipeCardDefaultSubRecipe(true);
+                                setIsRecipeCardModalOpen(true);
+                              }}
+                              className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-xs font-semibold rounded-lg whitespace-nowrap cursor-pointer"
+                            >
+                              Edit Formula
+                            </button>
+                          </div>
                         </div>
-                        <p className="text-amber-800 text-[11px] mt-0.5">
-                          {recipeBreakdown
-                            .filter((r) => r.isNotTransferred || r.isShortForBatch)
-                            .map((r) =>
-                              r.isNotTransferred
-                                ? `${r.ingredient?.name}: 0 in Kitchen (not transferred)`
-                                : `${r.ingredient?.name}: short by ${(r.shortage / (r.ingredient?.consumptionUnit === 'grams' || r.ingredient?.consumptionUnit === 'ml' ? 1000 : 1)).toFixed(1)} ${r.displayBatchUnit}`
-                            )
-                            .join('; ')}
-                          . Batch cooking is blocked until transferred.
-                        </p>
-                      </div>
-                    </div>
+                      );
+                    })}
+                </div>
+              </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsBatchCookModalOpen(true);
-                      }}
-                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all shrink-0 flex items-center gap-1 cursor-pointer"
-                    >
-                      <ArrowLeftRight className="w-3.5 h-3.5" />
-                      <span>Transfer Missing Items</span>
-                    </button>
-                  </div>
-                )}
-
-                {/* Recipe Card Ingredients Table matching User Spec */}
+              {/* Live Sub-Recipe Prep Batches Table */}
+              <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-neutral-200 flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-neutral-900">Prepared Sub-Recipe Batch Inventory</h3>
+                  <span className="text-xs text-neutral-500 font-mono">FEFO deduction order</span>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs text-left">
-                    <thead className="bg-neutral-50 text-neutral-500 font-bold border-y border-neutral-100">
+                    <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
                       <tr>
-                        <th className="py-2.5 px-3">Ingredient</th>
-                        <th className="py-2.5 px-3">Qty (Batch)</th>
-                        <th className="py-2.5 px-3">Unit</th>
-                        <th className="py-2.5 px-3">Per Plate (Auto)</th>
-                        <th className="py-2.5 px-3">Kitchen Stock</th>
-                        <th className="py-2.5 px-3">Store Stock</th>
-                        <th className="py-2.5 px-3 text-right">Cost / Plate</th>
+                        <th className="py-2.5 px-4">Batch #</th>
+                        <th className="py-2.5 px-3">Sub-Recipe</th>
+                        <th className="py-2.5 px-3 text-right">Produced</th>
+                        <th className="py-2.5 px-3 text-right">Remaining</th>
+                        <th className="py-2.5 px-3 text-right">Unit Cost</th>
+                        <th className="py-2.5 px-3">Prepared By</th>
+                        <th className="py-2.5 px-3">Expires</th>
+                        <th className="py-2.5 px-4">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100">
-                      {recipeBreakdown.length > 0 ? (
-                        recipeBreakdown.map((row, idx) => {
-                          const isWeightOrVolume = row.ingredient?.consumptionUnit === 'grams' || row.ingredient?.consumptionUnit === 'ml';
-                          const displayKStock = isWeightOrVolume ? (row.kStock / 1000).toFixed(1) : row.kStock;
-                          const displaySStock = isWeightOrVolume ? (row.sStock / 1000).toFixed(1) : row.sStock;
-
-                          return (
-                            <tr key={idx} className="hover:bg-neutral-50/50">
-                              <td className="py-3 px-3 font-semibold text-neutral-800">
-                                <div>{row.ingredient?.name || 'Raw Ingredient'}</div>
-                                <span className="text-[10px] text-neutral-400">
-                                  Category: {row.ingredient?.category || 'General'}
-                                </span>
-                              </td>
-
-                              <td className="py-3 px-3 font-mono font-bold text-neutral-900">
-                                {row.batchDisplayQty}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono text-neutral-500">
-                                {row.displayBatchUnit}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono font-bold text-orange-950 bg-orange-50/40">
-                                {row.perPlateDisplayQty.toFixed(3)} {row.displayBatchUnit}
-                                <span className="block text-[10px] text-neutral-400 font-normal">
-                                  ({row.quantity} {row.ingredient?.consumptionUnit})
-                                </span>
-                              </td>
-
-                              {/* Kitchen Stock Status */}
-                              <td className="py-3 px-3 font-mono">
-                                <span
-                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center gap-1 ${
-                                    row.isNotTransferred
-                                      ? 'bg-red-100 text-red-800'
-                                      : row.isShortForBatch
-                                      ? 'bg-amber-100 text-amber-800'
-                                      : 'bg-emerald-100 text-emerald-800'
-                                  }`}
-                                >
-                                  {displayKStock} {row.displayBatchUnit}
-                                  {row.isNotTransferred && ' (0 in Kitchen)'}
-                                  {!row.isNotTransferred && row.isShortForBatch && ' (Short)'}
-                                  {!row.isNotTransferred && !row.isShortForBatch && ' (Ready)'}
-                                </span>
-                              </td>
-
-                              {/* Store Stock Status */}
-                              <td className="py-3 px-3 font-mono text-neutral-600">
-                                {displaySStock} {row.displayBatchUnit}
-                              </td>
-
-                              <td className="py-3 px-3 font-mono font-bold text-right text-neutral-900">
-                                {formatMoney(row.totalCost)}
-                              </td>
-                            </tr>
-                          );
-                        })
-                      ) : (
-                        <tr>
-                          <td colSpan={7} className="py-6 text-center text-neutral-400">
-                            Direct-stock item (beverage/packaged good). Decrements 1 unit per sale.
+                      {subRecipeBatches.map((batch) => (
+                        <tr key={batch.id} className="hover:bg-neutral-50/70">
+                          <td className="py-3 px-4 font-mono font-bold text-neutral-900">{batch.batchNumber}</td>
+                          <td className="py-3 px-3 font-semibold text-neutral-800">{batch.name}</td>
+                          <td className="py-3 px-3 text-right font-mono tabular-nums text-neutral-600">
+                            {batch.producedQty.toLocaleString()} {batch.unit}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono tabular-nums font-bold text-neutral-900">
+                            {batch.remainingQty.toLocaleString()} {batch.unit}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono tabular-nums text-neutral-700">
+                            {batch.costPerUnit.toFixed(2)} TZS
+                          </td>
+                          <td className="py-3 px-3 text-neutral-600">{batch.preparedBy}</td>
+                          <td className="py-3 px-3 font-mono text-neutral-500">
+                            {new Date(batch.expiresAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </td>
+                          <td className="py-3 px-4 capitalize font-semibold">
+                            <span
+                              className={
+                                batch.status === 'available'
+                                  ? 'text-emerald-700'
+                                  : batch.status === 'low'
+                                  ? 'text-amber-700'
+                                  : 'text-red-700'
+                              }
+                            >
+                              {batch.status}
+                            </span>
                           </td>
                         </tr>
-                      )}
+                      ))}
                     </tbody>
                   </table>
                 </div>
-
-                {/* Summary Boxes */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3">
-                  <div className="bg-neutral-50 p-4 rounded-2xl border border-neutral-200">
-                    <span className="text-[11px] font-semibold text-neutral-500">Total Ingredient Cost</span>
-                    <div className="text-lg font-bold font-mono text-neutral-900 mt-1 tabular-nums">
-                      {formatMoney(totalIngredientCost)}
-                    </div>
-                    <span className="text-[10px] text-neutral-400">Direct COGS per plate</span>
-                  </div>
-
-                  <div className="bg-neutral-50 p-4 rounded-2xl border border-neutral-200">
-                    <span className="text-[11px] font-semibold text-neutral-500">Gross Contribution</span>
-                    <div className="text-lg font-bold font-mono text-emerald-700 mt-1 tabular-nums">
-                      {formatMoney(grossContribution)}
-                    </div>
-                    <span className="text-[10px] text-neutral-400">Gross profit margin</span>
-                  </div>
-
-                  <div className="bg-neutral-50 p-4 rounded-2xl border border-neutral-200">
-                    <span className="text-[11px] font-semibold text-neutral-500">Food Cost %</span>
-                    <div className="text-lg font-bold font-mono text-blue-700 mt-1 tabular-nums">
-                      {foodCostPercentage.toFixed(1)}%
-                    </div>
-                    <span className="text-[10px] text-neutral-400">Target benchmark: 28% - 35%</span>
-                  </div>
-                </div>
               </div>
+            </div>
+          )}
 
-              {/* Module: Prepared Plates Available & Batch Production Ledger */}
-              <div className="bg-white rounded-3xl p-6 sm:p-7 border border-neutral-200/90 shadow-xs space-y-5">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-neutral-100 pb-4">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center">
-                      <Flame className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-extrabold text-neutral-900">
-                        Kitchen Prepared Stock & Bulk Cooked Batches
-                      </h3>
-                      <p className="text-xs text-neutral-500">
-                        Method 1: Batch cooking creates ready-to-serve prepared plates pool; orders decrement plate count directly.
-                      </p>
-                    </div>
+          {/* SUB-TAB 3: Production Batches & Controlled Reversals */}
+          {recipeSubTab === 'batches' && (
+            <div className="space-y-5">
+              {/* Prepared Dish Pool */}
+              <div className="bg-white rounded-2xl p-5 border border-neutral-200 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-neutral-900">Ready-to-Serve Batch Dishes</h3>
+                    <p className="text-xs text-neutral-500">
+                      Finished batch pools ready for POS/Waiter/Customer sales. Orders decrement remaining portions without re-deducting raw stock.
+                    </p>
                   </div>
-
-                  {activeRecipe && (
-                    <button
-                      type="button"
-                      onClick={() => setIsBatchCookModalOpen(true)}
-                      className="px-4 py-2 bg-orange-600 hover:bg-orange-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Cook Another Batch ({activeRecipe.batchYieldPlates || 100} Plates)</span>
-                    </button>
-                  )}
                 </div>
 
-                {/* Prepared Dish Stocks Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   {preparedDishStocks.map((dish) => {
-                    const isLow = dish.preparedPlatesAvailable <= 10 && dish.preparedPlatesAvailable > 0;
-                    const isOut = dish.preparedPlatesAvailable === 0;
-
+                    const linkedRec = recipes.find((r) => r.menuItemId === dish.menuItemId);
                     return (
-                      <div
-                        key={dish.menuItemId}
-                        className={`p-4 rounded-2xl border transition-all ${
-                          isOut
-                            ? 'bg-red-50/60 border-red-200'
-                            : isLow
-                            ? 'bg-amber-50/60 border-amber-200'
-                            : 'bg-neutral-50/80 border-neutral-200'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-xs text-neutral-900">{dish.dishName}</span>
+                      <div key={dish.menuItemId} className="p-4 rounded-xl border border-neutral-200 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-sm text-neutral-900">{dish.dishName}</span>
                           <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                              isOut
-                                ? 'bg-red-100 text-red-800'
-                                : isLow
-                                ? 'bg-amber-100 text-amber-800'
-                                : 'bg-emerald-100 text-emerald-800'
+                            className={`text-xs font-semibold ${
+                              dish.preparedPlatesAvailable === 0
+                                ? 'text-red-700'
+                                : dish.preparedPlatesAvailable <= 10
+                                ? 'text-amber-700'
+                                : 'text-emerald-700'
                             }`}
                           >
-                            {isOut ? 'Sold Out' : isLow ? 'Low Prep Stock' : 'Ready for Service'}
+                            {dish.preparedPlatesAvailable === 0
+                              ? 'Sold Out'
+                              : dish.preparedPlatesAvailable <= 10
+                              ? 'Low'
+                              : 'Ready'}
                           </span>
                         </div>
-
-                        <div className="mt-3 flex items-baseline justify-between">
-                          <div>
-                            <span className="text-2xl font-extrabold font-mono text-neutral-900">
-                              {dish.preparedPlatesAvailable}
-                            </span>
-                            <span className="text-xs text-neutral-500 font-semibold ml-1">
-                              plates ready to serve
-                            </span>
+                        <div className="flex items-baseline justify-between">
+                          <div className="text-2xl font-bold font-mono tabular-nums text-neutral-900">
+                            {dish.preparedPlatesAvailable}{' '}
+                            <span className="text-xs font-sans font-normal text-neutral-500">plates left</span>
                           </div>
-
-                          <div className="text-right text-[11px] text-neutral-500 font-mono">
-                            <div>Cooked Today: <strong className="text-neutral-800">{dish.totalCookedToday}</strong></div>
-                            <div>Sold Today: <strong className="text-emerald-700">{dish.totalSoldToday}</strong></div>
+                          <div className="text-right text-[11px] font-mono tabular-nums text-neutral-500">
+                            Cooked {dish.totalCookedToday} · Sold {dish.totalSoldToday}
                           </div>
                         </div>
-
-                        <div className="mt-3 pt-2.5 border-t border-neutral-200/60 flex items-center justify-between text-[11px] text-neutral-500">
-                          <span>Last batch: {dish.lastCookedAt}</span>
+                        {linkedRec && (
                           <button
                             type="button"
                             onClick={() => {
-                              setSelectedRecipeItem(dish.menuItemId);
+                              setBatchModalRecipe(linkedRec);
                               setIsBatchCookModalOpen(true);
                             }}
-                            className="font-bold text-orange-600 hover:text-orange-700 hover:underline"
+                            className="w-full py-1.5 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg cursor-pointer"
                           >
-                            Cook Batch +
+                            Cook New Batch
                           </button>
-                        </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
+              </div>
 
-                {/* Production Log History */}
-                <div className="space-y-3 pt-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-neutral-800">
-                      Production & Batch Cooking Ledger ({productionLogs.length} batches logged)
-                    </span>
-                    <span className="text-[11px] text-neutral-400">
-                      Step 2: Real raw ingredients deducted from Kitchen Floor at cooking time
-                    </span>
-                  </div>
-
-                  <div className="overflow-x-auto rounded-xl border border-neutral-200">
-                    <table className="w-full text-xs text-left">
-                      <thead className="bg-neutral-100/70 text-neutral-600 font-bold border-b">
-                        <tr>
-                          <th className="py-2.5 px-3">Date / Time</th>
-                          <th className="py-2.5 px-3">Dish Cooked</th>
-                          <th className="py-2.5 px-3">Batch Scale</th>
-                          <th className="py-2.5 px-3">Plates Yield</th>
-                          <th className="py-2.5 px-3">Total COGS</th>
-                          <th className="py-2.5 px-3">Unit Cost</th>
-                          <th className="py-2.5 px-3">Cooked By</th>
-                          <th className="py-2.5 px-3 text-right">Remaining</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-neutral-100 font-mono">
-                        {productionLogs.map((log) => (
-                          <tr key={log.id} className="hover:bg-neutral-50/60">
-                            <td className="py-2.5 px-3 text-neutral-500 text-[11px]">{log.timestamp}</td>
-                            <td className="py-2.5 px-3 font-sans font-bold text-neutral-900">{log.dishName}</td>
-                            <td className="py-2.5 px-3 font-semibold text-neutral-700">{log.batchesCooked} Batch</td>
-                            <td className="py-2.5 px-3 font-bold text-orange-950">{log.actualPlatesProduced} plates</td>
-                            <td className="py-2.5 px-3 font-bold text-neutral-900">{formatMoney(log.totalCost)}</td>
-                            <td className="py-2.5 px-3 font-bold text-blue-700">{formatMoney(log.costPerPlate)} / plate</td>
-                            <td className="py-2.5 px-3 font-sans text-neutral-600">{log.cookedBy}</td>
-                            <td className="py-2.5 px-3 text-right font-bold text-emerald-700">
-                              {log.remainingPlates} plates
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              {/* Production Ledger with Controlled Reversal */}
+              <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-neutral-200 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-neutral-900">
+                      Production Batch Ledger &amp; Controlled Reversals
+                    </h3>
+                    <p className="text-xs text-neutral-500">
+                      Reversing a batch restores remaining ingredients to Kitchen Stock while preserving the immutable audit log.
+                    </p>
                   </div>
                 </div>
 
-                {/* Step 3: Theoretical vs Actual Usage Reconciliation */}
-                <div className="p-4 bg-blue-50/60 rounded-2xl border border-blue-200 space-y-2">
-                  <div className="flex items-center justify-between text-xs font-bold text-blue-900">
-                    <span className="flex items-center gap-1.5">
-                      <Scale className="w-4 h-4 text-blue-600" />
-                      Step 3: End-of-Day Theoretical vs Actual Kitchen Usage
-                    </span>
-                    <span className="text-[11px] font-normal text-blue-700">
-                      Theoretical (Sales × Recipe) vs Counted Stock
-                    </span>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
+                      <tr>
+                        <th className="py-2.5 px-4">Batch #</th>
+                        <th className="py-2.5 px-3">Dish / Sub-Recipe</th>
+                        <th className="py-2.5 px-3">Type</th>
+                        <th className="py-2.5 px-3 text-right">Produced</th>
+                        <th className="py-2.5 px-3 text-right">Remaining</th>
+                        <th className="py-2.5 px-3 text-right">Batch COGS</th>
+                        <th className="py-2.5 px-3">Cooked By</th>
+                        <th className="py-2.5 px-4 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {productionLogs.map((log) => {
+                        const isReversed = log.status === 'reversed';
+                        return (
+                          <React.Fragment key={log.id}>
+                            <tr className={isReversed ? 'bg-neutral-50 text-neutral-400' : 'hover:bg-neutral-50/70'}>
+                              <td className="py-3 px-4 font-mono font-bold text-neutral-900">
+                                {log.batchNumber || log.id}
+                              </td>
+                              <td className="py-3 px-3">
+                                <div className="font-bold text-neutral-900">{log.dishName}</div>
+                                <div className="text-[11px] text-neutral-500">{log.timestamp}</div>
+                              </td>
+                              <td className="py-3 px-3 text-neutral-600 capitalize">
+                                {(log.productionType || 'batch_finished').replace(/_/g, ' ')}
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums">
+                                {log.actualPlatesProduced.toLocaleString()} {log.unitLabel || 'plates'}
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums font-bold">
+                                {log.remainingPlates.toLocaleString()} {log.unitLabel || 'plates'}
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums font-bold text-neutral-900">
+                                {formatMoney(log.totalCost)}
+                              </td>
+                              <td className="py-3 px-3 text-neutral-600">{log.cookedBy}</td>
+                              <td className="py-3 px-4 text-right">
+                                {isReversed ? (
+                                  <span className="text-red-700 font-semibold">
+                                    Reversed · {log.reversalReason}
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setReversingLogId(log.id);
+                                      setReversalReason('Incorrect batch entry / prep cancelled');
+                                    }}
+                                    className="px-2.5 py-1 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg whitespace-nowrap cursor-pointer"
+                                  >
+                                    Reverse Batch
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                            {reversingLogId === log.id && (
+                              <tr className="bg-red-50/60">
+                                <td colSpan={8} className="px-4 py-3">
+                                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                                    <div className="flex-1 w-full">
+                                      <input
+                                        type="text"
+                                        value={reversalReason}
+                                        onChange={(e) => setReversalReason(e.target.value)}
+                                        placeholder="Enter mandatory audit reason for reversing this production batch..."
+                                        className="w-full px-3 py-1.5 text-xs bg-white border border-red-300 rounded-lg"
+                                      />
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const res = reverseProductionBatch(log.id, reversalReason, 'David Kasambala (Manager)');
+                                          if (res.success) {
+                                            setReversingLogId(null);
+                                            showActionBanner('success', `Batch ${log.batchNumber || log.id} reversed with full audit trail.`);
+                                          } else {
+                                            showActionBanner('error', res.error || 'Could not reverse batch.');
+                                          }
+                                        }}
+                                        className="px-3 py-1.5 text-xs font-bold bg-red-600 text-white rounded-lg cursor-pointer"
+                                      >
+                                        Confirm Controlled Reversal
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setReversingLogId(null)}
+                                        className="px-3 py-1.5 text-xs font-semibold bg-white border border-neutral-300 text-neutral-700 rounded-lg cursor-pointer"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {blockedCookingAttempts.length > 0 && (
+                <div className="bg-white rounded-2xl p-5 border border-neutral-200 space-y-2">
+                  <h4 className="text-xs font-bold text-neutral-900">
+                    Blocked Production Attempts ({blockedCookingAttempts.length})
+                  </h4>
+                  <div className="divide-y divide-neutral-100 text-xs">
+                    {blockedCookingAttempts.map((b) => (
+                      <div key={b.id} className="py-2 flex items-center justify-between gap-3">
+                        <div>
+                          <span className="font-semibold text-neutral-900">{b.dishName}</span> ·{' '}
+                          <span className="text-neutral-500">{b.reason}</span>
+                        </div>
+                        <span className="font-mono text-neutral-500">{b.timestamp}</span>
+                      </div>
+                    ))}
                   </div>
-                  <p className="text-[11px] text-blue-800 leading-relaxed">
-                    By comparing <strong>Theoretical Usage</strong> ({preparedDishStocks.reduce((sum, p) => sum + p.totalSoldToday, 0)} plates sold × per-plate BOM) against <strong>Actual Counted Kitchen Stock</strong>, RestaurantOS automatically isolates over-portioning, kitchen waste, prep loss, or theft.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SUB-TAB 4: Recipe Costing & Variants */}
+          {recipeSubTab === 'costing_variants' && (
+            <div className="space-y-5">
+              <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-neutral-200">
+                  <h3 className="text-sm font-bold text-neutral-900">
+                    Live Recipe Costing &amp; Margin Matrix
+                  </h3>
+                  <p className="text-xs text-neutral-500">
+                    Automatically recalculates from weighted-average supplier purchase prices while keeping historical production logs locked.
                   </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
+                      <tr>
+                        <th className="py-2.5 px-4">Code / Recipe</th>
+                        <th className="py-2.5 px-3">Method</th>
+                        <th className="py-2.5 px-3 text-right">Batch Yield</th>
+                        <th className="py-2.5 px-3 text-right">Sell Price</th>
+                        <th className="py-2.5 px-3 text-right">Live Plate Cost</th>
+                        <th className="py-2.5 px-3 text-right">Gross Margin</th>
+                        <th className="py-2.5 px-4 text-right">Food Cost %</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {recipes
+                        .filter((r) => !r.isSubRecipe)
+                        .map((rec) => {
+                          const dish = menuItems.find((m) => m.id === rec.menuItemId);
+                          const sell = dish?.price || 0;
+                          const cost = computeRecipeUnitCost(rec.id).perPlateCost;
+                          const margin = Math.max(0, sell - cost);
+                          const fcPct = sell > 0 ? (cost / sell) * 100 : 0;
+
+                          return (
+                            <tr key={rec.id} className="hover:bg-neutral-50/70">
+                              <td className="py-3 px-4">
+                                <div className="font-bold text-neutral-900">{rec.name || dish?.name}</div>
+                                <div className="text-[11px] font-mono text-neutral-500">{rec.code || rec.id}</div>
+                              </td>
+                              <td className="py-3 px-3 text-neutral-600 capitalize">
+                                {(rec.productionMethod || 'recipe_bom').replace(/_/g, ' ')}
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums">
+                                {rec.batchYieldPlates} {rec.yieldUnit || 'plates'}
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums font-semibold">
+                                {formatMoney(sell)}
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums font-bold text-blue-700">
+                                {formatMoney(cost)}
+                              </td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums font-bold text-emerald-700">
+                                {formatMoney(margin)}
+                              </td>
+                              <td className="py-3 px-4 text-right font-mono tabular-nums font-bold">
+                                <span className={fcPct <= 35 ? 'text-emerald-700' : fcPct <= 45 ? 'text-amber-700' : 'text-red-700'}>
+                                  {fcPct.toFixed(1)}%
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Variants & Modifiers Cost Impact */}
+              <div className="bg-white rounded-2xl p-5 border border-neutral-200 space-y-4">
+                <h3 className="text-sm font-bold text-neutral-900">
+                  Portion Variants &amp; Modifier BOM Rules
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {recipes
+                    .filter((r) => (r.variants && r.variants.length > 0) || (r.modifierRules && r.modifierRules.length > 0))
+                    .map((rec) => {
+                      const dish = menuItems.find((m) => m.id === rec.menuItemId);
+                      const baseCost = computeRecipeUnitCost(rec.id).perPlateCost;
+                      return (
+                        <div key={rec.id} className="p-4 rounded-xl border border-neutral-200 space-y-3">
+                          <div className="font-bold text-xs text-neutral-900">
+                            {rec.name || dish?.name} · Base Cost {formatMoney(baseCost)}
+                          </div>
+                          {rec.variants && rec.variants.length > 0 && (
+                            <div className="space-y-1 text-xs">
+                              <div className="text-[11px] font-semibold text-neutral-500">Portion Scaling:</div>
+                              {rec.variants.map((v) => {
+                                const portionObj = dish?.portions?.find((p) => p.name === v.name);
+                                const varSell = (dish?.price || 0) + (portionObj?.priceDelta || 0);
+                                const varCost = Math.round(baseCost * v.portionMultiplier);
+                                return (
+                                  <div key={v.id} className="flex justify-between font-mono tabular-nums">
+                                    <span className="font-sans text-neutral-800">
+                                      {v.name} ({v.portionMultiplier}x)
+                                    </span>
+                                    <span>
+                                      Cost {formatMoney(varCost)} · Sell {formatMoney(varSell)}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {rec.modifierRules && rec.modifierRules.length > 0 && (
+                            <div className="space-y-1 text-xs pt-2 border-t border-neutral-100">
+                              <div className="text-[11px] font-semibold text-neutral-500">Modifier Rules:</div>
+                              {rec.modifierRules.map((mr) => {
+                                const ing = ingredients.find((i) => i.id === mr.ingredientId);
+                                return (
+                                  <div key={mr.id} className="flex justify-between text-neutral-700">
+                                    <span>{mr.modifierName}</span>
+                                    <span className="font-mono">
+                                      {mr.action === 'remove' ? '-' : '+'}
+                                      {mr.quantityDelta} {ing?.consumptionUnit} {ing?.name}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                 </div>
               </div>
             </div>
-          </div>
+          )}
+
+          {/* SUB-TAB 5: Yield Losses & Approved Substitutions */}
+          {recipeSubTab === 'yield_subs' && (
+            <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+              <div className="px-5 py-3.5 border-b border-neutral-200">
+                <h3 className="text-sm font-bold text-neutral-900">
+                  Edible Yield %, Trim Losses &amp; Approved Ingredient Substitutions
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Tracks As-Purchased (AP) vs Edible Portion (EP) quantities and automatic substitute ingredients when kitchen stock hits zero.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
+                    <tr>
+                      <th className="py-2.5 px-4">Recipe</th>
+                      <th className="py-2.5 px-3">Primary Ingredient</th>
+                      <th className="py-2.5 px-3 text-right">Yield %</th>
+                      <th className="py-2.5 px-3 text-right">Trim Loss %</th>
+                      <th className="py-2.5 px-3">Approved Substitute</th>
+                      <th className="py-2.5 px-4 text-right">Sub Kitchen Stock</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {recipes.flatMap((rec) =>
+                      rec.ingredients
+                        .filter((ri) => !ri.isSubRecipe && ((ri.yieldPercentage && ri.yieldPercentage < 100) || ri.substituteIngredientId))
+                        .map((ri, idx) => {
+                          const ing = ingredients.find((i) => i.id === ri.ingredientId);
+                          const sub = ri.substituteIngredientId
+                            ? ingredients.find((i) => i.id === ri.substituteIngredientId)
+                            : undefined;
+                          const yPct = ri.yieldPercentage || 100;
+                          return (
+                            <tr key={`${rec.id}-${idx}`} className="hover:bg-neutral-50/70">
+                              <td className="py-3 px-4 font-semibold text-neutral-900">{rec.name}</td>
+                              <td className="py-3 px-3 text-neutral-800">{ing?.name || ri.ingredientId}</td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums font-bold">{yPct}%</td>
+                              <td className="py-3 px-3 text-right font-mono tabular-nums text-amber-700">
+                                {100 - yPct}%
+                              </td>
+                              <td className="py-3 px-3 text-neutral-700">
+                                {sub ? sub.name : 'No substitute mapped'}
+                              </td>
+                              <td className="py-3 px-4 text-right font-mono tabular-nums">
+                                {sub ? `${sub.kitchenStockUnits.toLocaleString()} ${sub.consumptionUnit}` : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SUB-TAB 6: Theoretical vs Actual Consumption Variance */}
+          {recipeSubTab === 'variance' && (
+            <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
+              <div className="px-5 py-4 border-b border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-neutral-900">
+                    Theoretical vs. Actual Kitchen Consumption Variance
+                  </h3>
+                  <p className="text-xs text-neutral-500">
+                    Reconciles expected BOM &amp; direct usage against physical counts. Updates physical stock balances without ever mutating approved recipes.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      recomputeDailyVariance();
+                      showActionBanner('success', 'Recomputed theoretical vs actual usage from live movements.');
+                    }}
+                    className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-xs font-bold rounded-lg whitespace-nowrap cursor-pointer"
+                  >
+                    Recompute From Movements
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = commitDailyReconciliation('David Kasambala (Manager)');
+                      showActionBanner(
+                        'success',
+                        `Variance reconciliation committed (Net Variance Impact: ${formatMoney(res.totalVarianceCost)}). Approved recipes preserved.`
+                      );
+                    }}
+                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg whitespace-nowrap cursor-pointer"
+                  >
+                    Commit Physical Audit
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
+                    <tr>
+                      <th className="py-2.5 px-4">Ingredient</th>
+                      <th className="py-2.5 px-3 text-right">Theoretical Used</th>
+                      <th className="py-2.5 px-3 text-right">Expected Closing</th>
+                      <th className="py-2.5 px-3 text-right">Actual Physical Count</th>
+                      <th className="py-2.5 px-3 text-right">Variance Qty</th>
+                      <th className="py-2.5 px-3 text-right">Variance Cost</th>
+                      <th className="py-2.5 px-4">Classification</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {dailyReconciliations.map((rec) => (
+                      <tr key={rec.ingredientId} className="hover:bg-neutral-50/70">
+                        <td className="py-3 px-4 font-bold text-neutral-900">{rec.ingredientName}</td>
+                        <td className="py-3 px-3 text-right font-mono tabular-nums text-neutral-700">
+                          {rec.theoreticalUsage.toLocaleString()} {rec.unit}
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono tabular-nums text-neutral-700">
+                          {rec.expectedClosingStock.toLocaleString()} {rec.unit}
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <input
+                            type="number"
+                            value={rec.actualCountedStock}
+                            onChange={(e) =>
+                              updateDailyReconciliationCount(rec.ingredientId, Number(e.target.value))
+                            }
+                            className="w-28 bg-neutral-50 border border-neutral-300 rounded-lg px-2 py-1 text-right font-mono font-bold tabular-nums"
+                          />
+                        </td>
+                        <td
+                          className={`py-3 px-3 text-right font-mono tabular-nums font-bold ${
+                            rec.varianceQty < 0
+                              ? 'text-red-700'
+                              : rec.varianceQty > 0
+                              ? 'text-emerald-700'
+                              : 'text-neutral-700'
+                          }`}
+                        >
+                          {rec.varianceQty > 0 ? `+${rec.varianceQty.toLocaleString()}` : rec.varianceQty.toLocaleString()} {rec.unit}
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono tabular-nums font-bold text-neutral-900">
+                          {formatMoney(rec.varianceCost)}
+                        </td>
+                        <td className="py-3 px-4 capitalize text-neutral-700 font-semibold">
+                          {rec.varianceType.replace(/_/g, ' ')}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
-    )}
+      )}
 
       {/* TAB 6: Menu Creator & Pricing */}
       {activeTab === 'menu_management' && (
@@ -3121,21 +3925,32 @@ export const InventoryRecipesView: React.FC = () => {
               />
             </div>
 
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-neutral-700">Invoice / PO Reference:</label>
-              <input
-                type="text"
-                required
-                value={intakeInvoiceRef}
-                onChange={(e) => setIntakeInvoiceRef(e.target.value)}
-                placeholder="e.g. INV-2026-402 / PO-88192"
-                className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono"
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-neutral-700">Invoice / PO Reference:</label>
+                <input
+                  type="text"
+                  required
+                  value={intakeInvoiceRef}
+                  onChange={(e) => setIntakeInvoiceRef(e.target.value)}
+                  placeholder="e.g. INV-2026-402"
+                  className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-neutral-700">Batch Expiry Date (FEFO):</label>
+                <input
+                  type="date"
+                  value={intakeExpiryDate}
+                  onChange={(e) => setIntakeExpiryDate(e.target.value)}
+                  className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono"
+                />
+              </div>
             </div>
 
             <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl text-[11px] text-blue-900">
               <Warehouse className="w-3.5 h-3.5 inline mr-1 text-blue-600" />
-              Incoming deliveries are safely catalogued into <strong>Main Storage Room</strong>.
+              Incoming stock creates a FIFO/FEFO lot in <strong>Main Storage Room</strong> and updates weighted-average recipe costing.
             </div>
 
             <div className="pt-2 flex justify-end gap-2">
@@ -3426,6 +4241,104 @@ export const InventoryRecipesView: React.FC = () => {
         </div>
       )}
 
+      {/* MODAL: Direct Stock Consumption (Method 3: No BOM Required) */}
+      {isDirectConsumptionModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <form
+            onSubmit={handleDirectConsumptionSubmit}
+            className="bg-white rounded-2xl p-6 max-w-md w-full border border-neutral-200 space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-neutral-200 pb-3">
+              <div className="flex items-center gap-2">
+                <Flame className="w-4 h-4 text-orange-600" />
+                <h3 className="font-bold text-sm text-neutral-900">
+                  Direct Stock Consumption (Method 3 · No BOM)
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDirectConsumptionModalOpen(false)}
+                className="text-xs text-neutral-500 hover:text-neutral-800 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+
+            <p className="text-xs text-neutral-500">
+              Record non-BOM operational usage such as deep fryer cooking oil, charcoal, or bulk prep seasonings.
+            </p>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-neutral-700">Raw Ingredient / Consumable</label>
+              <select
+                value={directIngId}
+                onChange={(e) => setDirectIngId(e.target.value)}
+                className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-semibold"
+              >
+                {ingredients.map((ing) => (
+                  <option key={ing.id} value={ing.id}>
+                    {ing.name} (Kitchen: {(ing.kitchenStockUnits ?? 0).toLocaleString()} {ing.consumptionUnit})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-neutral-700">Location</label>
+                <select
+                  value={directLoc}
+                  onChange={(e) => setDirectLoc(e.target.value as 'kitchen' | 'main_store')}
+                  className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
+                >
+                  <option value="kitchen">Kitchen Floor</option>
+                  <option value="main_store">Main Store</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-neutral-700">Quantity Used</label>
+                <input
+                  type="number"
+                  min={1}
+                  required
+                  value={directQty}
+                  onChange={(e) => setDirectQty(Number(e.target.value))}
+                  className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono font-bold tabular-nums"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-neutral-700">Operational Reason</label>
+              <input
+                type="text"
+                required
+                value={directReason}
+                onChange={(e) => setDirectReason(e.target.value)}
+                placeholder="e.g. Fryer oil change for evening service"
+                className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
+              />
+            </div>
+
+            <div className="pt-2 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsDirectConsumptionModalOpen(false)}
+                className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-xl cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 text-xs font-bold bg-neutral-900 text-white rounded-xl hover:bg-neutral-800 cursor-pointer"
+              >
+                Record Direct Usage
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* MODAL: AI Recipe-to-BOM Creator (Interactive Review & Approval) */}
       <AiBomBuilderModal
         isOpen={isAiBomModalOpen}
@@ -3433,12 +4346,15 @@ export const InventoryRecipesView: React.FC = () => {
         initialMenuItemId={aiBomTargetDishId}
       />
 
-      {/* MODAL: Batch Cooking Production (Strict Kitchen Stock Block, Missing Alerts & Requisition) */}
-      {activeRecipe && (
+      {/* MODAL: Batch Cooking Production (Finished Dishes & Sub-Recipes) */}
+      {(batchModalRecipe || activeRecipe) && (
         <BatchCookingModal
           isOpen={isBatchCookModalOpen}
-          onClose={() => setIsBatchCookModalOpen(false)}
-          recipe={activeRecipe}
+          onClose={() => {
+            setIsBatchCookModalOpen(false);
+            setBatchModalRecipe(null);
+          }}
+          recipe={(batchModalRecipe || activeRecipe)!}
         />
       )}
 
@@ -3448,6 +4364,7 @@ export const InventoryRecipesView: React.FC = () => {
         onClose={() => setIsRecipeCardModalOpen(false)}
         recipe={recipeCardToEdit}
         defaultMenuItemId={selectedRecipeItem}
+        defaultIsSubRecipe={recipeCardDefaultSubRecipe}
       />
     </div>
   );

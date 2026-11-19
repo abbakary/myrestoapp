@@ -1,18 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Plus,
   Trash2,
   CheckCircle2,
-  AlertTriangle,
-  Scale,
-  Sparkles,
-  Info,
   Layers,
   ChefHat,
   Warehouse,
-  Flame,
-  ArrowRight,
   History,
   ShieldAlert,
   ShieldCheck,
@@ -20,13 +14,23 @@ import {
   BookOpen,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { Recipe, RecipeIngredient, MenuItem, RecipeVersionHistoryItem } from '../../types/restaurant';
+import {
+  Recipe,
+  RecipeIngredient,
+  RecipeVersionHistoryItem,
+  ProductionMethod,
+  RecipeStatus,
+  RecipeVariant,
+  RecipeModifierRule,
+  KitchenStation,
+} from '../../types/restaurant';
 
 interface RecipeCardModalProps {
   isOpen: boolean;
   onClose: () => void;
   recipe?: Recipe | null;
   defaultMenuItemId?: string;
+  defaultIsSubRecipe?: boolean;
 }
 
 interface EditableIngredientRow {
@@ -37,6 +41,10 @@ interface EditableIngredientRow {
   notes?: string;
   isSubRecipe?: boolean;
   subRecipeId?: string;
+  subRecipeQuantity?: number;
+  subRecipeUnit?: string;
+  substituteIngredientId?: string;
+  isOptional?: boolean;
 }
 
 export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
@@ -44,6 +52,7 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
   onClose,
   recipe,
   defaultMenuItemId,
+  defaultIsSubRecipe = false,
 }) => {
   const {
     menuItems,
@@ -52,26 +61,49 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
     formatMoney,
     saveRecipe,
     transferStock,
+    computeRecipeUnitCost,
   } = useRestaurant();
 
   const [selectedMenuItemId, setSelectedMenuItemId] = useState<string>(
     recipe?.menuItemId || defaultMenuItemId || menuItems[0]?.id || ''
   );
+  const [recipeCode, setRecipeCode] = useState<string>(
+    recipe?.code || (defaultIsSubRecipe ? `SUB-00${recipes.filter((r) => r.isSubRecipe).length + 1}` : `RCP-00${recipes.length + 1}`)
+  );
   const [recipeName, setRecipeName] = useState<string>(
-    recipe?.name || 'Wali Nyama (Beef Stew with Rice)'
+    recipe?.name || (defaultIsSubRecipe ? 'Prepared Sauce Base' : 'Wali Nyama (Beef Stew with Rice)')
   );
-  const [batchYieldPlates, setBatchYieldPlates] = useState<number>(
-    recipe?.batchYieldPlates || 100
+  const [category, setCategory] = useState<string>(recipe?.category || 'Main Course');
+  const [productionLocation, setProductionLocation] = useState<KitchenStation | 'prep_kitchen'>(
+    recipe?.productionLocation || (defaultIsSubRecipe ? 'prep_kitchen' : 'hot_kitchen')
   );
+  const [productionMethod, setProductionMethod] = useState<ProductionMethod>(
+    recipe?.productionMethod || 'recipe_bom'
+  );
+  const [status, setStatus] = useState<RecipeStatus>(recipe?.status || 'approved');
+  const [batchYieldPlates, setBatchYieldPlates] = useState<number>(recipe?.batchYieldPlates || 100);
+  const [yieldUnit, setYieldUnit] = useState<string>(
+    recipe?.yieldUnit || (defaultIsSubRecipe ? 'grams' : 'plates')
+  );
+  const [standardPortionSize, setStandardPortionSize] = useState<string>(
+    recipe?.standardPortionSize || '1 Plate (350g)'
+  );
+  const [expectedYieldPct, setExpectedYieldPct] = useState<number>(recipe?.expectedYieldPct || 95);
+  const [shelfLifeHours, setShelfLifeHours] = useState<number>(recipe?.shelfLifeHours || 24);
+  const [allergensText, setAllergensText] = useState<string>((recipe?.allergens || []).join(', '));
+
   const [cookingMethod, setCookingMethod] = useState<'batch_cooking' | 'on_sale_order'>(
     recipe?.cookingMethod || 'batch_cooking'
   );
   const [prepInstructions, setPrepInstructions] = useState<string>(
     recipe?.preparationInstructions || ''
   );
-  const [version, setVersion] = useState<number>(recipe?.version || 1);
-  const [isSubRecipe, setIsSubRecipe] = useState<boolean>(recipe?.isSubRecipe || false);
+  const [cookingInstructions, setCookingInstructions] = useState<string>(
+    recipe?.cookingInstructions || ''
+  );
+  const [isSubRecipe, setIsSubRecipe] = useState<boolean>(recipe?.isSubRecipe ?? defaultIsSubRecipe);
   const [strictKitchenStockMode, setStrictKitchenStockMode] = useState<boolean>(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [blockedAlert, setBlockedAlert] = useState<{
     ingredientName: string;
     ingredientId: string;
@@ -79,36 +111,57 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
     unit: string;
   } | null>(null);
   const [showHistoryModal, setShowHistoryModal] = useState<boolean>(false);
+  const [activeSection, setActiveSection] = useState<'ingredients' | 'variants' | 'sop'>('ingredients');
 
-  // Available sub-recipes (recipes marked as isSubRecipe)
+  const [variants, setVariants] = useState<RecipeVariant[]>(recipe?.variants || []);
+  const [modifierRules, setModifierRules] = useState<RecipeModifierRule[]>(recipe?.modifierRules || []);
+
   const availableSubRecipes = recipes.filter((r) => r.isSubRecipe && r.id !== recipe?.id);
 
-  // Rows of ingredients with batch quantities
-  const [rows, setRows] = useState<EditableIngredientRow[]>(() => {
-    if (recipe && recipe.ingredients && recipe.ingredients.length > 0) {
-      return recipe.ingredients.map((ri) => {
+  const buildRowsFromRecipe = (target?: Recipe | null): EditableIngredientRow[] => {
+    if (target && target.ingredients && target.ingredients.length > 0) {
+      return target.ingredients.map((ri) => {
+        if (ri.isSubRecipe && ri.subRecipeId) {
+          const batchQty = ri.batchQuantity ?? (ri.subRecipeQuantity || ri.quantity) * (target.batchYieldPlates || 1);
+          return {
+            ingredientId: ri.ingredientId,
+            batchQuantity: batchQty,
+            batchUnit: ri.batchUnit || ri.subRecipeUnit || 'portions',
+            yieldPercentage: ri.yieldPercentage || 100,
+            notes: ri.notes,
+            isSubRecipe: true,
+            subRecipeId: ri.subRecipeId,
+            subRecipeQuantity: ri.subRecipeQuantity || ri.quantity,
+            subRecipeUnit: ri.subRecipeUnit || 'portions',
+            isOptional: ri.isOptional,
+          };
+        }
+
         const ing = ingredients.find((i) => i.id === ri.ingredientId);
-        // Default batch quantity: either stored batchQuantity, or ri.quantity * batchYieldPlates
-        const rawBatchQty = ri.batchQuantity ?? ri.quantity * (recipe.batchYieldPlates || 100);
-        // Convert to display unit (e.g. grams -> kg)
+        const rawBatchQty = ri.batchQuantity ?? ri.quantity * (target.batchYieldPlates || 100);
         const isWeight = ing?.consumptionUnit === 'grams';
         const isVolume = ing?.consumptionUnit === 'ml';
-        const displayBatch = isWeight || isVolume ? rawBatchQty / 1000 : rawBatchQty;
-        const displayUnit = ri.batchUnit || (isWeight ? 'kg' : isVolume ? 'L' : ing?.consumptionUnit || 'pcs');
+        const displayBatch =
+          ri.batchUnit === 'g' || ri.batchUnit === 'ml'
+            ? rawBatchQty
+            : isWeight || isVolume
+            ? rawBatchQty / 1000
+            : rawBatchQty;
+        const displayUnit =
+          ri.batchUnit || (isWeight ? 'kg' : isVolume ? 'L' : ing?.consumptionUnit || 'pcs');
 
         return {
           ingredientId: ri.ingredientId,
-          batchQuantity: displayBatch,
+          batchQuantity: Number(displayBatch.toFixed(3)),
           batchUnit: displayUnit,
           yieldPercentage: ri.yieldPercentage || 100,
           notes: ri.notes,
-          isSubRecipe: ri.isSubRecipe,
-          subRecipeId: ri.subRecipeId,
+          substituteIngredientId: ri.substituteIngredientId,
+          isOptional: ri.isOptional,
         };
       });
     }
 
-    // Default template matching user specification: Wali Nyama (Rice, Beef, Oil, Onions, Tomatoes, Salt)
     return [
       { ingredientId: 'ing-rice', batchQuantity: 20, batchUnit: 'kg', yieldPercentage: 100 },
       { ingredientId: 'ing-beef', batchQuantity: 15, batchUnit: 'kg', yieldPercentage: 90 },
@@ -117,16 +170,51 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
       { ingredientId: 'ing-tomatoes', batchQuantity: 2, batchUnit: 'kg', yieldPercentage: 92 },
       { ingredientId: 'ing-salt', batchQuantity: 0.3, batchUnit: 'kg', yieldPercentage: 100 },
     ];
-  });
+  };
+
+  const [rows, setRows] = useState<EditableIngredientRow[]>(() => buildRowsFromRecipe(recipe));
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setValidationError(null);
+    setBlockedAlert(null);
+    setSelectedMenuItemId(recipe?.menuItemId || defaultMenuItemId || menuItems[0]?.id || '');
+    setRecipeCode(
+      recipe?.code ||
+        (defaultIsSubRecipe
+          ? `SUB-00${recipes.filter((r) => r.isSubRecipe).length + 1}`
+          : `RCP-00${recipes.length + 1}`)
+    );
+    setRecipeName(
+      recipe?.name ||
+        menuItems.find((m) => m.id === defaultMenuItemId)?.name ||
+        (defaultIsSubRecipe ? 'Prepared Sauce Base' : 'Standardized Dish Recipe')
+    );
+    setCategory(recipe?.category || 'Main Course');
+    setProductionLocation(recipe?.productionLocation || (defaultIsSubRecipe ? 'prep_kitchen' : 'hot_kitchen'));
+    setProductionMethod(recipe?.productionMethod || 'recipe_bom');
+    setStatus(recipe?.status || 'approved');
+    setBatchYieldPlates(recipe?.batchYieldPlates || (defaultIsSubRecipe ? 5000 : 100));
+    setYieldUnit(recipe?.yieldUnit || (defaultIsSubRecipe ? 'grams' : 'plates'));
+    setStandardPortionSize(recipe?.standardPortionSize || '1 Plate (350g)');
+    setExpectedYieldPct(recipe?.expectedYieldPct || 95);
+    setShelfLifeHours(recipe?.shelfLifeHours || 24);
+    setAllergensText((recipe?.allergens || []).join(', '));
+    setCookingMethod(recipe?.cookingMethod || 'batch_cooking');
+    setPrepInstructions(recipe?.preparationInstructions || '');
+    setCookingInstructions(recipe?.cookingInstructions || '');
+    setIsSubRecipe(recipe?.isSubRecipe ?? defaultIsSubRecipe);
+    setVariants(recipe?.variants || []);
+    setModifierRules(recipe?.modifierRules || []);
+    setRows(buildRowsFromRecipe(recipe));
+  }, [isOpen, recipe, defaultMenuItemId, defaultIsSubRecipe]);
 
   if (!isOpen) return null;
 
   const targetDish = menuItems.find((m) => m.id === selectedMenuItemId);
   const sellPrice = targetDish?.price || 8000;
 
-  // Row update handlers
   const handleUpdateRow = (index: number, updates: Partial<EditableIngredientRow>) => {
-    // If strict mode is ON and ingredientId changed, check kitchen stock
     if (strictKitchenStockMode && updates.ingredientId && updates.ingredientId !== rows[index].ingredientId) {
       const ing = ingredients.find((i) => i.id === updates.ingredientId);
       if (ing && (ing.kitchenStockUnits ?? 0) <= 0) {
@@ -136,7 +224,7 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
           storeStock: ing.storeStockUnits ?? 0,
           unit: ing.consumptionUnit,
         });
-        return; // Block change
+        return;
       }
     }
 
@@ -150,16 +238,19 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
   const handleAddRow = (asSubRecipe = false) => {
     if (asSubRecipe && availableSubRecipes.length > 0) {
       const subRec = availableSubRecipes[0];
+      const defaultPerPortion = subRec.yieldUnit === 'grams' ? 50 : 1;
       setRows((prev) => [
         ...prev,
         {
-          ingredientId: subRec.ingredients[0]?.ingredientId || 'ing-beef',
-          batchQuantity: 1,
-          batchUnit: 'batch',
+          ingredientId: subRec.id,
+          batchQuantity: defaultPerPortion * (batchYieldPlates || 1),
+          batchUnit: subRec.yieldUnit || 'portions',
           yieldPercentage: 100,
           isSubRecipe: true,
           subRecipeId: subRec.id,
-          notes: `Sub-recipe: ${subRec.name} (Yield ${subRec.batchYieldPlates} plates)`,
+          subRecipeQuantity: defaultPerPortion,
+          subRecipeUnit: subRec.yieldUnit || 'portions',
+          notes: `Sub-recipe: ${subRec.name}`,
         },
       ]);
       return;
@@ -181,7 +272,7 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
 
     const firstAvailable = availableCandidates[0] || ingredients[0];
 
-    if (strictKitchenStockMode && (firstAvailable.kitchenStockUnits ?? 0) <= 0) {
+    if (strictKitchenStockMode && firstAvailable && (firstAvailable.kitchenStockUnits ?? 0) <= 0) {
       setBlockedAlert({
         ingredientName: firstAvailable.name,
         ingredientId: firstAvailable.id,
@@ -209,7 +300,6 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
     setRows((prev) => prev.filter((_, idx) => idx !== index));
   };
 
-  // Quick transfer from store when blocked in strict mode
   const handleQuickTransferFromStore = (ingredientId: string) => {
     const ing = ingredients.find((i) => i.id === ingredientId);
     if (!ing) return;
@@ -229,33 +319,26 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
     setBlockedAlert(null);
   };
 
-  // Restore past version from history
   const handleRestoreVersion = (historyItem: RecipeVersionHistoryItem) => {
     setBatchYieldPlates(historyItem.batchYieldPlates);
     setRecipeName(historyItem.name || '');
     setCookingMethod(historyItem.cookingMethod || 'on_sale_order');
+    if (historyItem.productionMethod) setProductionMethod(historyItem.productionMethod);
     setPrepInstructions(historyItem.preparationInstructions || '');
-
-    const restoredRows: EditableIngredientRow[] = historyItem.ingredients.map((ri) => {
-      const ing = ingredients.find((i) => i.id === ri.ingredientId);
-      const rawBatchQty = ri.batchQuantity ?? ri.quantity * historyItem.batchYieldPlates;
-      const isWeight = ing?.consumptionUnit === 'grams';
-      const isVolume = ing?.consumptionUnit === 'ml';
-      const displayBatch = isWeight || isVolume ? rawBatchQty / 1000 : rawBatchQty;
-      const displayUnit = ri.batchUnit || (isWeight ? 'kg' : isVolume ? 'L' : ing?.consumptionUnit || 'pcs');
-
-      return {
-        ingredientId: ri.ingredientId,
-        batchQuantity: displayBatch,
-        batchUnit: displayUnit,
-        yieldPercentage: ri.yieldPercentage || 100,
-        notes: ri.notes,
-        isSubRecipe: ri.isSubRecipe,
-        subRecipeId: ri.subRecipeId,
-      };
-    });
-
-    setRows(restoredRows);
+    setCookingInstructions(historyItem.cookingInstructions || '');
+    setRows(
+      buildRowsFromRecipe({
+        ...(recipe || {
+          id: 'temp',
+          batchYieldPlates: historyItem.batchYieldPlates,
+          version: historyItem.version,
+          cookingMethod: historyItem.cookingMethod || 'on_sale_order',
+          ingredients: historyItem.ingredients,
+        }),
+        ingredients: historyItem.ingredients,
+        batchYieldPlates: historyItem.batchYieldPlates,
+      })
+    );
     setShowHistoryModal(false);
   };
 
@@ -264,17 +347,12 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
   let totalBatchCost = 0;
 
   const calculatedRows = rows.map((row) => {
-    // If this row is a sub-recipe
     if (row.isSubRecipe && row.subRecipeId) {
       const subRec = recipes.find((r) => r.id === row.subRecipeId);
-      const subPlateCost = subRec?.ingredients.reduce((sum, si) => {
-        const subIng = ingredients.find((i) => i.id === si.ingredientId);
-        const uCost = subIng ? subIng.costPerPurchaseUnit / subIng.conversionRatio : 0;
-        return sum + uCost * si.quantity;
-      }, 0) || 1200;
-
-      const lineCostPerPlate = Math.round(subPlateCost * (row.batchQuantity || 1));
-      const lineBatchCost = Math.round(lineCostPerPlate * batchYieldPlates);
+      const subCostInfo = subRec ? computeRecipeUnitCost(subRec.id) : { unitCost: 1200, batchCost: 1200, perPlateCost: 1200 };
+      const perServingQty = batchYieldPlates > 0 ? (row.batchQuantity || 0) / batchYieldPlates : 0;
+      const lineCostPerPlate = subCostInfo.unitCost * perServingQty;
+      const lineBatchCost = subCostInfo.unitCost * (row.batchQuantity || 0);
 
       totalPlateCost += lineCostPerPlate;
       totalBatchCost += lineBatchCost;
@@ -284,49 +362,41 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
         ingredient: null,
         subRecipe: subRec,
         baseBatchQty: row.batchQuantity,
-        perPlateDisplay: row.batchQuantity,
-        perPlateBaseQty: row.batchQuantity,
-        effectivePerPlateQty: row.batchQuantity,
-        lineCostPerPlate,
-        lineBatchCost,
-        kitchenDisplay: 'Sub-Recipe Prep',
-        storeDisplay: 'Prepared Daily',
+        perPlateDisplay: perServingQty,
+        perPlateBaseQty: perServingQty,
+        effectivePerPlateQty: perServingQty,
+        lineCostPerPlate: Math.round(lineCostPerPlate),
+        lineBatchCost: Math.round(lineBatchCost),
+        kitchenDisplay: 'Sub-Recipe',
+        storeDisplay: 'Prepared Pool',
         isTransferred: true,
         isSufficient: true,
       };
     }
 
     const ing = ingredients.find((i) => i.id === row.ingredientId);
-    const unitCost = ing ? ing.costPerPurchaseUnit / ing.conversionRatio : 0; // cost per gram/ml/pc
+    const unitCost = ing ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
     const isWeight = ing?.consumptionUnit === 'grams';
     const isVolume = ing?.consumptionUnit === 'ml';
 
-    // Normalize batch qty to base consumption unit
     const multiplier = (isWeight && row.batchUnit === 'kg') || (isVolume && row.batchUnit === 'L') ? 1000 : 1;
     const baseBatchQty = row.batchQuantity * multiplier;
 
-    // Per-plate auto-calculated: baseBatchQty / batchYieldPlates
     const perPlateBaseQty = batchYieldPlates > 0 ? baseBatchQty / batchYieldPlates : 0;
     const yieldFactor = Math.max(0.1, (row.yieldPercentage || 100) / 100);
     const effectivePerPlateQty = perPlateBaseQty / yieldFactor;
 
-    // Display per-plate quantity
     const perPlateDisplay = isWeight || isVolume ? perPlateBaseQty / 1000 : perPlateBaseQty;
-    const lineCostPerPlate = Math.round(effectivePerPlateQty * unitCost);
-    const lineBatchCost = Math.round(lineCostPerPlate * batchYieldPlates);
+    const lineCostPerPlate = effectivePerPlateQty * unitCost;
+    const lineBatchCost = lineCostPerPlate * batchYieldPlates;
 
     totalPlateCost += lineCostPerPlate;
     totalBatchCost += lineBatchCost;
 
-    // Live kitchen and store stock
     const kitchenStockBase = ing?.kitchenStockUnits ?? 0;
     const storeStockBase = ing?.storeStockUnits ?? 0;
     const kitchenDisplay = isWeight || isVolume ? (kitchenStockBase / 1000).toFixed(1) : kitchenStockBase;
     const storeDisplay = isWeight || isVolume ? (storeStockBase / 1000).toFixed(1) : storeStockBase;
-
-    // Kitchen readiness check for this batch
-    const isTransferred = kitchenStockBase > 0;
-    const isSufficient = kitchenStockBase >= baseBatchQty;
 
     return {
       ...row,
@@ -336,71 +406,126 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
       perPlateDisplay,
       perPlateBaseQty,
       effectivePerPlateQty,
-      lineCostPerPlate,
-      lineBatchCost,
+      lineCostPerPlate: Math.round(lineCostPerPlate),
+      lineBatchCost: Math.round(lineBatchCost),
       kitchenDisplay,
       storeDisplay,
-      isTransferred,
-      isSufficient,
+      isTransferred: kitchenStockBase > 0,
+      isSufficient: kitchenStockBase >= baseBatchQty,
     };
   });
 
-  const grossContribution = Math.max(0, sellPrice - totalPlateCost);
-  const foodCostPercentage = sellPrice > 0 ? (totalPlateCost / sellPrice) * 100 : 0;
+  const roundedPlateCost = Math.round(totalPlateCost);
+  const roundedBatchCost = Math.round(totalBatchCost);
+  const grossContribution = Math.max(0, sellPrice - roundedPlateCost);
+  const foodCostPercentage = sellPrice > 0 ? (roundedPlateCost / sellPrice) * 100 : 0;
 
-  // Handle Save
+  const handleAddVariant = () => {
+    setVariants((prev) => [
+      ...prev,
+      {
+        id: `var-${Date.now()}`,
+        name: prev.length === 0 ? 'Small' : prev.length === 1 ? 'Large' : `Portion ${prev.length + 1}`,
+        portionMultiplier: prev.length === 0 ? 0.75 : 1.35,
+      },
+    ]);
+  };
+
+  const handleAddModifierRule = () => {
+    const firstIng = ingredients[0];
+    if (!firstIng) return;
+    setModifierRules((prev) => [
+      ...prev,
+      {
+        id: `mod-${Date.now()}`,
+        modifierName: 'Extra Portion',
+        action: 'add',
+        ingredientId: firstIng.id,
+        quantityDelta: firstIng.consumptionUnit === 'grams' ? 50 : 1,
+      },
+    ]);
+  };
+
   const handleSaveRecipeCard = (e: React.FormEvent) => {
     e.preventDefault();
+    setValidationError(null);
 
     if (batchYieldPlates <= 0) {
-      alert('Recipe yield is mandatory. Please enter number of plates per batch (e.g. 100).');
+      setValidationError('Recipe yield must be greater than zero.');
       return;
     }
 
-    if (rows.length === 0) {
-      alert('Please add at least one raw ingredient from the catalogue.');
+    if (productionMethod !== 'direct_stock' && rows.length === 0) {
+      setValidationError('Please add at least one ingredient or sub-recipe line, or switch Method to Direct Stock Consumption.');
       return;
     }
 
     const recipeIngredients: RecipeIngredient[] = calculatedRows.map((r) => ({
-      ingredientId: r.ingredientId,
-      quantity: Math.round(r.effectivePerPlateQty * 10) / 10, // consumption unit per plate
-      batchQuantity: r.baseBatchQty, // base unit per batch
+      ingredientId: r.isSubRecipe && r.subRecipeId ? r.subRecipeId : r.ingredientId,
+      quantity: Math.round(r.effectivePerPlateQty * 1000) / 1000,
+      batchQuantity: r.baseBatchQty,
       batchUnit: r.batchUnit,
       yieldPercentage: r.yieldPercentage,
       isSubRecipe: r.isSubRecipe,
       subRecipeId: r.subRecipeId,
-      notes: r.notes || `${r.batchQuantity} ${r.batchUnit} batch ÷ ${batchYieldPlates} plates = ${r.perPlateDisplay.toFixed(3)} ${r.batchUnit} per plate`,
+      subRecipeQuantity: r.isSubRecipe ? Math.round(r.effectivePerPlateQty * 1000) / 1000 : undefined,
+      subRecipeUnit: r.isSubRecipe ? r.batchUnit : undefined,
+      substituteIngredientId: r.substituteIngredientId || undefined,
+      isOptional: r.isOptional,
+      notes:
+        r.notes ||
+        `${r.batchQuantity} ${r.batchUnit} batch / ${batchYieldPlates} ${yieldUnit}`,
     }));
 
-    const recipeId = recipe?.id || `rec-${Date.now()}`;
+    const recipeId = recipe?.id || `${isSubRecipe ? 'rec-sub-' : 'rec-'}${Date.now()}`;
     const newVersion = recipe ? recipe.version + 1 : 1;
+
+    const parsedAllergens = allergensText
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
 
     const updatedRecipe: Recipe = {
       id: recipeId,
+      code: recipeCode.trim() || undefined,
       menuItemId: isSubRecipe ? undefined : selectedMenuItemId,
       name: recipeName || targetDish?.name,
+      category: category.trim() || undefined,
+      productionLocation,
+      productionMethod,
+      status,
+      standardPortionSize: standardPortionSize.trim() || undefined,
+      yieldUnit,
+      expectedYieldPct,
+      shelfLifeHours,
+      allergens: parsedAllergens,
       batchYieldPlates,
       version: newVersion,
-      cookingMethod,
+      cookingMethod: isSubRecipe ? 'batch_cooking' : cookingMethod,
       isSubRecipe,
       ingredients: recipeIngredients,
+      variants: variants.length > 0 ? variants : undefined,
+      modifierRules: modifierRules.length > 0 ? modifierRules : undefined,
       preparationInstructions: prepInstructions,
-      approvedBy: 'Executive Chef Juma',
-      approvedAt: new Date().toISOString(),
+      cookingInstructions,
+      approvedBy: status === 'approved' ? 'Executive Chef Juma' : undefined,
+      approvedAt: status === 'approved' ? new Date().toISOString() : undefined,
       history: recipe?.history || [],
     };
 
     saveRecipe(updatedRecipe, {
       recipeId,
       dishName: targetDish?.name || recipeName,
-      rawInputText: `Manual Recipe Card: ${recipeName} (${batchYieldPlates} plates batch)`,
+      rawInputText: `Recipe Card ${recipeCode}: ${recipeName} (${batchYieldPlates} ${yieldUnit} · ${productionMethod})`,
       suggestedIngredientsCount: recipeIngredients.length,
       approvedIngredientsCount: recipeIngredients.length,
       avgConfidence: 100,
-      anomaliesDetected: foodCostPercentage > 45 ? [`High food cost % (${foodCostPercentage.toFixed(1)}%)`] : [],
+      anomaliesDetected:
+        !isSubRecipe && foodCostPercentage > 45
+          ? [`High food cost % (${foodCostPercentage.toFixed(1)}%)`]
+          : [],
       approvedBy: 'Executive Chef Juma',
-      totalCostPerPlate: totalPlateCost,
+      totalCostPerPlate: roundedPlateCost,
       foodCostPercentage,
     });
 
@@ -408,87 +533,91 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-white rounded-3xl max-w-4xl w-full border border-neutral-200 shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-xs overflow-y-auto">
+      <div className="bg-white rounded-2xl max-w-5xl w-full border border-neutral-200 overflow-hidden flex flex-col max-h-[92vh]">
         {/* Header */}
-        <div className="p-5 sm:p-6 border-b border-neutral-100 flex items-center justify-between bg-gradient-to-r from-orange-50/60 via-amber-50/40 to-white">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-neutral-900 text-white flex items-center justify-center shadow-sm">
-              <ChefHat className="w-5 h-5 text-orange-400" />
+        <div className="px-6 py-4 border-b border-neutral-200 flex items-center justify-between bg-white">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-neutral-900 text-white flex items-center justify-center shrink-0">
+              <ChefHat className="w-4 h-4 text-orange-400" />
             </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-extrabold text-neutral-900">
-                  Recipe Card (BOM Master Data)
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap text-sm">
+                <h2 className="font-bold text-neutral-900">
+                  Standardized Recipe Card
                 </h2>
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
-                  Version {recipe ? `v${recipe.version + 1} (Draft)` : 'v1'}
+                <span className="text-neutral-300">·</span>
+                <span className="font-mono text-xs text-neutral-600">
+                  {recipeCode} · v{recipe ? recipe.version + 1 : 1}
                 </span>
-                {isSubRecipe && (
-                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">
-                    Sub-Recipe / Base
-                  </span>
-                )}
+                <span className="text-neutral-300">·</span>
+                <span className="text-xs font-semibold text-neutral-700 capitalize">
+                  {isSubRecipe ? 'Sub-Recipe Base' : productionMethod.replace('_', ' ')}
+                </span>
                 {recipe?.history && recipe.history.length > 0 && (
                   <button
                     type="button"
                     onClick={() => setShowHistoryModal(true)}
-                    className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-neutral-200 hover:bg-neutral-300 text-neutral-800 inline-flex items-center gap-1 transition-colors cursor-pointer"
+                    className="ml-2 text-xs font-semibold text-orange-700 hover:underline inline-flex items-center gap-1 cursor-pointer"
                   >
-                    <History className="w-3 h-3 text-neutral-600" />
-                    <span>Version History ({recipe.history.length})</span>
+                    <History className="w-3.5 h-3.5" />
+                    <span>History ({recipe.history.length})</span>
                   </button>
                 )}
               </div>
               <p className="text-xs text-neutral-500">
-                Formula: Batch raw ingredients ÷ Recipe Yield plates = Per-plate usage driving stock deduction & costing.
+                Defines standard quantities, sub-recipes, edible yield %, portion variants, and SOP instructions.
               </p>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="p-2 text-neutral-400 hover:text-neutral-700 rounded-xl hover:bg-neutral-100 transition-colors"
+            className="p-2 text-neutral-400 hover:text-neutral-700 rounded-lg hover:bg-neutral-100 cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Blocked Alert Banner (Matching exact user spec) */}
+        {/* Inline Validation Error */}
+        {validationError && (
+          <div className="mx-6 mt-4 px-4 py-2.5 rounded-xl bg-red-50 border border-red-200 text-red-900 text-xs font-semibold flex items-center justify-between">
+            <span>{validationError}</span>
+            <button type="button" onClick={() => setValidationError(null)} className="text-red-700 hover:underline">
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* Blocked Alert Banner */}
         {blockedAlert && (
-          <div className="mx-6 mt-4 p-4 rounded-2xl bg-red-50 border border-red-200 text-red-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in">
+          <div className="mx-6 mt-4 p-4 rounded-xl bg-red-50 border border-red-200 text-red-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-xl bg-red-100 text-red-700 flex items-center justify-center shrink-0">
-                <ShieldAlert className="w-4 h-4" />
-              </div>
+              <ShieldAlert className="w-4 h-4 text-red-600 shrink-0" />
               <div className="text-xs">
-                <span className="font-extrabold text-red-900">
-                  ❌ Cannot add {blockedAlert.ingredientName} to this recipe.
+                <span className="font-bold text-red-900">
+                  Cannot add {blockedAlert.ingredientName} to this recipe:
                 </span>{' '}
-                It has not been transferred to the Kitchen floor. Please request it from Main Store first.
-                {blockedAlert.storeStock > 0 && (
-                  <span className="block text-[11px] text-red-700 font-semibold mt-0.5">
-                    Main Store has {blockedAlert.storeStock.toLocaleString()} {blockedAlert.unit} in reserve.
-                  </span>
-                )}
+                0 stock on the Kitchen floor. Main Store has {blockedAlert.storeStock.toLocaleString()} {blockedAlert.unit}.
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+            <div className="flex items-center gap-2 shrink-0">
               {blockedAlert.ingredientId && blockedAlert.storeStock > 0 && (
                 <button
                   type="button"
                   onClick={() => handleQuickTransferFromStore(blockedAlert.ingredientId)}
-                  className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1"
+                  className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg flex items-center gap-1 whitespace-nowrap cursor-pointer"
                 >
                   <Warehouse className="w-3.5 h-3.5" />
-                  <span>Transfer from Store Now</span>
+                  <span>Transfer from Store</span>
                 </button>
               )}
               <button
                 type="button"
                 onClick={() => setBlockedAlert(null)}
-                className="p-1.5 text-red-400 hover:text-red-700 rounded-lg hover:bg-red-100"
+                className="p-1 text-red-500 hover:text-red-800 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -496,10 +625,10 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
           </div>
         )}
 
-        {/* Strict Kitchen Stock Mode & Sub-Recipe Settings Bar */}
-        <div className="mx-6 mt-3 p-3 bg-neutral-50 rounded-2xl border border-neutral-200/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-4 flex-wrap">
-            <label className="flex items-center gap-2 cursor-pointer font-bold text-neutral-800">
+        {/* Settings Strip */}
+        <div className="mx-6 mt-3 px-4 py-2.5 bg-neutral-50 rounded-xl border border-neutral-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-5 flex-wrap">
+            <label className="flex items-center gap-2 cursor-pointer font-semibold text-neutral-800">
               <input
                 type="checkbox"
                 checked={strictKitchenStockMode}
@@ -507,48 +636,64 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
                   setStrictKitchenStockMode(e.target.checked);
                   setBlockedAlert(null);
                 }}
-                className="rounded text-orange-600 focus:ring-orange-500 w-4 h-4"
+                className="rounded text-orange-600 w-4 h-4"
               />
-              <span>Strict Kitchen Stock Mode</span>
-              <span className="text-[10px] font-normal text-neutral-500">
-                (Blocks adding ingredients with 0 Kitchen stock)
-              </span>
+              <span>Strict Kitchen Stock Check</span>
             </label>
 
-            <label className="flex items-center gap-2 cursor-pointer font-bold text-purple-900">
+            <label className="flex items-center gap-2 cursor-pointer font-semibold text-neutral-800">
               <input
                 type="checkbox"
                 checked={isSubRecipe}
-                onChange={(e) => setIsSubRecipe(e.target.checked)}
-                className="rounded text-purple-600 focus:ring-purple-500 w-4 h-4"
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setIsSubRecipe(checked);
+                  if (checked) {
+                    setYieldUnit('grams');
+                    setCookingMethod('batch_cooking');
+                    setProductionLocation('prep_kitchen');
+                  } else {
+                    setYieldUnit('plates');
+                  }
+                }}
+                className="rounded text-orange-600 w-4 h-4"
               />
-              <span>Mark as Sub-Recipe / Base Dish</span>
-              <span className="text-[10px] font-normal text-purple-600">
-                (e.g. Beef Stew Base shared across Wali & Ugali)
-              </span>
+              <span>Sub-Recipe / Intermediate Prep Base</span>
             </label>
           </div>
 
-          <div className="text-[11px] text-neutral-500">
+          <div className="text-[11px] text-neutral-600 flex items-center gap-1.5">
             {strictKitchenStockMode ? (
-              <span className="text-orange-700 font-semibold flex items-center gap-1">
-                <ShieldAlert className="w-3.5 h-3.5" /> Strict Kitchen Gatekeeper Active
-              </span>
+              <>
+                <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
+                <span>Kitchen Stock Gatekeeper Active</span>
+              </>
             ) : (
-              <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                <ShieldCheck className="w-3.5 h-3.5" /> Recipe Formula Mode (Stock checked at cooking)
-              </span>
+              <>
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Standard Formula Mode (Validated at Prep)</span>
+              </>
             )}
           </div>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSaveRecipeCard} className="p-6 overflow-y-auto space-y-6 flex-1">
-          {/* Header Metadata: Dish, Sell Price, Yield, Method */}
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 p-4.5 bg-neutral-50 rounded-2xl border border-neutral-200">
+        <form onSubmit={handleSaveRecipeCard} className="p-6 overflow-y-auto space-y-5 flex-1">
+          {/* Row 1: Identity & Operational Method */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <div>
+              <label className="text-xs font-semibold text-neutral-600">Recipe Code</label>
+              <input
+                type="text"
+                value={recipeCode}
+                onChange={(e) => setRecipeCode(e.target.value)}
+                className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-neutral-900"
+              />
+            </div>
+
             <div>
               <label className="text-xs font-semibold text-neutral-600">
-                {isSubRecipe ? 'Sub-Recipe Name:' : 'Menu Item:'}
+                {isSubRecipe ? 'Sub-Recipe Name' : 'Linked Menu Dish'}
               </label>
               {isSubRecipe ? (
                 <input
@@ -556,8 +701,8 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
                   required
                   value={recipeName}
                   onChange={(e) => setRecipeName(e.target.value)}
-                  placeholder="e.g. Beef Stew Base"
-                  className="w-full mt-1 bg-white border border-neutral-200 rounded-xl px-2.5 py-1.5 text-xs font-bold text-neutral-900"
+                  placeholder="e.g. House Tomato Sauce Base"
+                  className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-bold text-neutral-900"
                 />
               ) : (
                 <select
@@ -565,9 +710,12 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
                   onChange={(e) => {
                     setSelectedMenuItemId(e.target.value);
                     const d = menuItems.find((m) => m.id === e.target.value);
-                    if (d) setRecipeName(d.name);
+                    if (d) {
+                      setRecipeName(d.name);
+                      setCategory(d.category);
+                    }
                   }}
-                  className="w-full mt-1 bg-white border border-neutral-200 rounded-xl px-2.5 py-1.5 text-xs font-bold text-neutral-900"
+                  className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-bold text-neutral-900"
                 >
                   {menuItems.map((item) => (
                     <option key={item.id} value={item.id}>
@@ -579,19 +727,37 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-neutral-600">
-                {isSubRecipe ? 'Base Prep Valuation:' : 'Sell Price:'}
-              </label>
-              <div className="mt-1 text-sm font-extrabold font-mono text-neutral-900 py-1.5 px-3 bg-white border border-neutral-200 rounded-xl">
-                {formatMoney(sellPrice)}
-              </div>
+              <label className="text-xs font-semibold text-neutral-600">Production Method</label>
+              <select
+                value={productionMethod}
+                onChange={(e) => setProductionMethod(e.target.value as ProductionMethod)}
+                className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-bold text-neutral-900"
+              >
+                <option value="recipe_bom">Method 1: Standardized Recipe BOM</option>
+                <option value="semi_standardized">Method 2: Semi-Standardized (Adjustable)</option>
+                <option value="direct_stock">Method 3: Direct Stock (No BOM)</option>
+              </select>
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-neutral-600 flex items-center justify-between">
-                <span>Recipe Yield (Batch):</span>
-                <span className="text-[10px] text-orange-600 font-bold">Mandatory</span>
-              </label>
+              <label className="text-xs font-semibold text-neutral-600">Approval Status</label>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value as RecipeStatus)}
+                className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-bold text-neutral-900"
+              >
+                <option value="approved">Approved (Production Active)</option>
+                <option value="testing">Testing (Kitchen Trial)</option>
+                <option value="draft">Draft</option>
+                <option value="archived">Archived</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Row 2: Yield, Portioning, Station, Deduction */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+            <div>
+              <label className="text-xs font-semibold text-neutral-600">Batch Yield Qty</label>
               <div className="mt-1 flex items-center gap-1.5">
                 <input
                   type="number"
@@ -599,366 +765,642 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
                   required
                   value={batchYieldPlates}
                   onChange={(e) => setBatchYieldPlates(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full bg-white border border-neutral-200 rounded-xl px-2.5 py-1.5 text-xs font-bold font-mono text-center"
+                  className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-2.5 py-2 text-xs font-bold font-mono tabular-nums"
                 />
-                <span className="text-xs text-neutral-500 font-bold">plates</span>
+                <select
+                  value={yieldUnit}
+                  onChange={(e) => setYieldUnit(e.target.value)}
+                  className="bg-neutral-50 border border-neutral-200 rounded-xl px-2 py-2 text-xs font-mono"
+                >
+                  <option value="plates">plates</option>
+                  <option value="portions">portions</option>
+                  <option value="grams">grams</option>
+                  <option value="ml">ml</option>
+                </select>
               </div>
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-neutral-600">Stock Deduction Mode:</label>
+              <label className="text-xs font-semibold text-neutral-600">Standard Portion Size</label>
+              <input
+                type="text"
+                value={standardPortionSize}
+                onChange={(e) => setStandardPortionSize(e.target.value)}
+                placeholder="e.g. 1 Plate (350g)"
+                className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs text-neutral-900"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-neutral-600">Kitchen Workflow</label>
               <select
-                value={cookingMethod}
-                onChange={(e) => setCookingMethod(e.target.value as any)}
-                className="w-full mt-1 bg-white border border-neutral-200 rounded-xl px-2.5 py-1.5 text-xs font-bold text-neutral-900"
+                value={isSubRecipe ? 'batch_cooking' : cookingMethod}
+                disabled={isSubRecipe}
+                onChange={(e) => setCookingMethod(e.target.value as 'batch_cooking' | 'on_sale_order')}
+                className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-semibold text-neutral-900 disabled:opacity-60"
               >
-                <option value="batch_cooking">Batch Cooking (Big Pot/Buffet)</option>
-                <option value="on_sale_order">On Sale (Made-to-Order)</option>
+                <option value="batch_cooking">Batch Prep (Pot / Buffet Pool)</option>
+                <option value="on_sale_order">Made-to-Order (On Sale)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-neutral-600">Prep Station</label>
+              <select
+                value={productionLocation}
+                onChange={(e) => setProductionLocation(e.target.value as KitchenStation | 'prep_kitchen')}
+                className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-semibold text-neutral-900"
+              >
+                <option value="hot_kitchen">Hot Kitchen</option>
+                <option value="grill">Grill &amp; Charcoal</option>
+                <option value="prep_kitchen">Prep Kitchen</option>
+                <option value="cold_prep">Cold Prep</option>
+                <option value="dessert">Pastry / Dessert</option>
+                <option value="drinks">Bar &amp; Drinks</option>
               </select>
             </div>
           </div>
 
-          {/* Recipe Card Table matching User Spec */}
-          <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden shadow-xs space-y-0">
-            <div className="p-3.5 bg-neutral-50 border-b border-neutral-100 flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-orange-600" />
-                <span className="text-xs font-bold text-neutral-900">
-                  Raw Ingredients Formulation ({rows.length} lines)
-                </span>
-                <span className="text-[11px] text-neutral-400">
-                  Enter batch quantities as cook actually thinks
-                </span>
-              </div>
+          {/* Section Segmented Tabs */}
+          <div className="flex items-center gap-1 p-1 bg-neutral-100 rounded-xl w-fit">
+            <button
+              type="button"
+              onClick={() => setActiveSection('ingredients')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap cursor-pointer ${
+                activeSection === 'ingredients' ? 'bg-white text-neutral-900' : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+            >
+              Ingredients &amp; Sub-Recipes ({rows.length})
+            </button>
+            {!isSubRecipe && (
+              <button
+                type="button"
+                onClick={() => setActiveSection('variants')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap cursor-pointer ${
+                  activeSection === 'variants' ? 'bg-white text-neutral-900' : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                Portion Variants &amp; Modifiers ({variants.length + modifierRules.length})
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setActiveSection('sop')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap cursor-pointer ${
+                activeSection === 'sop' ? 'bg-white text-neutral-900' : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+            >
+              SOP, Yield &amp; Allergens
+            </button>
+          </div>
 
-              <div className="flex items-center gap-2">
-                {availableSubRecipes.length > 0 && (
+          {/* SECTION 1: Ingredients & Sub-Recipes Table */}
+          {activeSection === 'ingredients' && (
+            <div className="border border-neutral-200 rounded-xl overflow-hidden">
+              <div className="px-4 py-3 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2 text-xs">
+                  <Layers className="w-4 h-4 text-orange-600" />
+                  <span className="font-bold text-neutral-900">
+                    Bill of Materials ({rows.length} lines)
+                  </span>
+                  <span className="text-neutral-500">
+                    · Sub-recipes deduct prepared stock, never double-deducting raw ingredients
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {!isSubRecipe && availableSubRecipes.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleAddRow(true)}
+                      className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-white hover:bg-neutral-100 text-neutral-800 rounded-lg border border-neutral-300 whitespace-nowrap cursor-pointer"
+                    >
+                      <BookOpen className="w-3.5 h-3.5 text-orange-600" />
+                      <span>+ Sub-Recipe</span>
+                    </button>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => handleAddRow(true)}
-                    className="flex items-center gap-1 px-3 py-1 text-xs font-bold bg-purple-100 hover:bg-purple-200 text-purple-900 rounded-lg transition-colors border border-purple-200"
+                    onClick={() => handleAddRow(false)}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg whitespace-nowrap cursor-pointer"
                   >
-                    <BookOpen className="w-3.5 h-3.5" />
-                    <span>Add Sub-Recipe</span>
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Raw Ingredient</span>
                   </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => handleAddRow(false)}
-                  className="flex items-center gap-1 px-3 py-1 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg transition-colors"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Ingredient Line</span>
-                </button>
+                </div>
               </div>
-            </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="bg-neutral-100/70 text-neutral-600 font-bold border-b border-neutral-200">
-                  <tr>
-                    <th className="py-2.5 px-3">Ingredient / Sub-Recipe</th>
-                    <th className="py-2.5 px-3">Qty (Batch)</th>
-                    <th className="py-2.5 px-3">Unit</th>
-                    <th className="py-2.5 px-3">Per Plate (Auto)</th>
-                    <th className="py-2.5 px-3">Kitchen Stock</th>
-                    <th className="py-2.5 px-3">Store Stock</th>
-                    <th className="py-2.5 px-3 text-right">Cost / Plate</th>
-                    <th className="py-2.5 px-2 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-100">
-                  {calculatedRows.map((row, idx) => (
-                    <tr key={idx} className="hover:bg-neutral-50/70 transition-colors">
-                      {/* Ingredient or Sub-Recipe Selector */}
-                      <td className="py-2.5 px-3">
-                        {row.isSubRecipe ? (
-                          <div className="flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[10px] font-bold">
-                              Base
-                            </span>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
+                    <tr>
+                      <th className="py-2.5 px-3">Ingredient / Sub-Recipe</th>
+                      <th className="py-2.5 px-3">Batch Qty</th>
+                      <th className="py-2.5 px-3">Unit</th>
+                      <th className="py-2.5 px-3">Yield %</th>
+                      <th className="py-2.5 px-3">Per Unit</th>
+                      <th className="py-2.5 px-3">Substitute</th>
+                      <th className="py-2.5 px-3 text-right">Unit Cost</th>
+                      <th className="py-2.5 px-2 text-center">Del</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {calculatedRows.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-neutral-50/70">
+                        <td className="py-2.5 px-3">
+                          {row.isSubRecipe ? (
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold uppercase text-orange-700 block">
+                                Sub-Recipe Base
+                              </span>
+                              <select
+                                value={row.subRecipeId}
+                                onChange={(e) => {
+                                  const sr = recipes.find((r) => r.id === e.target.value);
+                                  handleUpdateRow(idx, {
+                                    subRecipeId: e.target.value,
+                                    ingredientId: e.target.value,
+                                    batchUnit: sr?.yieldUnit || 'portions',
+                                  });
+                                }}
+                                className="w-44 text-xs font-bold bg-white border border-neutral-300 rounded-lg px-2 py-1.5"
+                              >
+                                {availableSubRecipes.map((sr) => (
+                                  <option key={sr.id} value={sr.id}>
+                                    {sr.name} ({sr.code || 'SUB'})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ) : (
                             <select
-                              value={row.subRecipeId}
-                              onChange={(e) => handleUpdateRow(idx, { subRecipeId: e.target.value })}
-                              className="w-44 text-xs font-bold bg-white border border-purple-300 rounded-lg px-2 py-1.5 focus:ring-1 focus:ring-purple-500"
+                              value={row.ingredientId}
+                              onChange={(e) => {
+                                const newIng = ingredients.find((i) => i.id === e.target.value);
+                                const isWeight = newIng?.consumptionUnit === 'grams';
+                                const isVolume = newIng?.consumptionUnit === 'ml';
+                                handleUpdateRow(idx, {
+                                  ingredientId: e.target.value,
+                                  batchUnit: isWeight ? 'kg' : isVolume ? 'L' : newIng?.consumptionUnit || 'pcs',
+                                });
+                              }}
+                              className="w-44 text-xs font-bold bg-white border border-neutral-200 rounded-lg px-2 py-1.5"
                             >
-                              {availableSubRecipes.map((sr) => (
-                                <option key={sr.id} value={sr.id}>
-                                  {sr.name}
+                              {ingredients.map((ing) => (
+                                <option key={ing.id} value={ing.id}>
+                                  {ing.name}
                                 </option>
                               ))}
                             </select>
-                          </div>
-                        ) : (
-                          <select
-                            value={row.ingredientId}
-                            onChange={(e) => {
-                              const newIng = ingredients.find((i) => i.id === e.target.value);
-                              const isWeight = newIng?.consumptionUnit === 'grams';
-                              const isVolume = newIng?.consumptionUnit === 'ml';
+                          )}
+                        </td>
+
+                        <td className="py-2.5 px-3">
+                          <input
+                            type="number"
+                            step="any"
+                            min={0.001}
+                            required
+                            value={row.batchQuantity}
+                            onChange={(e) =>
+                              handleUpdateRow(idx, { batchQuantity: parseFloat(e.target.value) || 0 })
+                            }
+                            className="w-20 bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1 text-xs font-mono font-bold text-right tabular-nums"
+                          />
+                        </td>
+
+                        <td className="py-2.5 px-3">
+                          {row.isSubRecipe ? (
+                            <span className="font-mono text-neutral-700">{row.batchUnit}</span>
+                          ) : (
+                            <select
+                              value={row.batchUnit}
+                              onChange={(e) => handleUpdateRow(idx, { batchUnit: e.target.value })}
+                              className="bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1 text-xs font-mono"
+                            >
+                              <option value="kg">kg</option>
+                              <option value="L">L</option>
+                              <option value="g">g</option>
+                              <option value="ml">ml</option>
+                              <option value="pcs">pcs</option>
+                              <option value="bottle">bottle</option>
+                            </select>
+                          )}
+                        </td>
+
+                        <td className="py-2.5 px-3">
+                          <input
+                            type="number"
+                            min={10}
+                            max={100}
+                            disabled={row.isSubRecipe}
+                            value={row.yieldPercentage}
+                            onChange={(e) =>
                               handleUpdateRow(idx, {
-                                ingredientId: e.target.value,
-                                batchUnit: isWeight ? 'kg' : isVolume ? 'L' : newIng?.consumptionUnit || 'pcs',
-                              });
-                            }}
-                            className="w-48 text-xs font-bold bg-white border border-neutral-200 rounded-lg px-2 py-1.5 focus:ring-1 focus:ring-orange-500"
-                          >
-                            {ingredients.map((ing) => (
-                              <option key={ing.id} value={ing.id}>
-                                {ing.name}
-                              </option>
-                            ))}
-                          </select>
-                        )}
-                      </td>
+                                yieldPercentage: Math.min(100, Math.max(10, parseInt(e.target.value) || 100)),
+                              })
+                            }
+                            className="w-16 bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1 text-xs font-mono text-right tabular-nums disabled:opacity-50"
+                          />
+                        </td>
 
-                      {/* Qty (Batch) */}
-                      <td className="py-2.5 px-3">
+                        <td className="py-2.5 px-3 font-mono tabular-nums text-neutral-800">
+                          {row.perPlateDisplay.toFixed(row.isSubRecipe ? 2 : 3)} {row.batchUnit}
+                        </td>
+
+                        <td className="py-2.5 px-3">
+                          {!row.isSubRecipe ? (
+                            <select
+                              value={row.substituteIngredientId || ''}
+                              onChange={(e) =>
+                                handleUpdateRow(idx, { substituteIngredientId: e.target.value || undefined })
+                              }
+                              className="w-32 text-[11px] bg-white border border-neutral-200 rounded-lg px-1.5 py-1 text-neutral-700"
+                            >
+                              <option value="">None</option>
+                              {ingredients
+                                .filter((i) => i.id !== row.ingredientId)
+                                .map((ing) => (
+                                  <option key={ing.id} value={ing.id}>
+                                    {ing.name}
+                                  </option>
+                                ))}
+                            </select>
+                          ) : (
+                            <span className="text-[11px] text-neutral-400">—</span>
+                          )}
+                        </td>
+
+                        <td className="py-2.5 px-3 font-mono font-bold text-right tabular-nums text-neutral-900">
+                          {formatMoney(row.lineCostPerPlate)}
+                        </td>
+
+                        <td className="py-2.5 px-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveRow(idx)}
+                            className="p-1 text-neutral-400 hover:text-red-600 cursor-pointer"
+                            aria-label="Remove line"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Costing Rollup Row */}
+              <div className="p-4 bg-neutral-50 border-t border-neutral-200 grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <span className="text-[11px] font-semibold text-neutral-500">Batch COGS</span>
+                  <div className="text-base font-bold font-mono tabular-nums text-neutral-900 mt-0.5">
+                    {formatMoney(roundedBatchCost)}
+                  </div>
+                  <span className="text-[11px] text-neutral-500">
+                    For {batchYieldPlates.toLocaleString()} {yieldUnit}
+                  </span>
+                </div>
+
+                <div>
+                  <span className="text-[11px] font-semibold text-neutral-500">
+                    {isSubRecipe ? 'Cost per Gram / Unit' : 'Cost per Plate'}
+                  </span>
+                  <div className="text-base font-bold font-mono tabular-nums text-blue-700 mt-0.5">
+                    {isSubRecipe
+                      ? `${(totalBatchCost / Math.max(1, batchYieldPlates)).toFixed(2)} TZS / ${yieldUnit}`
+                      : formatMoney(roundedPlateCost)}
+                  </div>
+                  <span className="text-[11px] text-neutral-500">Live weighted-avg price</span>
+                </div>
+
+                {!isSubRecipe && (
+                  <>
+                    <div>
+                      <span className="text-[11px] font-semibold text-neutral-500">Gross Profit</span>
+                      <div className="text-base font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
+                        {formatMoney(grossContribution)}
+                      </div>
+                      <span className="text-[11px] text-neutral-500">Sell: {formatMoney(sellPrice)}</span>
+                    </div>
+
+                    <div>
+                      <span className="text-[11px] font-semibold text-neutral-500">Food Cost %</span>
+                      <div
+                        className={`text-base font-bold font-mono tabular-nums mt-0.5 ${
+                          foodCostPercentage <= 35
+                            ? 'text-emerald-700'
+                            : foodCostPercentage <= 45
+                            ? 'text-amber-700'
+                            : 'text-red-700'
+                        }`}
+                      >
+                        {foodCostPercentage.toFixed(1)}%
+                      </div>
+                      <span className="text-[11px] text-neutral-500">Target: 28% – 35%</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* SECTION 2: Portion Variants & Modifier Rules */}
+          {activeSection === 'variants' && !isSubRecipe && (
+            <div className="space-y-4">
+              <div className="border border-neutral-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-xs font-bold text-neutral-900">Portion Size Multipliers</h4>
+                    <p className="text-[11px] text-neutral-500">
+                      Automatically scale BOM deductions when cashiers or waiters select Small, Regular, or Large portions.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddVariant}
+                    className="px-3 py-1.5 text-xs font-semibold bg-neutral-900 text-white rounded-lg whitespace-nowrap cursor-pointer"
+                  >
+                    + Add Variant
+                  </button>
+                </div>
+
+                {variants.length === 0 ? (
+                  <p className="text-xs text-neutral-500 py-2">
+                    No portion variants configured yet (uses standard 1.0x recipe).
+                  </p>
+                ) : (
+                  <div className="divide-y divide-neutral-100">
+                    {variants.map((v, i) => (
+                      <div key={v.id} className="py-2 flex items-center gap-3 text-xs">
                         <input
-                          type="number"
-                          step="any"
-                          min={0.001}
-                          required
-                          value={row.batchQuantity}
+                          type="text"
+                          value={v.name}
                           onChange={(e) =>
-                            handleUpdateRow(idx, {
-                              batchQuantity: parseFloat(e.target.value) || 0,
-                            })
+                            setVariants((prev) => prev.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))
                           }
-                          className="w-20 bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1 text-xs font-mono font-bold text-center"
+                          placeholder="Portion Name (e.g. Small)"
+                          className="flex-1 bg-neutral-50 border border-neutral-200 rounded-lg px-2.5 py-1.5 font-semibold"
                         />
-                      </td>
-
-                      {/* Unit */}
-                      <td className="py-2.5 px-3">
-                        {row.isSubRecipe ? (
-                          <span className="text-xs font-mono text-purple-800 font-semibold">portion</span>
-                        ) : (
-                          <select
-                            value={row.batchUnit}
-                            onChange={(e) => handleUpdateRow(idx, { batchUnit: e.target.value })}
-                            className="bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1 text-xs font-mono"
-                          >
-                            <option value="kg">kg</option>
-                            <option value="L">L</option>
-                            <option value="g">g</option>
-                            <option value="ml">ml</option>
-                            <option value="pcs">pcs</option>
-                          </select>
-                        )}
-                      </td>
-
-                      {/* Per Plate (Auto calculated by code) */}
-                      <td className="py-2.5 px-3 font-mono font-bold text-orange-950 bg-orange-50/30">
-                        {row.perPlateDisplay.toFixed(3)} {row.batchUnit}
-                        {!row.isSubRecipe && (
-                          <span className="block text-[10px] text-neutral-400 font-normal">
-                            ({row.effectivePerPlateQty.toFixed(1)} {row.ingredient?.consumptionUnit})
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Kitchen Stock Live Indicator */}
-                      <td className="py-2.5 px-3 font-mono">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center gap-1 ${
-                            !row.isTransferred
-                              ? 'bg-red-100 text-red-800'
-                              : !row.isSufficient
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-emerald-100 text-emerald-800'
-                          }`}
-                        >
-                          {row.kitchenDisplay} {row.batchUnit}
-                          {!row.isTransferred && ' (0 in Kitchen)'}
-                          {row.isTransferred && !row.isSufficient && ' (Short)'}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-neutral-500">Multiplier:</span>
+                          <input
+                            type="number"
+                            step="0.05"
+                            min={0.1}
+                            value={v.portionMultiplier}
+                            onChange={(e) =>
+                              setVariants((prev) =>
+                                prev.map((x, idx) =>
+                                  idx === i ? { ...x, portionMultiplier: parseFloat(e.target.value) || 1 } : x
+                                )
+                              )
+                            }
+                            className="w-20 bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1.5 font-mono font-bold text-right tabular-nums"
+                          />
+                          <span className="text-neutral-500 font-mono">x</span>
+                        </div>
+                        <span className="font-mono text-neutral-600 tabular-nums w-28 text-right">
+                          ~{formatMoney(Math.round(roundedPlateCost * v.portionMultiplier))}
                         </span>
-                      </td>
-
-                      {/* Store Stock Live */}
-                      <td className="py-2.5 px-3 font-mono text-neutral-600">
-                        {row.storeDisplay} {row.batchUnit}
-                      </td>
-
-                      {/* Cost / Plate */}
-                      <td className="py-2.5 px-3 font-mono font-bold text-right text-neutral-900">
-                        {formatMoney(row.lineCostPerPlate)}
-                      </td>
-
-                      {/* Remove */}
-                      <td className="py-2.5 px-2 text-center">
                         <button
                           type="button"
-                          onClick={() => handleRemoveRow(idx)}
-                          className="p-1 text-neutral-300 hover:text-red-600 transition-colors"
+                          onClick={() => setVariants((prev) => prev.filter((_, idx) => idx !== i))}
+                          className="p-1 text-neutral-400 hover:text-red-600 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="border border-neutral-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-xs font-bold text-neutral-900">Order Modifier Stock Rules</h4>
+                    <p className="text-[11px] text-neutral-500">
+                      Link POS modifiers like &ldquo;Extra Chicken&rdquo; or &ldquo;No Onions&rdquo; directly to ingredient additions or exclusions.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddModifierRule}
+                    className="px-3 py-1.5 text-xs font-semibold bg-neutral-900 text-white rounded-lg whitespace-nowrap cursor-pointer"
+                  >
+                    + Add Modifier Rule
+                  </button>
+                </div>
+
+                {modifierRules.length === 0 ? (
+                  <p className="text-xs text-neutral-500 py-2">No modifier stock rules attached.</p>
+                ) : (
+                  <div className="divide-y divide-neutral-100">
+                    {modifierRules.map((mr, i) => (
+                      <div key={mr.id} className="py-2 grid grid-cols-1 sm:grid-cols-5 gap-2 items-center text-xs">
+                        <input
+                          type="text"
+                          value={mr.modifierName}
+                          onChange={(e) =>
+                            setModifierRules((prev) =>
+                              prev.map((x, idx) => (idx === i ? { ...x, modifierName: e.target.value } : x))
+                            )
+                          }
+                          placeholder="Modifier label"
+                          className="sm:col-span-2 bg-neutral-50 border border-neutral-200 rounded-lg px-2.5 py-1.5 font-semibold"
+                        />
+                        <select
+                          value={mr.action}
+                          onChange={(e) =>
+                            setModifierRules((prev) =>
+                              prev.map((x, idx) =>
+                                idx === i ? { ...x, action: e.target.value as RecipeModifierRule['action'] } : x
+                              )
+                            )
+                          }
+                          className="bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1.5"
+                        >
+                          <option value="add">Add (+)</option>
+                          <option value="remove">Remove (-)</option>
+                        </select>
+                        <select
+                          value={mr.ingredientId}
+                          onChange={(e) =>
+                            setModifierRules((prev) =>
+                              prev.map((x, idx) => (idx === i ? { ...x, ingredientId: e.target.value } : x))
+                            )
+                          }
+                          className="bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1.5"
+                        >
+                          {ingredients.map((ing) => (
+                            <option key={ing.id} value={ing.id}>
+                              {ing.name}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="number"
+                            step="any"
+                            value={mr.quantityDelta}
+                            onChange={(e) =>
+                              setModifierRules((prev) =>
+                                prev.map((x, idx) =>
+                                  idx === i ? { ...x, quantityDelta: parseFloat(e.target.value) || 0 } : x
+                                )
+                              )
+                            }
+                            className="w-full bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1.5 font-mono text-right tabular-nums"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setModifierRules((prev) => prev.filter((_, idx) => idx !== i))}
+                            className="p-1 text-neutral-400 hover:text-red-600 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
+          )}
 
-            {/* Total Rollup Banner */}
-            <div className="p-4 bg-neutral-50/70 border-t border-neutral-200 grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div>
-                <span className="text-[11px] font-semibold text-neutral-500">Total Batch COGS</span>
-                <div className="text-base font-extrabold font-mono text-neutral-900 mt-0.5">
-                  {formatMoney(totalBatchCost)}
+          {/* SECTION 3: SOP, Yield & Allergens */}
+          {activeSection === 'sop' && (
+            <div className="space-y-4 border border-neutral-200 rounded-xl p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                <div>
+                  <label className="text-xs font-semibold text-neutral-600">Expected Production Yield (%)</label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={100}
+                    value={expectedYieldPct}
+                    onChange={(e) => setExpectedYieldPct(Math.min(100, Math.max(10, Number(e.target.value) || 95)))}
+                    className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-mono tabular-nums"
+                  />
                 </div>
-                <span className="text-[10px] text-neutral-400">For {batchYieldPlates} plates</span>
+                <div>
+                  <label className="text-xs font-semibold text-neutral-600">Batch Shelf Life (Hours)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={shelfLifeHours}
+                    onChange={(e) => setShelfLifeHours(Math.max(1, Number(e.target.value) || 24))}
+                    className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs font-mono tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-neutral-600">Allergens (Comma separated)</label>
+                  <input
+                    type="text"
+                    value={allergensText}
+                    onChange={(e) => setAllergensText(e.target.value)}
+                    placeholder="e.g. Dairy, Fish, Shellfish"
+                    className="w-full mt-1 bg-neutral-50 border border-neutral-200 rounded-xl px-3 py-2 text-xs"
+                  />
+                </div>
               </div>
 
-              <div>
-                <span className="text-[11px] font-semibold text-neutral-500">Per Plate Cost</span>
-                <div className="text-base font-extrabold font-mono text-blue-700 mt-0.5">
-                  {formatMoney(totalPlateCost)}
-                </div>
-                <span className="text-[10px] text-neutral-400">Direct ingredient usage</span>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-neutral-700">Preparation Instructions</label>
+                <textarea
+                  rows={2}
+                  value={prepInstructions}
+                  onChange={(e) => setPrepInstructions(e.target.value)}
+                  placeholder="Mise en place steps: wash, peel, weigh sub-recipe portions..."
+                  className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
+                />
               </div>
 
-              <div>
-                <span className="text-[11px] font-semibold text-neutral-500">Gross Margin</span>
-                <div className="text-base font-extrabold font-mono text-emerald-700 mt-0.5">
-                  {formatMoney(grossContribution)}
-                </div>
-                <span className="text-[10px] text-neutral-400">Profit per plate</span>
-              </div>
-
-              <div>
-                <span className="text-[11px] font-semibold text-neutral-500">Food Cost %</span>
-                <div
-                  className={`text-base font-extrabold font-mono mt-0.5 ${
-                    foodCostPercentage <= 35
-                      ? 'text-emerald-700'
-                      : foodCostPercentage <= 45
-                      ? 'text-amber-700'
-                      : 'text-red-700'
-                  }`}
-                >
-                  {foodCostPercentage.toFixed(1)}%
-                </div>
-                <span className="text-[10px] text-neutral-400">Target: 28% – 35%</span>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-neutral-700">Cooking &amp; Plating Instructions</label>
+                <textarea
+                  rows={2}
+                  value={cookingInstructions}
+                  onChange={(e) => setCookingInstructions(e.target.value)}
+                  placeholder="Temperatures, cook time, garnish, portioning scoop..."
+                  className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
+                />
               </div>
             </div>
-          </div>
-
-          {/* Preparation Instructions */}
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-neutral-700">Preparation Instructions:</label>
-            <textarea
-              rows={2}
-              value={prepInstructions}
-              onChange={(e) => setPrepInstructions(e.target.value)}
-              placeholder="e.g. Wash rice, steam in cooker. Brown onions in oil, simmer beef tenderloin with tomatoes for 1.5 hours."
-              className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
-            />
-          </div>
+          )}
 
           {/* Footer Actions */}
-          <div className="pt-2 flex items-center justify-end gap-3 border-t">
+          <div className="pt-3 flex items-center justify-end gap-3 border-t border-neutral-200">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-bold text-neutral-600 hover:bg-neutral-100 rounded-xl transition-colors"
+              className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-xl whitespace-nowrap cursor-pointer"
             >
               Cancel
             </button>
 
             <button
               type="submit"
-              className="px-6 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center gap-2 cursor-pointer active:scale-95"
+              className="px-5 py-2.5 bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs rounded-xl flex items-center gap-2 whitespace-nowrap cursor-pointer"
             >
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>Save Recipe Card (BOM Master Data)</span>
+              <span>Save Recipe Card</span>
             </button>
           </div>
         </form>
 
-        {/* Version History Drawer Modal */}
+        {/* Version History Modal */}
         {showHistoryModal && recipe?.history && (
           <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-            <div className="bg-white rounded-3xl max-w-2xl w-full border border-neutral-200 shadow-2xl p-6 space-y-4 max-h-[85vh] overflow-y-auto">
-              <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+            <div className="bg-white rounded-2xl max-w-2xl w-full border border-neutral-200 p-6 space-y-4 max-h-[85vh] overflow-y-auto">
+              <div className="flex items-center justify-between pb-3 border-b border-neutral-200">
                 <div className="flex items-center gap-2">
-                  <History className="w-5 h-5 text-orange-600" />
-                  <h3 className="font-extrabold text-sm text-neutral-900">
-                    Recipe Version History: {recipe.name}
+                  <History className="w-4 h-4 text-orange-600" />
+                  <h3 className="font-bold text-sm text-neutral-900">
+                    Version History · {recipe.name}
                   </h3>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setShowHistoryModal(false)}
-                  className="p-1.5 text-neutral-400 hover:text-neutral-700 rounded-lg hover:bg-neutral-100"
+                  className="p-1 text-neutral-400 hover:text-neutral-700 rounded-lg cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              <p className="text-xs text-neutral-500">
-                Audit trail of changes made by chefs over time. If a chef adjusts ingredient batch quantities (e.g. rice 22kg to 20kg), previous version snapshots are preserved for costing accuracy.
-              </p>
-
               <div className="space-y-3">
                 {recipe.history.map((hist) => (
-                  <div
-                    key={hist.version}
-                    className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-2.5"
-                  >
+                  <div key={hist.version} className="p-4 rounded-xl bg-neutral-50 border border-neutral-200 space-y-2">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-xs font-bold font-mono">
-                          v{hist.version}
+                      <div className="text-xs">
+                        <span className="font-mono font-bold text-neutral-900">v{hist.version}</span>
+                        <span className="mx-1.5 text-neutral-400">·</span>
+                        <span className="font-semibold text-neutral-800">
+                          Yield {hist.batchYieldPlates}
                         </span>
-                        <span className="text-xs font-bold text-neutral-900">
-                          Yield: {hist.batchYieldPlates} plates
-                        </span>
-                        <span className="text-[11px] text-neutral-400">
-                          {new Date(hist.archivedAt || hist.changedAt || Date.now()).toLocaleDateString()} by {hist.archivedBy || hist.changedBy || 'Chef'}
+                        <span className="mx-1.5 text-neutral-400">·</span>
+                        <span className="text-neutral-500">
+                          {new Date(hist.archivedAt || hist.changedAt || Date.now()).toLocaleDateString()} by{' '}
+                          {hist.archivedBy || hist.changedBy || 'Chef'}
                         </span>
                       </div>
-
                       <button
                         type="button"
                         onClick={() => handleRestoreVersion(hist)}
-                        className="px-2.5 py-1 text-xs font-bold text-orange-700 bg-orange-100 hover:bg-orange-200 rounded-lg transition-colors flex items-center gap-1"
+                        className="px-2.5 py-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 hover:bg-orange-100 rounded-lg flex items-center gap-1 cursor-pointer"
                       >
                         <RotateCcw className="w-3 h-3" />
                         <span>Restore v{hist.version}</span>
                       </button>
                     </div>
-
-                    <p className="text-xs text-neutral-700 italic">
-                      "{hist.changeSummary}"
-                    </p>
-
-                    <div className="grid grid-cols-2 gap-2 text-xs bg-white p-2.5 rounded-xl border border-neutral-100">
-                      <div>
-                        <span className="text-neutral-400">Plate Cost: </span>
-                        <span className="font-mono font-bold text-blue-900">
-                          {formatMoney(hist.totalCostPerPlate ?? hist.costPerPlate ?? 0)}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-neutral-400">Food Cost %: </span>
-                        <span className="font-mono font-bold text-emerald-800">
-                          {hist.foodCostPercentage.toFixed(1)}%
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Ingredients summary */}
-                    <div className="text-[11px] text-neutral-500 flex flex-wrap gap-2 pt-1 border-t border-neutral-200/60">
-                      {hist.ingredients.map((hi, i) => {
-                        const ing = ingredients.find((ingred) => ingred.id === hi.ingredientId);
-                        return (
-                          <span key={i} className="bg-neutral-100 px-2 py-0.5 rounded">
-                            {ing?.name || hi.ingredientId}: {hi.batchQuantity ? (hi.batchQuantity / 1000).toFixed(1) : (hi.quantity / 1000).toFixed(1)} {hi.batchUnit || 'kg'}
-                          </span>
-                        );
-                      })}
+                    <p className="text-xs text-neutral-700">{hist.changeSummary}</p>
+                    <div className="text-xs font-mono text-neutral-600 tabular-nums">
+                      Unit Cost: {formatMoney(hist.totalCostPerPlate ?? hist.costPerPlate ?? 0)} · Food Cost:{' '}
+                      {hist.foodCostPercentage.toFixed(1)}%
                     </div>
                   </div>
                 ))}

@@ -370,16 +370,8 @@ export const Header: React.FC = () => {
 
           {/* Tony Danza Profile Chip matching Screenshot 2 */}
           <div className="flex items-center gap-2.5 pl-2 border-l border-neutral-200">
-            <div className="w-8 h-8 rounded-full overflow-hidden bg-neutral-200 border border-neutral-300">
-              <img
-                src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80"
-                alt="Tony Danza"
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = '/src/assets/images/hero_restaurant_dining_1794223268333.jpg';
-                }}
-              />
+            <div className="w-8 h-8 rounded-full bg-neutral-900 text-white text-xs font-bold flex items-center justify-center shrink-0">
+              TD
             </div>
             <div className="hidden lg:block text-left">
               <div className="text-xs font-bold text-neutral-900 leading-tight">Tony Danza</div>

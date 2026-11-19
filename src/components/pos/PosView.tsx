@@ -36,7 +36,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { MenuItem, Order, PaymentMethod, OrderType, Role, KitchenStation } from '../../types/restaurant';
+import { MenuItem, Order, PaymentMethod, OrderType, Role, KitchenStation, ModifierItem } from '../../types/restaurant';
 import { ReceiptModal } from '../common/ReceiptModal';
 
 export const PosView: React.FC = () => {
@@ -67,6 +67,7 @@ export const PosView: React.FC = () => {
     activeRole,
     setActiveRole,
     waiters,
+    preparedDishStocks,
   } = useRestaurant();
 
   // Active Category matching screenshot: 'Sweets', 'Fruits', 'Coffee & Tea', 'Breakfast', 'All Items'
@@ -101,6 +102,13 @@ export const PosView: React.FC = () => {
   const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null);
   const [editingItemNotes, setEditingItemNotes] = useState<string>('');
   const [editingItemExtraCharge, setEditingItemExtraCharge] = useState<number>(0);
+
+  // Portion & Modifier pre-add picker modal (connects to variant/modifier BOM rules)
+  const [customizingItem, setCustomizingItem] = useState<MenuItem | null>(null);
+  const [chosenPortion, setChosenPortion] = useState<{ name: string; priceDelta: number } | undefined>(undefined);
+  const [chosenModifiers, setChosenModifiers] = useState<ModifierItem[]>([]);
+  const [customizingQty, setCustomizingQty] = useState<number>(1);
+  const [customizingNote, setCustomizingNote] = useState<string>('');
 
   // Custom Off-Menu Item modal
   const [isCustomItemModalOpen, setIsCustomItemModalOpen] = useState<boolean>(false);
@@ -213,8 +221,20 @@ export const PosView: React.FC = () => {
   // Calculate Change Due in TZS
   const changeDueTzs = Math.max(0, Math.round(tenderCashTzs - totalPayableTzs));
 
-  // Add Item Click
+  // Add Item Click — open Portion/Modifier picker when item defines portions or modifiers
   const handleItemClick = (item: MenuItem) => {
+    const hasPortions = Boolean(item.portions && item.portions.length > 0);
+    const hasModifiers = Boolean(item.modifiers && item.modifiers.length > 0);
+    if (hasPortions || hasModifiers) {
+      const defaultPortion =
+        item.portions?.find((p) => p.priceDelta === 0) || item.portions?.[0];
+      setCustomizingItem(item);
+      setChosenPortion(defaultPortion);
+      setChosenModifiers([]);
+      setCustomizingQty(1);
+      setCustomizingNote('');
+      return;
+    }
     addToCart(item);
   };
 
@@ -476,6 +496,7 @@ export const PosView: React.FC = () => {
                   {/* Rows 1-3: Food Items Grid */}
                   {filteredItems.slice(0, 15).map((item) => {
                     const inCartCount = getItemQtyInCart(item.id);
+                    const batchStock = preparedDishStocks.find((p) => p.menuItemId === item.id);
 
                     return (
                       <div
@@ -495,6 +516,21 @@ export const PosView: React.FC = () => {
                           }}
                         />
 
+                        {/* Batch pool availability indicator */}
+                        {batchStock && (
+                          <div
+                            className={`absolute top-1.5 left-1.5 text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-black/75 backdrop-blur-xs border border-white/20 ${
+                              batchStock.preparedPlatesAvailable <= 0
+                                ? 'text-rose-300'
+                                : batchStock.preparedPlatesAvailable <= 5
+                                ? 'text-amber-300'
+                                : 'text-emerald-300'
+                            }`}
+                          >
+                            {batchStock.preparedPlatesAvailable} left
+                          </div>
+                        )}
+
                         {/* Quantity in cart badge */}
                         {inCartCount > 0 && (
                           <div className="absolute top-1.5 right-1.5 bg-[#43A047] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-md font-mono border border-white/60">
@@ -507,6 +543,11 @@ export const PosView: React.FC = () => {
                           <span className="text-white text-[11px] sm:text-xs font-semibold leading-tight line-clamp-2 drop-shadow-sm">
                             {item.name}
                           </span>
+                          {(item.portions?.length || item.modifiers?.length) ? (
+                            <span className="text-[9px] text-amber-300 font-semibold mt-0.5">
+                              Options
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     );
@@ -2100,6 +2141,170 @@ export const PosView: React.FC = () => {
                     </div>
                   );
                 })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Portion & Modifier Selector Modal (links to variant/modifier BOM consumption) */}
+      {customizingItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/55 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full border border-neutral-200 overflow-hidden shadow-xl">
+            <div className="px-5 py-3.5 border-b border-neutral-200 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-extrabold text-neutral-900">{customizingItem.name}</h3>
+                <p className="text-[11px] text-neutral-500">
+                  Base price: <span className="font-mono font-semibold">{formatPosNumber(customizingItem.price)}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCustomizingItem(null)}
+                className="p-1 text-neutral-400 hover:text-neutral-700 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+              {customizingItem.portions && customizingItem.portions.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-xs font-bold text-neutral-800 uppercase tracking-wide">
+                    Portion Size (BOM Scaled)
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {customizingItem.portions.map((p) => {
+                      const active = chosenPortion?.name === p.name;
+                      return (
+                        <button
+                          key={p.name}
+                          type="button"
+                          onClick={() => setChosenPortion(p)}
+                          className={`px-3 py-2 rounded-lg border text-left text-xs transition-colors cursor-pointer ${
+                            active
+                              ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold'
+                              : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50'
+                          }`}
+                        >
+                          <div>{p.name}</div>
+                          <div className="text-[10px] font-mono text-neutral-500">
+                            {p.priceDelta === 0
+                              ? 'Standard'
+                              : p.priceDelta > 0
+                              ? `+${formatPosNumber(p.priceDelta)}`
+                              : formatPosNumber(p.priceDelta)}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {customizingItem.modifiers && customizingItem.modifiers.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-xs font-bold text-neutral-800 uppercase tracking-wide">
+                    Kitchen Modifiers &amp; Extras
+                  </div>
+                  <div className="space-y-1.5">
+                    {customizingItem.modifiers.map((mod) => {
+                      const selected = chosenModifiers.some((m) => m.id === mod.id);
+                      return (
+                        <button
+                          key={mod.id}
+                          type="button"
+                          onClick={() =>
+                            setChosenModifiers((prev) =>
+                              selected ? prev.filter((m) => m.id !== mod.id) : [...prev, mod]
+                            )
+                          }
+                          className={`w-full px-3 py-2 rounded-lg border flex items-center justify-between text-xs transition-colors cursor-pointer ${
+                            selected
+                              ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold'
+                              : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50'
+                          }`}
+                        >
+                          <span>{mod.name}</span>
+                          <span className="font-mono text-[11px]">
+                            {mod.price > 0 ? `+${formatPosNumber(mod.price)}` : 'No charge'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-3 gap-3 pt-1">
+                <div>
+                  <label className="block text-[11px] font-semibold text-neutral-600 mb-1">Qty</label>
+                  <div className="flex items-center border border-neutral-200 rounded-lg overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setCustomizingQty((q) => Math.max(1, q - 1))}
+                      className="px-2.5 py-1.5 bg-neutral-50 hover:bg-neutral-100 text-xs font-bold cursor-pointer"
+                    >
+                      -
+                    </button>
+                    <span className="flex-1 text-center font-mono text-xs font-bold tabular-nums">
+                      {customizingQty}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCustomizingQty((q) => q + 1)}
+                      className="px-2.5 py-1.5 bg-neutral-50 hover:bg-neutral-100 text-xs font-bold cursor-pointer"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-[11px] font-semibold text-neutral-600 mb-1">Kitchen Note</label>
+                  <input
+                    type="text"
+                    value={customizingNote}
+                    onChange={(e) => setCustomizingNote(e.target.value)}
+                    placeholder="e.g. Less spicy, serve hot"
+                    className="w-full px-3 py-1.5 text-xs border border-neutral-200 rounded-lg outline-hidden focus:border-emerald-600"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 py-3.5 border-t border-neutral-200 bg-neutral-50 flex items-center justify-between gap-3">
+              <div className="text-xs font-mono font-extrabold text-neutral-900 tabular-nums">
+                {formatPosNumber(
+                  (customizingItem.price +
+                    (chosenPortion?.priceDelta || 0) +
+                    chosenModifiers.reduce((s, m) => s + m.price, 0)) *
+                    customizingQty
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomizingItem(null)}
+                  className="px-3 py-2 text-xs font-semibold text-neutral-600 hover:text-neutral-900 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    addToCart(
+                      customizingItem,
+                      chosenPortion,
+                      chosenModifiers,
+                      customizingNote.trim(),
+                      customizingQty
+                    );
+                    setCustomizingItem(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-[#43A047] hover:bg-[#388E3C] text-white text-xs font-bold cursor-pointer whitespace-nowrap"
+                >
+                  Add to Ticket
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -195,14 +195,15 @@ export const AiBomBuilderModal: React.FC<AiBomBuilderModalProps> = ({
   // Human Approval & Commit
   const handleApproveAndSaveBOM = () => {
     if (!targetMenuItemId) {
-      alert('Please select a target menu item to attach this Bill of Materials to.');
+      setParseError('Please select a target menu item to attach this Bill of Materials to.');
       return;
     }
 
     if (reviewLines.length === 0) {
-      alert('Recipe cannot be empty. Add or parse at least one ingredient.');
+      setParseError('Recipe cannot be empty. Add or parse at least one ingredient.');
       return;
     }
+    setParseError(null);
 
     // Build standard RecipeIngredient array normalized for 1 plate
     const recipeIngredients: RecipeIngredient[] = rollup.linesWithCost.map((line) => ({
@@ -693,6 +694,13 @@ export const AiBomBuilderModal: React.FC<AiBomBuilderModalProps> = ({
                   </div>
                 </div>
               </div>
+
+              {parseError && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-800 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                  <span>{parseError}</span>
+                </div>
+              )}
 
               {/* Approval Bar */}
               <div className="bg-white rounded-2xl p-4 border border-neutral-200/90 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
