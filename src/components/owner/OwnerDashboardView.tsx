@@ -30,9 +30,15 @@ import {
   X,
   ShieldAlert,
   BookOpen,
+  ArrowLeftRight,
+  Mail,
+  Plus,
+  RefreshCw,
+  Power,
+  Package,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
-import { Order, Role } from '../../types/restaurant';
+import { Order, Role, RestaurantTenant } from '../../types/restaurant';
 
 type ReportDimension =
   | 'accountability_eod'
@@ -47,9 +53,25 @@ type PersonaView = 'boss' | 'manager' | 'cashier' | 'waiter';
 
 export const OwnerDashboardView: React.FC = () => {
   const {
+    currentOrganization,
     currentTenant,
     tenants,
     setCurrentTenantId,
+    viewScope,
+    switchToHqOverview,
+    activeOperator,
+    branchMetricsSummaries,
+    hqAllOrders,
+    hqAllApprovals,
+    hqAllPurchaseRequests,
+    hqAllBranchTransfers,
+    hqReviewApproval,
+    hqDispatchBranchTransfer,
+    hqUpdatePurchaseRequestStatus,
+    getBranchIngredients,
+    addBranchToCurrentOrg,
+    currentBranchQuota,
+    toggleBranchStatus,
     orders,
     waiters,
     employees,
@@ -85,8 +107,24 @@ export const OwnerDashboardView: React.FC = () => {
   const [auditFilterQuery, setAuditFilterQuery] = useState<string>('');
   const [dateRangePreset, setDateRangePreset] = useState<string>('this_month');
   const [selectedShift, setSelectedShift] = useState<string>('all_day');
-  const [selectedStoreFilter, setSelectedStoreFilter] = useState<string>('all_stores');
   const [selectedEmployeeFilter, setSelectedEmployeeFilter] = useState<string>('all_employees');
+
+  // HQ Branch creation & Inter-branch transfer local states
+  const [showHqAddBranch, setShowHqAddBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [newBranchCode, setNewBranchCode] = useState('');
+  const [newBranchModel, setNewBranchModel] = useState<RestaurantTenant['operatingModel']>('dine_in_restaurant');
+  const [newBranchEmail, setNewBranchEmail] = useState('');
+  const [newBranchManager, setNewBranchManager] = useState('');
+  const [newBranchPhone, setNewBranchPhone] = useState('+255 754 000 000');
+  const [newBranchAddress, setNewBranchAddress] = useState('');
+  const [cloneCatalogFromCurrent, setCloneCatalogFromCurrent] = useState(true);
+
+  const [transferFromBranchId, setTransferFromBranchId] = useState<string>(() => tenants[0]?.id || '');
+  const [transferToBranchId, setTransferToBranchId] = useState<string>(() => tenants[1]?.id || tenants[0]?.id || '');
+  const [transferIngredientId, setTransferIngredientId] = useState<string>('');
+  const [transferQty, setTransferQty] = useState<string>('5000');
+  const [hqActionNotice, setHqActionNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [chartType, setChartType] = useState<'area' | 'line' | 'bar'>('area');
   const [chartStep, setChartStep] = useState<'days' | 'hours'>('days');
   const [tableSearch, setTableSearch] = useState<string>('');
@@ -442,12 +480,27 @@ export const OwnerDashboardView: React.FC = () => {
           >
             <RotateCcw className="w-5 h-5 text-white" />
           </button>
-          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-white drop-shadow-xs">
-            Sales summary
-          </h1>
+          <div>
+            <h1 className="text-base sm:text-xl font-bold tracking-tight text-white drop-shadow-xs flex items-center gap-2">
+              <span>{viewScope === 'hq_overview' ? 'Main HQ Command & Sales Summary' : 'Sales summary'}</span>
+              <span className="hidden md:inline text-xs font-normal text-white/85">
+                · {currentOrganization.name} · {viewScope === 'hq_overview' ? `All ${tenants.length} Branches` : `${currentTenant.name} (${currentTenant.branchCode})`}
+              </span>
+            </h1>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
+          {viewScope === 'branch' && (
+            <button
+              type="button"
+              onClick={switchToHqOverview}
+              className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs font-bold transition-colors cursor-pointer"
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              <span>Main HQ Overview</span>
+            </button>
+          )}
           {/* Persona / User Type Selector Pills as requested: "based on user types each must see their respective report" */}
           <div className="hidden sm:flex items-center bg-black/20 p-1 rounded-xl text-xs font-semibold">
             {[
@@ -541,31 +594,46 @@ export const OwnerDashboardView: React.FC = () => {
               </select>
             </div>
 
-            {/* Store Filter: All stores ▾ */}
+            {/* Store / Branch Scope Filter (Strictly Isolated to Current Tenant) */}
             <div className="relative">
               <select
-                value={selectedStoreFilter}
-                onChange={(e) => setSelectedStoreFilter(e.target.value)}
+                value={viewScope === 'hq_overview' ? 'all_stores' : currentTenant.id}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === 'all_stores') {
+                    switchToHqOverview();
+                  } else {
+                    setCurrentTenantId(val);
+                  }
+                }}
+                aria-label="Branch scope filter"
                 className="bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-neutral-800 outline-hidden cursor-pointer"
               >
-                <option value="all_stores">All stores</option>
-                <option value="savanna">Savanna Flame Grill (Main)</option>
-                <option value="kona">Kona Chips (Sinza)</option>
+                <option value="all_stores">
+                  Main HQ — All {tenants.length} Branches ({currentOrganization.name})
+                </option>
+                {tenants.map((branch) => (
+                  <option key={branch.id} value={branch.id}>
+                    {branch.name} ({branch.branchCode})
+                  </option>
+                ))}
               </select>
             </div>
 
-            {/* Employee Filter: All employees ▾ */}
+            {/* Employee Filter: Dynamically populated for current branch */}
             <div className="relative">
               <select
                 value={selectedEmployeeFilter}
                 onChange={(e) => setSelectedEmployeeFilter(e.target.value)}
+                aria-label="Employee filter"
                 className="bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-neutral-800 outline-hidden cursor-pointer"
               >
-                <option value="all_employees">All employees</option>
-                <option value="john">John Mwamba (Waiter)</option>
-                <option value="sarah">Sarah Kimani (Waiter)</option>
-                <option value="peter">Peter Masawe (Waiter)</option>
-                <option value="tony">Tony Danza (Cashier)</option>
+                <option value="all_employees">All employees ({employees.length})</option>
+                {employees.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({emp.role})
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -619,6 +687,663 @@ export const OwnerDashboardView: React.FC = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* ================= MAIN HQ MULTI-BRANCH OVERVIEW & CONTROL OR BRANCH BANNER ================= */}
+        {viewScope === 'hq_overview' ? (
+          (() => {
+            const hqTotals = branchMetricsSummaries.reduce(
+              (acc, b) => ({
+                todaySales: acc.todaySales + b.todaySales,
+                collectedSales: acc.collectedSales + b.collectedSales,
+                outstandingAmount: acc.outstandingAmount + b.outstandingAmount,
+                activeOrdersCount: acc.activeOrdersCount + b.activeOrdersCount,
+                kitchenPendingCount: acc.kitchenPendingCount + b.kitchenPendingCount,
+                inventoryValuation: acc.inventoryValuation + b.inventoryValuation,
+                lowStockCount: acc.lowStockCount + b.lowStockCount,
+                pendingApprovalsCount: acc.pendingApprovalsCount + b.pendingApprovalsCount,
+                openPurchaseRequestsCount: acc.openPurchaseRequestsCount + b.openPurchaseRequestsCount,
+                unreadEmailsCount: acc.unreadEmailsCount + b.unreadEmailsCount,
+              }),
+              {
+                todaySales: 0,
+                collectedSales: 0,
+                outstandingAmount: 0,
+                activeOrdersCount: 0,
+                kitchenPendingCount: 0,
+                inventoryValuation: 0,
+                lowStockCount: 0,
+                pendingApprovalsCount: 0,
+                openPurchaseRequestsCount: 0,
+                unreadEmailsCount: 0,
+              }
+            );
+            const hqPendingApprovals = hqAllApprovals.filter((a) => a.status === 'pending');
+            const sourceBranchIngredients = getBranchIngredients(transferFromBranchId);
+            const effectiveIngredientId =
+              sourceBranchIngredients.some((i) => i.id === transferIngredientId)
+                ? transferIngredientId
+                : sourceBranchIngredients[0]?.id || '';
+
+            return (
+              <section className="bg-white rounded-2xl border border-neutral-200 shadow-xs overflow-hidden">
+                {/* HQ Masthead */}
+                <div className="px-5 py-4 bg-neutral-900 text-white flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Building2 className="w-4 h-4 text-orange-400 shrink-0" />
+                      <h2 className="text-sm sm:text-base font-extrabold tracking-tight">
+                        {currentOrganization.name} — Main HQ Multi-Branch Command
+                      </h2>
+                      <span className="text-[11px] font-mono text-emerald-400 font-semibold">
+                        · {currentOrganization.plan} ({currentBranchQuota.used}/{currentBranchQuota.max} branches)
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-neutral-400 mt-0.5">
+                      Tenant-isolated control across {tenants.length} {tenants.length === 1 ? 'branch' : 'branches'} · Quota remaining: {currentBranchQuota.remaining} · Owner: {currentOrganization.ownerName}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowHqAddBranch((v) => !v)}
+                      className="px-3 py-1.5 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Branch</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Inline Feedback Banner */}
+                {hqActionNotice && (
+                  <div
+                    className={`px-5 py-2.5 text-xs font-semibold flex items-center justify-between border-b ${
+                      hqActionNotice.type === 'ok'
+                        ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                        : 'bg-rose-50 text-rose-900 border-rose-200'
+                    }`}
+                  >
+                    <span>{hqActionNotice.text}</span>
+                    <button
+                      type="button"
+                      onClick={() => setHqActionNotice(null)}
+                      className="text-current opacity-70 hover:opacity-100 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Inline Add Branch Form */}
+                {showHqAddBranch && (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!newBranchName.trim() || !newBranchCode.trim()) return;
+                      const created = addBranchToCurrentOrg({
+                        name: newBranchName.trim(),
+                        branchCode: newBranchCode.trim().toUpperCase(),
+                        operatingModel: newBranchModel,
+                        phone: newBranchPhone.trim() || '+255 754 000 000',
+                        email: newBranchEmail.trim() || `${newBranchCode.trim().toLowerCase()}@${currentOrganization.domain}`,
+                        managerName: newBranchManager.trim() || 'Branch Manager',
+                        address: newBranchAddress.trim() || 'Dar es Salaam, Tanzania',
+                        cloneCatalogFromCurrent,
+                      });
+                      if (!created) {
+                        setHqActionNotice({
+                          type: 'err',
+                          text: `Package branch quota reached (${currentBranchQuota.used}/${currentBranchQuota.max} branches on ${currentOrganization.plan}). Upgrade package on System Provider Control Site.`,
+                        });
+                        return;
+                      }
+                      setShowHqAddBranch(false);
+                      setNewBranchName('');
+                      setNewBranchCode('');
+                      setNewBranchEmail('');
+                      setNewBranchManager('');
+                      setNewBranchAddress('');
+                      setHqActionNotice({
+                        type: 'ok',
+                        text: `Provisioned isolated branch "${created.name}" (${created.branchCode}) under ${currentOrganization.name}.`,
+                      });
+                    }}
+                    className="p-5 bg-neutral-50 border-b border-neutral-200 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-neutral-800">
+                        Provision New Branch Under {currentOrganization.name}
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setShowHqAddBranch(false)}
+                        className="text-xs text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+                      <input
+                        type="text"
+                        required
+                        placeholder="Branch name (e.g. Mikocheni Branch)"
+                        value={newBranchName}
+                        onChange={(e) => setNewBranchName(e.target.value)}
+                        className="px-3 py-2 bg-white border border-neutral-200 rounded-lg outline-hidden focus:border-neutral-900"
+                      />
+                      <input
+                        type="text"
+                        required
+                        placeholder="Code (e.g. SAV-MKC)"
+                        value={newBranchCode}
+                        onChange={(e) => setNewBranchCode(e.target.value)}
+                        className="px-3 py-2 bg-white border border-neutral-200 rounded-lg font-mono uppercase outline-hidden focus:border-neutral-900"
+                      />
+                      <select
+                        value={newBranchModel}
+                        onChange={(e) => setNewBranchModel(e.target.value as RestaurantTenant['operatingModel'])}
+                        className="px-3 py-2 bg-white border border-neutral-200 rounded-lg outline-hidden"
+                      >
+                        <option value="dine_in_restaurant">Dine-in Restaurant</option>
+                        <option value="fast_food_chips">Fast Food / Express</option>
+                        <option value="cafe_bistro">Cafe & Bistro</option>
+                      </select>
+                      <input
+                        type="email"
+                        placeholder={`Branch email (@${currentOrganization.domain})`}
+                        value={newBranchEmail}
+                        onChange={(e) => setNewBranchEmail(e.target.value)}
+                        className="px-3 py-2 bg-white border border-neutral-200 rounded-lg outline-hidden focus:border-neutral-900"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Manager full name"
+                        value={newBranchManager}
+                        onChange={(e) => setNewBranchManager(e.target.value)}
+                        className="px-3 py-2 bg-white border border-neutral-200 rounded-lg outline-hidden focus:border-neutral-900"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Phone"
+                        value={newBranchPhone}
+                        onChange={(e) => setNewBranchPhone(e.target.value)}
+                        className="px-3 py-2 bg-white border border-neutral-200 rounded-lg outline-hidden focus:border-neutral-900"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Street address"
+                        value={newBranchAddress}
+                        onChange={(e) => setNewBranchAddress(e.target.value)}
+                        className="px-3 py-2 bg-white border border-neutral-200 rounded-lg outline-hidden focus:border-neutral-900 sm:col-span-2"
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <label className="inline-flex items-center gap-2 text-xs text-neutral-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={cloneCatalogFromCurrent}
+                          onChange={(e) => setCloneCatalogFromCurrent(e.target.checked)}
+                          className="rounded border-neutral-300"
+                        />
+                        <span>Clone standardized menu &amp; BOM recipes from {currentTenant.name} (orders &amp; stock remain isolated)</span>
+                      </label>
+                      <button
+                        type="submit"
+                        className="px-4 py-1.5 rounded-lg bg-neutral-900 text-white text-xs font-bold hover:bg-neutral-800 cursor-pointer"
+                      >
+                        Create Isolated Branch
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Consolidated Tenant-Wide KPI Strip */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 p-4 bg-neutral-50/70 border-b border-neutral-200">
+                  <div className="bg-white rounded-xl p-3 border border-neutral-200">
+                    <div className="text-[11px] text-neutral-500 font-medium">HQ Total Live Sales</div>
+                    <div className="text-sm sm:text-base font-extrabold font-mono text-neutral-900 mt-1 tabular-nums">
+                      {formatMoney(hqTotals.todaySales)}
+                    </div>
+                    <div className="text-[11px] text-emerald-700 mt-0.5">
+                      {hqTotals.activeOrdersCount} orders · {tenants.length} branches
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-3 border border-neutral-200">
+                    <div className="text-[11px] text-neutral-500 font-medium">HQ Cash &amp; Digital Collected</div>
+                    <div className="text-sm sm:text-base font-extrabold font-mono text-emerald-700 mt-1 tabular-nums">
+                      {formatMoney(hqTotals.collectedSales)}
+                    </div>
+                    <div className="text-[11px] text-neutral-500 mt-0.5">
+                      Outstanding: {formatMoney(hqTotals.outstandingAmount)}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-3 border border-neutral-200">
+                    <div className="text-[11px] text-neutral-500 font-medium">Kitchen Active Queue</div>
+                    <div className="text-sm sm:text-base font-extrabold font-mono text-neutral-900 mt-1 tabular-nums">
+                      {hqTotals.kitchenPendingCount} tickets
+                    </div>
+                    <div className="text-[11px] text-neutral-500 mt-0.5">Across all KDS screens</div>
+                  </div>
+                  <div className="bg-white rounded-xl p-3 border border-neutral-200">
+                    <div className="text-[11px] text-neutral-500 font-medium">Total Stock Valuation</div>
+                    <div className="text-sm sm:text-base font-extrabold font-mono text-neutral-900 mt-1 tabular-nums">
+                      {formatMoney(hqTotals.inventoryValuation)}
+                    </div>
+                    <div className={`text-[11px] mt-0.5 font-semibold ${hqTotals.lowStockCount > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
+                      {hqTotals.lowStockCount} low-stock alerts
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-3 border border-neutral-200">
+                    <div className="text-[11px] text-neutral-500 font-medium">HQ Approvals &amp; POs</div>
+                    <div className="text-sm sm:text-base font-extrabold font-mono text-rose-700 mt-1 tabular-nums">
+                      {hqTotals.pendingApprovalsCount} pending
+                    </div>
+                    <div className="text-[11px] text-neutral-500 mt-0.5">
+                      {hqTotals.openPurchaseRequestsCount} open purchase reqs
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-3 border border-neutral-200">
+                    <div className="text-[11px] text-neutral-500 font-medium">Branch Unread Mail</div>
+                    <div className="text-sm sm:text-base font-extrabold font-mono text-indigo-700 mt-1 tabular-nums">
+                      {hqTotals.unreadEmailsCount} unread
+                    </div>
+                    <div className="text-[11px] text-neutral-500 mt-0.5">Intra-tenant mailboxes</div>
+                  </div>
+                </div>
+
+                {/* Branches Comparison & 1-Click Refresh Switcher Table */}
+                <div className="overflow-x-auto border-b border-neutral-200">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-neutral-100/80 text-neutral-600 font-semibold uppercase tracking-wider text-[10px] border-b border-neutral-200">
+                      <tr>
+                        <th className="py-2.5 px-4">Branch &amp; Manager</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3 text-right">Today Sales</th>
+                        <th className="py-2.5 px-3 text-right">Collected / Due</th>
+                        <th className="py-2.5 px-3 text-center">Orders / KDS</th>
+                        <th className="py-2.5 px-3 text-center">Tables</th>
+                        <th className="py-2.5 px-3 text-center">Low Stock</th>
+                        <th className="py-2.5 px-3 text-center">Approvals</th>
+                        <th className="py-2.5 px-4 text-right">Switch &amp; Refresh</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {branchMetricsSummaries.map((bm) => {
+                        const isPreviewing = bm.branch.id === currentTenant.id;
+                        return (
+                          <tr key={bm.branch.id} className={isPreviewing ? 'bg-orange-50/40' : 'hover:bg-neutral-50'}>
+                            <td className="py-3 px-4">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-neutral-900 text-white">
+                                  {bm.branch.branchCode}
+                                </span>
+                                <span className="font-bold text-neutral-900">{bm.branch.name}</span>
+                                {bm.branch.isHqBranch && (
+                                  <span className="text-[10px] font-bold text-orange-700">· HQ</span>
+                                )}
+                              </div>
+                              <div className="text-[11px] text-neutral-500 mt-0.5">
+                                {bm.branch.managerName} · {bm.branch.email}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  toggleBranchStatus(bm.branch.id);
+                                  setHqActionNotice({
+                                    type: 'ok',
+                                    text: `Updated operational status for ${bm.branch.name}.`,
+                                  });
+                                }}
+                                title="Toggle branch status between Active and Maintenance"
+                                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold cursor-pointer transition-colors ${
+                                  bm.branch.status === 'active'
+                                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                                    : 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
+                                }`}
+                              >
+                                <Power className="w-3 h-3" />
+                                <span>{bm.branch.status === 'active' ? 'Active' : 'Maintenance'}</span>
+                              </button>
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono font-bold text-neutral-900 tabular-nums">
+                              {formatMoney(bm.todaySales)}
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono tabular-nums">
+                              <div className="font-semibold text-emerald-700">{formatMoney(bm.collectedSales)}</div>
+                              {bm.outstandingAmount > 0 && (
+                                <div className="text-[10px] text-rose-700">Due: {formatMoney(bm.outstandingAmount)}</div>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 text-center font-mono">
+                              <span className="font-bold text-neutral-900">{bm.activeOrdersCount}</span>
+                              <span className="text-neutral-400"> / </span>
+                              <span className="text-orange-700 font-semibold">{bm.kitchenPendingCount}</span>
+                            </td>
+                            <td className="py-3 px-3 text-center font-mono text-neutral-700">
+                              {bm.tablesOccupied}/{bm.tablesTotal}
+                            </td>
+                            <td className="py-3 px-3 text-center font-mono">
+                              <span className={bm.lowStockCount > 0 ? 'font-bold text-amber-700' : 'text-neutral-500'}>
+                                {bm.lowStockCount}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 text-center font-mono">
+                              <span className={bm.pendingApprovalsCount > 0 ? 'font-bold text-rose-700' : 'text-neutral-500'}>
+                                {bm.pendingApprovalsCount}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <button
+                                type="button"
+                                onClick={() => setCurrentTenantId(bm.branch.id)}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-[11px] font-bold transition-colors cursor-pointer"
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                                <span>Open Branch</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* HQ Control Grid: Approvals Queue, Inter-Branch Transfer, Purchase Requests */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-neutral-200">
+                  {/* 1. HQ Multi-Branch Approvals */}
+                  <div className="p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-neutral-800 flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                        <span>HQ Approvals Queue ({hqPendingApprovals.length})</span>
+                      </h3>
+                      <span className="text-[11px] text-neutral-400">All branches</span>
+                    </div>
+                    {hqPendingApprovals.length === 0 ? (
+                      <div className="p-4 rounded-xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-500 text-center">
+                        No pending approvals across {currentOrganization.name}.
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-56 overflow-y-auto">
+                        {hqPendingApprovals.map((req) => (
+                          <div
+                            key={`${req.branchId}-${req.id}`}
+                            className="p-3 rounded-xl bg-amber-50/70 border border-amber-200 space-y-2 text-xs"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-[10px] font-bold text-amber-900 uppercase">
+                                  {req.branchName} · {req.orderNumber}
+                                </div>
+                                <div className="font-bold text-neutral-900 truncate">{req.details}</div>
+                                <div className="text-[11px] text-neutral-600 truncate">
+                                  {req.requestedBy}: {req.reason}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  hqReviewApproval(req.branchId, req.id, false);
+                                  setHqActionNotice({
+                                    type: 'err',
+                                    text: `Denied request ${req.orderNumber} for ${req.branchName}.`,
+                                  });
+                                }}
+                                className="px-2.5 py-1 rounded-lg border border-rose-300 text-rose-700 text-[11px] font-bold bg-white cursor-pointer"
+                              >
+                                Deny
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  hqReviewApproval(req.branchId, req.id, true);
+                                  setHqActionNotice({
+                                    type: 'ok',
+                                    text: `Approved request ${req.orderNumber} for ${req.branchName}.`,
+                                  });
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold cursor-pointer"
+                              >
+                                Approve
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2. HQ Inter-Branch Stock Transfer */}
+                  <div className="p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-neutral-800 flex items-center gap-1.5">
+                        <ArrowLeftRight className="w-4 h-4 text-orange-600" />
+                        <span>HQ Inter-Branch Stock Transfer</span>
+                      </h3>
+                      <span className="text-[11px] text-neutral-400">Intra-tenant</span>
+                    </div>
+                    {tenants.length < 2 ? (
+                      <div className="p-4 rounded-xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-500">
+                        Add at least 2 branches under {currentOrganization.name} to transfer stock between stores.
+                      </div>
+                    ) : (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const qtyNum = Number(transferQty);
+                          const res = hqDispatchBranchTransfer({
+                            fromBranchId: transferFromBranchId,
+                            toBranchId: transferToBranchId,
+                            ingredientId: effectiveIngredientId,
+                            quantityUnits: qtyNum,
+                          });
+                          setHqActionNotice({
+                            type: res.success ? 'ok' : 'err',
+                            text: res.message,
+                          });
+                        }}
+                        className="space-y-2 text-xs"
+                      >
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] font-bold text-neutral-500 uppercase">From Branch</label>
+                            <select
+                              value={transferFromBranchId}
+                              onChange={(e) => setTransferFromBranchId(e.target.value)}
+                              className="w-full mt-0.5 px-2.5 py-1.5 bg-neutral-50 border border-neutral-200 rounded-lg text-xs font-semibold"
+                            >
+                              {tenants.map((b) => (
+                                <option key={b.id} value={b.id}>
+                                  {b.branchCode} · {b.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-neutral-500 uppercase">To Branch</label>
+                            <select
+                              value={transferToBranchId}
+                              onChange={(e) => setTransferToBranchId(e.target.value)}
+                              className="w-full mt-0.5 px-2.5 py-1.5 bg-neutral-50 border border-neutral-200 rounded-lg text-xs font-semibold"
+                            >
+                              {tenants.map((b) => (
+                                <option key={b.id} value={b.id}>
+                                  {b.branchCode} · {b.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="col-span-2">
+                            <label className="text-[10px] font-bold text-neutral-500 uppercase">Source Store Ingredient</label>
+                            <select
+                              value={effectiveIngredientId}
+                              onChange={(e) => setTransferIngredientId(e.target.value)}
+                              className="w-full mt-0.5 px-2.5 py-1.5 bg-neutral-50 border border-neutral-200 rounded-lg text-xs font-semibold"
+                            >
+                              {sourceBranchIngredients.map((ing) => (
+                                <option key={ing.id} value={ing.id}>
+                                  {ing.name} ({ing.storeStockUnits.toLocaleString()} {ing.consumptionUnit})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-neutral-500 uppercase">Qty (Units)</label>
+                            <input
+                              type="number"
+                              min={1}
+                              value={transferQty}
+                              onChange={(e) => setTransferQty(e.target.value)}
+                              className="w-full mt-0.5 px-2.5 py-1.5 bg-neutral-50 border border-neutral-200 rounded-lg font-mono text-xs font-bold"
+                            />
+                          </div>
+                        </div>
+                        <button
+                          type="submit"
+                          className="w-full py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs cursor-pointer transition-colors"
+                        >
+                          Dispatch HQ Stock Transfer
+                        </button>
+                      </form>
+                    )}
+                    {hqAllBranchTransfers.length > 0 && (
+                      <div className="pt-2 border-t border-neutral-100 space-y-1 max-h-24 overflow-y-auto text-[11px]">
+                        {hqAllBranchTransfers.slice(0, 3).map((tr) => (
+                          <div key={`${tr.branchId}-${tr.id}`} className="flex items-center justify-between text-neutral-600">
+                            <span className="truncate">
+                              <strong className="text-neutral-900 font-mono">{tr.transferNumber}</strong> · {tr.ingredientName} ({tr.quantity} {tr.unit})
+                            </span>
+                            <span className="text-emerald-700 font-semibold shrink-0 ml-2">{tr.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. HQ Purchase Requests & Recent Cross-Branch Orders */}
+                  <div className="p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-neutral-800 flex items-center gap-1.5">
+                        <Package className="w-4 h-4 text-indigo-600" />
+                        <span>HQ Procurement &amp; Branch POs ({hqAllPurchaseRequests.length})</span>
+                      </h3>
+                      <span className="text-[11px] font-mono text-neutral-400">{hqAllOrders.length} total orders</span>
+                    </div>
+                    {hqAllPurchaseRequests.length === 0 ? (
+                      <div className="p-4 rounded-xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-500 text-center">
+                        No open purchase requests across branches.
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-56 overflow-y-auto">
+                        {hqAllPurchaseRequests.map((pr) => (
+                          <div
+                            key={`${pr.branchId}-${pr.id}`}
+                            className="p-2.5 rounded-xl bg-neutral-50 border border-neutral-200 flex items-center justify-between gap-2 text-xs"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-[10px] font-bold text-neutral-500 uppercase truncate">
+                                {pr.branchName} · {pr.requestNumber}
+                              </div>
+                              <div className="font-bold text-neutral-900 truncate">
+                                {pr.ingredientName} · {pr.requestedQty} {pr.unit}
+                              </div>
+                              <div className="text-[11px] text-neutral-600 font-mono">
+                                {formatMoney(pr.estimatedCost)} · {pr.status}
+                              </div>
+                            </div>
+                            <div className="shrink-0">
+                              {pr.status === 'pending' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    hqUpdatePurchaseRequestStatus(pr.branchId, pr.id, 'approved');
+                                    setHqActionNotice({
+                                      type: 'ok',
+                                      text: `Approved PO ${pr.requestNumber} (${pr.ingredientName}) for ${pr.branchName}.`,
+                                    });
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  Approve PO
+                                </button>
+                              )}
+                              {pr.status === 'approved' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    hqUpdatePurchaseRequestStatus(pr.branchId, pr.id, 'ordered');
+                                    setHqActionNotice({
+                                      type: 'ok',
+                                      text: `Marked PO ${pr.requestNumber} as ordered.`,
+                                    });
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  Mark Ordered
+                                </button>
+                              )}
+                              {pr.status === 'ordered' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    hqUpdatePurchaseRequestStatus(pr.branchId, pr.id, 'received');
+                                    setHqActionNotice({
+                                      type: 'ok',
+                                      text: `Marked PO ${pr.requestNumber} received at ${pr.branchName}.`,
+                                    });
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-neutral-900 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  Receive Stock
+                                </button>
+                              )}
+                              {pr.status === 'received' && (
+                                <span className="text-[11px] font-bold text-emerald-700">Received</span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+            );
+          })()
+        ) : (
+          <div className="bg-white rounded-2xl border border-neutral-200 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
+              <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded bg-neutral-900 text-white">
+                {currentTenant.branchCode}
+              </span>
+              <span className="font-extrabold text-neutral-900">{currentTenant.name}</span>
+              <span className="text-neutral-400">·</span>
+              <span className="text-neutral-600">
+                Isolated Branch Workspace · Manager: <strong>{currentTenant.managerName}</strong>
+              </span>
+              <span className="text-neutral-400">·</span>
+              <span className="inline-flex items-center gap-1 text-neutral-600 font-mono">
+                <Mail className="w-3.5 h-3.5 text-neutral-400" />
+                {currentTenant.email}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={switchToHqOverview}
+              className="px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              <span>Main HQ — All Branches Overview</span>
+            </button>
+          </div>
+        )}
+
         {/* ================= LIVE TODAY OPERATIONS & ACCOUNTABILITY OVERVIEW ================= */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <div className="bg-white rounded-xl p-3.5 border border-neutral-200">
@@ -1225,7 +1950,7 @@ export const OwnerDashboardView: React.FC = () => {
               <div className="border border-neutral-200 rounded-xl p-4 bg-white space-y-2 text-xs">
                 <div className="font-bold text-neutral-900">Shift Register Audit Trail</div>
                 <div className="text-neutral-500">
-                  Shift opened today at {cashierShift.openedAt} by Cashier Tony Danza. No void discrepancies detected.
+                  Shift opened today at {cashierShift.openedAt} by {activeOperator.name} ({currentTenant.branchCode}). No void discrepancies detected.
                 </div>
               </div>
 

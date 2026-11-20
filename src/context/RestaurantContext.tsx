@@ -37,29 +37,75 @@ import {
   MovementType,
   PayrollPaymentRecord,
   CommissionPayoutLog,
+  ProductionOrder,
+  ProductionOrderStatus,
+  ProductionModel,
+  PurchaseRequest,
+  BranchTransferRequest,
+  CateringOrder,
+  CateringOrderItem,
+  CateringOrderStatus,
+  RecipeStatus,
+  SaasOrganization,
+  BranchViewScope,
+  EmailMessage,
+  BranchMetricsSummary,
+  PlatformSurface,
+  LandingPageId,
+  SaasPlanId,
+  SaasPlanDefinition,
+  SaasTenantStatus,
+  SaasAccount,
+  SaasAccountRole,
+  SaasAccountStatus,
+  ProviderAuditEvent,
+  PlatformLeadInquiry,
 } from '../types/restaurant';
 import {
-  INITIAL_TENANTS,
-  INITIAL_WAITERS,
-  INITIAL_MENU_ITEMS,
-  INITIAL_TABLES,
-  INITIAL_ORDERS,
-  INITIAL_INGREDIENTS,
-  INITIAL_RECIPES,
-  INITIAL_EMPLOYEES,
-  INITIAL_STOCK_MOVEMENTS,
-  INITIAL_NOTIFICATIONS,
-  INITIAL_BOM_AUDIT_LOGS,
-  INITIAL_PRODUCTION_LOGS,
-  INITIAL_PREPARED_DISH_STOCKS,
-  INITIAL_BLOCKED_ATTEMPTS,
-  INITIAL_DAILY_RECONCILIATION,
-  INITIAL_AUDIT_LOGS,
-  INITIAL_APPROVAL_REQUESTS,
-  INITIAL_STOCK_LOTS,
-  INITIAL_SUB_RECIPE_BATCHES,
-} from '../data/mockData';
+  SAAS_PLANS,
+  INITIAL_ORGANIZATIONS,
+  INITIAL_SAAS_ACCOUNTS,
+  INITIAL_PROVIDER_AUDIT_LOGS,
+  INITIAL_LEAD_INQUIRIES,
+  INITIAL_BRANCHES,
+  BranchWorkspaceStore,
+  createInitialBranchStores,
+  createStarterBranchStore,
+} from '../data/saasSeeds';
 import { parseAppDeepLink, notifyFlutterHost } from '../utils/mobileEnvironment';
+import { convertQuantity } from '../utils/unitConversion';
+
+export interface ScaledRequirementRow {
+  key: string;
+  ingredientId: string;
+  ingredientName: string;
+  isSubRecipe: boolean;
+  subRecipeId?: string;
+  requiredQty: number;
+  unit: string;
+  availableKitchenQty: number;
+  availableStoreQty: number;
+  reservedQty: number;
+  totalAvailableQty: number;
+  netUnreservedTotalQty: number;
+  kitchenShortageQty: number;
+  globalShortageQty: number;
+  status: 'ok' | 'kitchen_short_store_ok' | 'shortage';
+  unitCost: number;
+  estimatedCost: number;
+  substituteIngredientId?: string;
+  substituteIngredientName?: string;
+  substituteAvailableQty?: number;
+  usedSubstituteName?: string;
+}
+
+export interface ScaledRequirementsResult {
+  rows: ScaledRequirementRow[];
+  canProduceFromKitchen: boolean;
+  canProduceWithStore: boolean;
+  totalEstimatedCost: number;
+  maxProduciblePortions: number;
+}
 
 export interface CartItem {
   menuItem: MenuItem;
@@ -73,9 +119,87 @@ export interface CartItem {
 }
 
 interface RestaurantContextType {
+  organizations: SaasOrganization[];
+  currentOrganization: SaasOrganization;
+  setCurrentOrganizationId: (orgId: string) => void;
+  createSaasTenant: (params: {
+    orgName: string;
+    ownerName: string;
+    ownerEmail: string;
+    branchName: string;
+    branchCode: string;
+    operatingModel: RestaurantTenant['operatingModel'];
+    phone: string;
+    address: string;
+    plan?: SaasPlanId;
+    status?: SaasTenantStatus;
+    password?: string;
+    switchToNew?: boolean;
+  }) => { org: SaasOrganization; branch: RestaurantTenant; account: SaasAccount };
   tenants: RestaurantTenant[];
   currentTenant: RestaurantTenant;
   setCurrentTenantId: (tenantId: string) => void;
+  viewScope: BranchViewScope;
+  setViewScope: (scope: BranchViewScope) => void;
+  switchToHqOverview: () => void;
+  workspaceRevision: number;
+  activeOperator: {
+    name: string;
+    email: string;
+    initials: string;
+    roleLabel: string;
+  };
+  addBranchToCurrentOrg: (params: {
+    name: string;
+    branchCode: string;
+    operatingModel: RestaurantTenant['operatingModel'];
+    phone: string;
+    email: string;
+    managerName: string;
+    address: string;
+    cloneCatalogFromCurrent?: boolean;
+  }) => RestaurantTenant | null;
+  currentBranchQuota: {
+    used: number;
+    max: number;
+    remaining: number;
+    isAtLimit: boolean;
+  };
+  toggleBranchStatus: (branchId: string) => void;
+  branchMetricsSummaries: BranchMetricsSummary[];
+  hqAllOrders: Array<Order & { branchId: string; branchName: string }>;
+  hqAllApprovals: Array<ApprovalRequest & { branchId: string; branchName: string }>;
+  hqAllPurchaseRequests: Array<PurchaseRequest & { branchId: string; branchName: string }>;
+  hqAllBranchTransfers: Array<BranchTransferRequest & { branchId: string; branchName: string }>;
+  hqReviewApproval: (branchId: string, requestId: string, approve: boolean, managerName?: string) => void;
+  hqDispatchBranchTransfer: (params: {
+    fromBranchId: string;
+    toBranchId: string;
+    ingredientId: string;
+    quantityUnits: number;
+    actor?: string;
+  }) => { success: boolean; message: string };
+  hqUpdatePurchaseRequestStatus: (
+    branchId: string,
+    requestId: string,
+    status: PurchaseRequest['status']
+  ) => void;
+  getBranchIngredients: (branchId: string) => Ingredient[];
+  emails: EmailMessage[];
+  unreadEmailCount: number;
+  sendEmail: (params: {
+    to: string[];
+    cc?: string[];
+    subject: string;
+    body: string;
+    category?: EmailMessage['category'];
+    priority?: EmailMessage['priority'];
+    broadcastAllBranches?: boolean;
+    relatedRef?: string;
+  }) => EmailMessage;
+  markEmailRead: (emailId: string, branchId: string, read?: boolean) => void;
+  toggleEmailStar: (emailId: string, branchId: string) => void;
+  deleteEmail: (emailId: string, branchId: string) => void;
   activeRole: Role;
   setActiveRole: (role: Role) => void;
   isStandalonePortal: boolean;
@@ -294,6 +418,85 @@ interface RestaurantContextType {
     actor?: string
   ) => { success: boolean; error?: string };
   createRequisitionForMissing: (missingItems: MissingStockItem[], shift?: string) => boolean;
+  // Enhanced Production Planning, Scaling, Reservations, Shortages & Catering
+  productionOrders: ProductionOrder[];
+  cateringOrders: CateringOrder[];
+  purchaseRequests: PurchaseRequest[];
+  branchTransfers: BranchTransferRequest[];
+  calculateScaledRequirements: (
+    items: Array<{
+      recipeId?: string;
+      menuItemId?: string;
+      portions: number;
+      portionName?: string;
+      modifierNames?: string[];
+      substituteOverrides?: Record<string, string>;
+    }>
+  ) => ScaledRequirementsResult;
+  updateRecipeStatus: (recipeId: string, status: RecipeStatus, actor?: string, note?: string) => void;
+  createProductionOrder: (params: {
+    recipeId: string;
+    targetPortions: number;
+    sourceType?: ProductionOrder['sourceType'];
+    productionModel?: ProductionModel;
+    assignedTo?: string;
+    scheduledFor?: string;
+    cateringOrderId?: string;
+    cateringOrderNumber?: string;
+    substituteOverrides?: Record<string, string>;
+  }) => ProductionOrder | null;
+  advanceProductionOrderStage: (
+    orderId: string,
+    nextStage: ProductionOrderStatus,
+    options?: {
+      actualPortions?: number;
+      wastagePortions?: number;
+      wastageReason?: string;
+      actualLineQtys?: Record<string, number>;
+      exceptionReason?: string;
+      actor?: string;
+    }
+  ) => { success: boolean; error?: string };
+  cancelProductionOrder: (orderId: string, reason: string, actor?: string) => void;
+  resolveShortageViaPurchaseRequest: (params: {
+    ingredientId: string;
+    requestedQty: number;
+    reason: string;
+    linkedOrderRef?: string;
+    requestedBy?: string;
+  }) => PurchaseRequest | null;
+  updatePurchaseRequestStatus: (requestId: string, status: PurchaseRequest['status']) => void;
+  resolveShortageViaBranchTransfer: (params: {
+    ingredientId: string;
+    quantity: number;
+    fromBranch: string;
+    requestedBy?: string;
+  }) => BranchTransferRequest | null;
+  receiveBranchTransfer: (transferId: string) => void;
+  createCateringOrder: (params: {
+    eventName: string;
+    eventType: CateringOrder['eventType'];
+    customerName: string;
+    customerPhone: string;
+    siteLocation: string;
+    eventDate: string;
+    items: Array<{ menuItemId: string; quantity: number; portion?: string; notes?: string }>;
+    depositPaid?: number;
+    notes?: string;
+  }) => CateringOrder;
+  reserveCateringIngredients: (cateringOrderId: string) => { success: boolean; message: string };
+  generateCateringProductionPlan: (cateringOrderId: string) => ProductionOrder[];
+  recordCateringFulfillment: (
+    cateringOrderId: string,
+    fulfilledByMenuId: Record<string, number>,
+    nextStatus?: CateringOrderStatus
+  ) => void;
+  amendCateringOrder: (
+    cateringOrderId: string,
+    items: Array<{ menuItemId: string; quantity: number; portion?: string; notes?: string }>,
+    note: string
+  ) => void;
+  generateCateringInvoice: (cateringOrderId: string) => string;
   addAdvanceRequest: (
     employeeId: string,
     amount: number,
@@ -351,68 +554,350 @@ interface RestaurantContextType {
   };
   soundAlertTriggered: boolean;
   dismissSoundAlert: () => void;
+  // SaaS Platform Surface, Auth, Registration & System Provider Accounts Control
+  platformSurface: PlatformSurface;
+  setPlatformSurface: (surface: PlatformSurface) => void;
+  landingPage: LandingPageId;
+  setLandingPage: (page: LandingPageId) => void;
+  selectedRegisterPlan: SaasPlanId;
+  setSelectedRegisterPlan: (plan: SaasPlanId) => void;
+  saasAccounts: SaasAccount[];
+  authenticatedAccount: SaasAccount | null;
+  impersonatingOrgId: string | null;
+  providerAuditLogs: ProviderAuditEvent[];
+  leadInquiries: PlatformLeadInquiry[];
+  providerTenantSummaries: Array<{
+    org: SaasOrganization;
+    branchesCount: number;
+    activeBranchesCount: number;
+    liveOrdersCount: number;
+    liveGmvTzs: number;
+    accountsCount: number;
+  }>;
+  providerStats: {
+    totalTenants: number;
+    activeTenants: number;
+    trialTenants: number;
+    suspendedTenants: number;
+    totalBranches: number;
+    activeAccountsCount: number;
+    pendingAccountsCount: number;
+    monthlyRecurringRevenueTzs: number;
+    platformGmvTzs: number;
+    openLeadsCount: number;
+  };
+  loginWithCredentials: (
+    email: string,
+    password: string
+  ) => { success: boolean; error?: string; account?: SaasAccount };
+  registerTenantAccount: (params: {
+    orgName: string;
+    ownerName: string;
+    ownerEmail: string;
+    password: string;
+    plan: SaasPlanId;
+    operatingModel: RestaurantTenant['operatingModel'];
+    branchName: string;
+    branchCode: string;
+    phone: string;
+    address: string;
+  }) => { success: boolean; error?: string };
+  quickLaunchWorkspace: (preset: 'provider' | 'savanna_hq' | 'kona_hq' | 'cashier_pos') => void;
+  logoutAccount: () => void;
+  providerUpdateTenantStatus: (orgId: string, status: SaasTenantStatus) => void;
+  providerUpdateTenantPlan: (orgId: string, plan: SaasPlanId) => void;
+  providerMarkBillingPaid: (orgId: string) => void;
+  providerInspectTenant: (orgId: string) => void;
+  providerExitInspection: () => void;
+  providerCreateAccount: (params: {
+    name: string;
+    email: string;
+    password: string;
+    role: SaasAccountRole;
+    organizationId?: string;
+    branchId?: string;
+    phone?: string;
+  }) => { success: boolean; error?: string };
+  providerUpdateAccountStatus: (accountId: string, status: SaasAccountStatus) => void;
+  providerUpdateAccountRole: (accountId: string, role: SaasAccountRole) => void;
+  providerResetAccountPassword: (accountId: string, newPassword: string) => void;
+  saasPlans: SaasPlanDefinition[];
+  providerCreatePlan: (params: {
+    name: string;
+    tagline: string;
+    audience: string;
+    monthlyFeeTzs: number;
+    annualDiscountPct: number;
+    trialDays: number;
+    maxBranches: number;
+    maxStaffSeats: number;
+    maxRecipes: number;
+    includedModules: string[];
+    summary: string;
+    isFeatured?: boolean;
+    isPublic?: boolean;
+  }) => { success: boolean; error?: string; plan?: SaasPlanDefinition };
+  providerUpdatePlan: (planId: string, patch: Partial<SaasPlanDefinition>) => void;
+  providerTogglePlanVisibility: (planId: string) => void;
+  providerTogglePlanStatus: (planId: string) => void;
+  submitLeadInquiry: (params: {
+    companyName: string;
+    contactName: string;
+    email: string;
+    phone: string;
+    branchesCount: number;
+    planInterest: SaasPlanId;
+    notes: string;
+  }) => PlatformLeadInquiry;
+  providerConvertLeadToTenant: (leadId: string) => { success: boolean; message: string };
 }
 
 const RestaurantContext = createContext<RestaurantContextType | undefined>(undefined);
 
 export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [deepLink] = useState(() => parseAppDeepLink());
-  const [tenants] = useState<RestaurantTenant[]>(INITIAL_TENANTS);
-  const [currentTenantId, setCurrentTenantId] = useState<string>(() => {
-    if (deepLink.tenantId && INITIAL_TENANTS.some((t) => t.id === deepLink.tenantId || t.slug === deepLink.tenantId)) {
-      const found = INITIAL_TENANTS.find((t) => t.id === deepLink.tenantId || t.slug === deepLink.tenantId);
-      return found ? found.id : 'tenant-savanna';
+  const [organizations, setOrganizations] = useState<SaasOrganization[]>(INITIAL_ORGANIZATIONS);
+  const [saasPlans, setSaasPlans] = useState<SaasPlanDefinition[]>(SAAS_PLANS);
+  const [allBranches, setAllBranches] = useState<RestaurantTenant[]>(INITIAL_BRANCHES);
+  const [saasAccounts, setSaasAccounts] = useState<SaasAccount[]>(INITIAL_SAAS_ACCOUNTS);
+  const [providerAuditLogs, setProviderAuditLogs] = useState<ProviderAuditEvent[]>(INITIAL_PROVIDER_AUDIT_LOGS);
+  const [leadInquiries, setLeadInquiries] = useState<PlatformLeadInquiry[]>(INITIAL_LEAD_INQUIRIES);
+
+  const [platformSurface, setPlatformSurface] = useState<PlatformSurface>(() =>
+    deepLink.standalone || deepLink.portal ? 'erp' : 'landing'
+  );
+  const [landingPage, setLandingPage] = useState<LandingPageId>('home');
+  const [selectedRegisterPlan, setSelectedRegisterPlan] = useState<SaasPlanId>('Growth');
+  const [authenticatedAccount, setAuthenticatedAccount] = useState<SaasAccount | null>(() =>
+    deepLink.standalone || deepLink.portal ? INITIAL_SAAS_ACCOUNTS[1] : null
+  );
+  const [impersonatingOrgId, setImpersonatingOrgId] = useState<string | null>(null);
+
+  const [branchStores, setBranchStores] = useState<Record<string, BranchWorkspaceStore>>(() => {
+    const initial = createInitialBranchStores();
+    if (deepLink.portal === 'customer') {
+      Object.keys(initial).forEach((k) => {
+        initial[k] = { ...initial[k], cart: [] };
+      });
     }
-    return 'tenant-savanna';
+    return initial;
   });
+
+  const initialMatchedBranch = useMemo(() => {
+    if (deepLink.tenantId) {
+      return INITIAL_BRANCHES.find((b) => b.id === deepLink.tenantId || b.slug === deepLink.tenantId);
+    }
+    return undefined;
+  }, [deepLink.tenantId]);
+
+  const [currentOrganizationId, setCurrentOrganizationIdState] = useState<string>(
+    () => initialMatchedBranch?.organizationId || INITIAL_ORGANIZATIONS[0].id
+  );
+  const [currentBranchIdState, setCurrentBranchIdState] = useState<string>(
+    () => initialMatchedBranch?.id || INITIAL_BRANCHES[0].id
+  );
+  const [viewScope, setViewScopeState] = useState<BranchViewScope>('branch');
+  const [workspaceRevision, setWorkspaceRevision] = useState<number>(1);
+
   const [activeRole, setActiveRole] = useState<Role>(() => deepLink.portal ?? 'cashier');
   const [isStandalonePortal] = useState<boolean>(() => Boolean(deepLink.standalone));
-  const [activeWaiterId, setActiveWaiterId] = useState<string>('waiter-john');
+  const [activeWaiterIdState, setActiveWaiterId] = useState<string>('waiter-john');
   const [currency, setCurrency] = useState<'TZS' | 'USD'>('TZS');
-  const [taxEnabled, setTaxEnabled] = useState<boolean>(false);
-  const [taxRatePct, setTaxRatePct] = useState<number>(18);
-  const [defaultCommissionMode, setDefaultCommissionMode] = useState<CommissionMode>('percent');
-  const [defaultCommissionValue, setDefaultCommissionValue] = useState<number>(5);
-  const [settledCommissionByWaiter, setSettledCommissionByWaiter] = useState<Record<string, number>>({});
-  const [activeReferralCode, setActiveReferralCode] = useState<string | null>(() => deepLink.referralCode ?? 'WAITER_JOHN');
-
-  const [orders, setOrders] = useState<Order[]>(INITIAL_ORDERS);
-  const [tables, setTables] = useState<Table[]>(INITIAL_TABLES);
-  const [menuItems, setMenuItems] = useState<MenuItem[]>(INITIAL_MENU_ITEMS);
-  const [ingredients, setIngredients] = useState<Ingredient[]>(INITIAL_INGREDIENTS);
-  const [stockMovements, setStockMovements] = useState<StockMovement[]>(INITIAL_STOCK_MOVEMENTS);
-  const [stockLots, setStockLots] = useState<StockBatchLot[]>(INITIAL_STOCK_LOTS);
-  const [recipes, setRecipes] = useState<Recipe[]>(INITIAL_RECIPES);
-  const [subRecipeBatches, setSubRecipeBatches] = useState<SubRecipeStockBatch[]>(INITIAL_SUB_RECIPE_BATCHES);
-  const [bomDeductionPolicy, setBomDeductionPolicy] = useState<BomDeductionPolicy>('on_kitchen_start');
-  const [bomAuditLogs, setBomAuditLogs] = useState<BomAuditLog[]>(INITIAL_BOM_AUDIT_LOGS);
-  const [productionLogs, setProductionLogs] = useState<ProductionLog[]>(INITIAL_PRODUCTION_LOGS);
-  const [preparedDishStocks, setPreparedDishStocks] = useState<PreparedDishStock[]>(INITIAL_PREPARED_DISH_STOCKS);
-  const [blockedCookingAttempts, setBlockedCookingAttempts] = useState<BlockedCookingAttempt[]>(INITIAL_BLOCKED_ATTEMPTS);
-  const [dailyReconciliations, setDailyReconciliations] = useState<DailyReconciliationItem[]>(INITIAL_DAILY_RECONCILIATION);
-  const [waiters, setWaiters] = useState<Waiter[]>(INITIAL_WAITERS);
-  const [employees, setEmployees] = useState<Employee[]>(INITIAL_EMPLOYEES);
-  const [payrollPayments, setPayrollPayments] = useState<PayrollPaymentRecord[]>([]);
-  const [commissionPayouts, setCommissionPayouts] = useState<CommissionPayoutLog[]>([]);
-
-  // Initialize cart empty when opened directly into Customer Portal, otherwise seed Cashier POS demo ticket
-  const [cart, setCart] = useState<CartItem[]>(() => {
-    if (deepLink.portal === 'customer') return [];
-    const findItem = (id: string, fallbackIdx: number) =>
-      INITIAL_MENU_ITEMS.find((i) => i.id === id) || INITIAL_MENU_ITEMS[fallbackIdx];
-    return [
-      { menuItem: findItem('pos-pepperoni-pizza', 15), quantity: 1, selectedModifiers: [] },
-      { menuItem: findItem('pos-caesar-salad', 16), quantity: 2, selectedModifiers: [] },
-      { menuItem: findItem('pos-orange-juice', 17), quantity: 1, selectedModifiers: [] },
-      { menuItem: findItem('pos-black-tea', 18), quantity: 1, selectedModifiers: [] },
-      { menuItem: findItem('pos-sandwich', 19), quantity: 1, selectedModifiers: [] },
-      { menuItem: findItem('pos-mango-dessert', 2), quantity: 2, selectedModifiers: [] },
-    ];
-  });
-  const [notifications, setNotifications] = useState<AppNotification[]>(INITIAL_NOTIFICATIONS);
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(INITIAL_AUDIT_LOGS);
-  const [approvalRequests, setApprovalRequests] = useState<ApprovalRequest[]>(INITIAL_APPROVAL_REQUESTS);
+  const [activeReferralCode, setActiveReferralCode] = useState<string | null>(
+    () => deepLink.referralCode ?? 'WAITER_JOHN'
+  );
   const [soundAlertTriggered, setSoundAlertTriggered] = useState<boolean>(false);
+
+  const currentOrganization = useMemo(() => {
+    return organizations.find((o) => o.id === currentOrganizationId) || organizations[0];
+  }, [organizations, currentOrganizationId]);
+
+  // Strict Tenant Isolation: `tenants` exposes ONLY branches belonging to `currentOrganization`
+  const tenants = useMemo(() => {
+    return allBranches.filter((b) => b.organizationId === currentOrganization.id);
+  }, [allBranches, currentOrganization.id]);
+
+  const currentTenant = useMemo(() => {
+    return (
+      tenants.find((t) => t.id === currentBranchIdState) ||
+      tenants.find((t) => t.isHqBranch) ||
+      tenants[0]
+    );
+  }, [tenants, currentBranchIdState]);
+
+  const activeBranchId = currentTenant.id;
+
+  const activeStore: BranchWorkspaceStore = useMemo(() => {
+    return (
+      branchStores[activeBranchId] ||
+      createStarterBranchStore(currentTenant, currentOrganization)
+    );
+  }, [branchStores, activeBranchId, currentTenant, currentOrganization]);
+
+  const updateBranchSlice = <K extends keyof BranchWorkspaceStore>(
+    key: K,
+    updater: React.SetStateAction<BranchWorkspaceStore[K]>,
+    targetBranchId?: string
+  ) => {
+    const bId = targetBranchId || activeBranchId;
+    setBranchStores((prev) => {
+      const store = prev[bId];
+      if (!store) return prev;
+      const nextVal =
+        typeof updater === 'function'
+          ? (updater as (curr: BranchWorkspaceStore[K]) => BranchWorkspaceStore[K])(store[key])
+          : updater;
+      return {
+        ...prev,
+        [bId]: {
+          ...store,
+          [key]: nextVal,
+        },
+      };
+    });
+  };
+
+  // Branch-isolated state accessors and setters
+  const orders = activeStore.orders;
+  const setOrders: React.Dispatch<React.SetStateAction<Order[]>> = (u) => updateBranchSlice('orders', u);
+  const tables = activeStore.tables;
+  const setTables: React.Dispatch<React.SetStateAction<Table[]>> = (u) => updateBranchSlice('tables', u);
+  const menuItems = activeStore.menuItems;
+  const setMenuItems: React.Dispatch<React.SetStateAction<MenuItem[]>> = (u) => updateBranchSlice('menuItems', u);
+  const ingredients = activeStore.ingredients;
+  const setIngredients: React.Dispatch<React.SetStateAction<Ingredient[]>> = (u) => updateBranchSlice('ingredients', u);
+  const stockMovements = activeStore.stockMovements;
+  const setStockMovements: React.Dispatch<React.SetStateAction<StockMovement[]>> = (u) => updateBranchSlice('stockMovements', u);
+  const stockLots = activeStore.stockLots;
+  const setStockLots: React.Dispatch<React.SetStateAction<StockBatchLot[]>> = (u) => updateBranchSlice('stockLots', u);
+  const recipes = activeStore.recipes;
+  const setRecipes: React.Dispatch<React.SetStateAction<Recipe[]>> = (u) => updateBranchSlice('recipes', u);
+  const subRecipeBatches = activeStore.subRecipeBatches;
+  const setSubRecipeBatches: React.Dispatch<React.SetStateAction<SubRecipeStockBatch[]>> = (u) => updateBranchSlice('subRecipeBatches', u);
+  const bomDeductionPolicy = activeStore.bomDeductionPolicy;
+  const setBomDeductionPolicy = (policy: BomDeductionPolicy) => updateBranchSlice('bomDeductionPolicy', policy);
+  const bomAuditLogs = activeStore.bomAuditLogs;
+  const setBomAuditLogs: React.Dispatch<React.SetStateAction<BomAuditLog[]>> = (u) => updateBranchSlice('bomAuditLogs', u);
+  const productionLogs = activeStore.productionLogs;
+  const setProductionLogs: React.Dispatch<React.SetStateAction<ProductionLog[]>> = (u) => updateBranchSlice('productionLogs', u);
+  const preparedDishStocks = activeStore.preparedDishStocks;
+  const setPreparedDishStocks: React.Dispatch<React.SetStateAction<PreparedDishStock[]>> = (u) => updateBranchSlice('preparedDishStocks', u);
+  const blockedCookingAttempts = activeStore.blockedCookingAttempts;
+  const setBlockedCookingAttempts: React.Dispatch<React.SetStateAction<BlockedCookingAttempt[]>> = (u) => updateBranchSlice('blockedCookingAttempts', u);
+  const dailyReconciliations = activeStore.dailyReconciliations;
+  const setDailyReconciliations: React.Dispatch<React.SetStateAction<DailyReconciliationItem[]>> = (u) => updateBranchSlice('dailyReconciliations', u);
+  const productionOrders = activeStore.productionOrders;
+  const setProductionOrders: React.Dispatch<React.SetStateAction<ProductionOrder[]>> = (u) => updateBranchSlice('productionOrders', u);
+  const cateringOrders = activeStore.cateringOrders;
+  const setCateringOrders: React.Dispatch<React.SetStateAction<CateringOrder[]>> = (u) => updateBranchSlice('cateringOrders', u);
+  const purchaseRequests = activeStore.purchaseRequests;
+  const setPurchaseRequests: React.Dispatch<React.SetStateAction<PurchaseRequest[]>> = (u) => updateBranchSlice('purchaseRequests', u);
+  const branchTransfers = activeStore.branchTransfers;
+  const setBranchTransfers: React.Dispatch<React.SetStateAction<BranchTransferRequest[]>> = (u) => updateBranchSlice('branchTransfers', u);
+  const waiters = activeStore.waiters;
+  const setWaiters: React.Dispatch<React.SetStateAction<Waiter[]>> = (u) => updateBranchSlice('waiters', u);
+  const employees = activeStore.employees;
+  const setEmployees: React.Dispatch<React.SetStateAction<Employee[]>> = (u) => updateBranchSlice('employees', u);
+  const payrollPayments = activeStore.payrollPayments;
+  const setPayrollPayments: React.Dispatch<React.SetStateAction<PayrollPaymentRecord[]>> = (u) => updateBranchSlice('payrollPayments', u);
+  const commissionPayouts = activeStore.commissionPayouts;
+  const setCommissionPayouts: React.Dispatch<React.SetStateAction<CommissionPayoutLog[]>> = (u) => updateBranchSlice('commissionPayouts', u);
+  const settledCommissionByWaiter = activeStore.settledCommissionByWaiter;
+  const setSettledCommissionByWaiter: React.Dispatch<React.SetStateAction<Record<string, number>>> = (u) =>
+    updateBranchSlice('settledCommissionByWaiter', u);
+  const cart = activeStore.cart;
+  const setCart: React.Dispatch<React.SetStateAction<CartItem[]>> = (u) => updateBranchSlice('cart', u);
+  const notifications = activeStore.notifications;
+  const setNotifications: React.Dispatch<React.SetStateAction<AppNotification[]>> = (u) => updateBranchSlice('notifications', u);
+  const auditLogs = activeStore.auditLogs;
+  const setAuditLogs: React.Dispatch<React.SetStateAction<AuditLogEntry[]>> = (u) => updateBranchSlice('auditLogs', u);
+  const approvalRequests = activeStore.approvalRequests;
+  const setApprovalRequests: React.Dispatch<React.SetStateAction<ApprovalRequest[]>> = (u) => updateBranchSlice('approvalRequests', u);
+  const cashierShift = activeStore.cashierShift;
+  const setCashierShift: React.Dispatch<React.SetStateAction<BranchWorkspaceStore['cashierShift']>> = (u) =>
+    updateBranchSlice('cashierShift', u);
+  const taxEnabled = activeStore.taxEnabled;
+  const setTaxEnabled = (enabled: boolean) => updateBranchSlice('taxEnabled', enabled);
+  const taxRatePct = activeStore.taxRatePct;
+  const setTaxRatePct = (ratePct: number) => updateBranchSlice('taxRatePct', ratePct);
+  const defaultCommissionMode = activeStore.defaultCommissionMode;
+  const setDefaultCommissionMode = (m: CommissionMode) => updateBranchSlice('defaultCommissionMode', m);
+  const defaultCommissionValue = activeStore.defaultCommissionValue;
+  const setDefaultCommissionValue = (v: number) => updateBranchSlice('defaultCommissionValue', v);
+
+  // Ensure active waiter stays valid for the currently isolated branch
+  const activeWaiterId = useMemo(() => {
+    return waiters.find((w) => w.id === activeWaiterIdState)?.id || waiters[0]?.id || '';
+  }, [waiters, activeWaiterIdState]);
+
+  // Tenant & Branch switching with clean app refresh
+  const setCurrentTenantId = (branchId: string) => {
+    const target = allBranches.find(
+      (b) => b.id === branchId && b.organizationId === currentOrganization.id
+    );
+    if (!target) return;
+    setCurrentBranchIdState(target.id);
+    setViewScopeState('branch');
+    const targetWaiters = branchStores[target.id]?.waiters || [];
+    if (targetWaiters.length > 0) {
+      setActiveWaiterId(targetWaiters[0].id);
+      setActiveReferralCode(targetWaiters[0].referralCode);
+    } else {
+      setActiveWaiterId('');
+      setActiveReferralCode(null);
+    }
+    setSoundAlertTriggered(false);
+    setWorkspaceRevision((r) => r + 1);
+  };
+
+  const setCurrentOrganizationId = (orgId: string) => {
+    const targetOrg = organizations.find((o) => o.id === orgId);
+    if (!targetOrg) return;
+    const orgBranches = allBranches.filter((b) => b.organizationId === orgId);
+    const firstBranch = orgBranches.find((b) => b.isHqBranch) || orgBranches[0];
+    setCurrentOrganizationIdState(targetOrg.id);
+    if (firstBranch) {
+      setCurrentBranchIdState(firstBranch.id);
+      const firstWaiters = branchStores[firstBranch.id]?.waiters || [];
+      setActiveWaiterId(firstWaiters[0]?.id || '');
+      setActiveReferralCode(firstWaiters[0]?.referralCode || null);
+    }
+    setViewScopeState('branch');
+    setSoundAlertTriggered(false);
+    setWorkspaceRevision((r) => r + 1);
+  };
+
+  const setViewScope = (scope: BranchViewScope) => {
+    setViewScopeState(scope);
+    setWorkspaceRevision((r) => r + 1);
+  };
+
+  const switchToHqOverview = () => {
+    setViewScopeState('hq_overview');
+    setActiveRole('owner');
+    setWorkspaceRevision((r) => r + 1);
+  };
+
+  const activeOperator = useMemo(() => {
+    const name =
+      viewScope === 'hq_overview' || activeRole === 'owner'
+        ? currentOrganization.ownerName
+        : currentTenant.managerName;
+    const email =
+      viewScope === 'hq_overview' || activeRole === 'owner'
+        ? currentOrganization.ownerEmail
+        : currentTenant.email;
+    const roleLabel =
+      viewScope === 'hq_overview'
+        ? `Main HQ · ${tenants.length} Branches`
+        : `${currentTenant.branchCode} · ${currentTenant.name}`;
+    const parts = name.trim().split(/\s+/);
+    const initials =
+      parts.length >= 2
+        ? `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
+        : name.slice(0, 2).toUpperCase();
+    return { name, email, initials, roleLabel };
+  }, [viewScope, activeRole, currentOrganization, currentTenant, tenants.length]);
 
   const logAuditEvent = (entry: Omit<AuditLogEntry, 'id' | 'timestamp'>) => {
     const newLog: AuditLogEntry = {
@@ -448,20 +933,6 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
     setNotifications((prev) => [newNotif, ...prev]);
   };
-
-  const [cashierShift, setCashierShift] = useState({
-    isOpen: true,
-    openedAt: '08:00 AM',
-    openingCash: 150000,
-    cashSales: 67080,
-    mpesaSales: 114740,
-    cardSales: 0,
-    expectedCash: 217080,
-  });
-
-  const currentTenant = useMemo(() => {
-    return tenants.find((t) => t.id === currentTenantId) || tenants[0];
-  }, [tenants, currentTenantId]);
 
   const toggleCurrency = () => {
     setCurrency((prev) => (prev === 'TZS' ? 'USD' : 'TZS'));
@@ -660,7 +1131,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return;
       }
 
-      if (recipe.status === 'archived') return;
+      if (recipe.status === 'archived' || recipe.status === 'suspended') return;
 
       // Batch-cooked dish: deduct ONLY from pre-prepared plates pool & production log remainingPlates (NEVER raw ingredients again!)
       if (recipe.cookingMethod === 'batch_cooking') {
@@ -736,17 +1207,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           combinedNotes.includes(ruleLower);
         if (!isTriggered) return;
 
+        const targetIng = ingredients.find((i) => i.id === rule.ingredientId);
+        const deltaInBase = targetIng && rule.unit
+          ? convertQuantity(rule.quantityDelta, rule.unit, targetIng.consumptionUnit)
+          : rule.quantityDelta;
+
         if (rule.action === 'add') {
           perLineRawQty.set(
             rule.ingredientId,
-            (perLineRawQty.get(rule.ingredientId) || 0) + rule.quantityDelta * li.quantity
+            (perLineRawQty.get(rule.ingredientId) || 0) + deltaInBase * li.quantity
           );
         } else if (rule.action === 'remove') {
           const cur = perLineRawQty.get(rule.ingredientId) || 0;
-          perLineRawQty.set(rule.ingredientId, Math.max(0, cur - rule.quantityDelta * li.quantity));
+          perLineRawQty.set(rule.ingredientId, Math.max(0, cur - deltaInBase * li.quantity));
         } else if (rule.action === 'substitute' && rule.substituteIngredientId) {
           const cur = perLineRawQty.get(rule.ingredientId) || 0;
-          const removed = Math.min(cur, rule.quantityDelta * li.quantity);
+          const removed = Math.min(cur, deltaInBase * li.quantity);
           perLineRawQty.set(rule.ingredientId, Math.max(0, cur - removed));
           perLineRawQty.set(
             rule.substituteIngredientId,
@@ -1012,7 +1488,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const existingDraft = params.existingDraftId ? orders.find((o) => o.id === params.existingDraftId) : undefined;
     const nextOrderNum = existingDraft?.orderNumber || `#F00${orders.length + 27}`;
     const nextKotNum = existingDraft?.kotNumber || `KOT-${Math.floor(154650 + orders.length * 3 + Math.random() * 9)}`;
-    const branchPrefix = currentTenant.id === 'tenant-kona-chips' ? 'KC' : 'SV';
+    const branchPrefix = currentTenant.branchCode?.split('-')[1] || (currentTenant.id === 'tenant-kona-chips' ? 'KC' : 'SV');
     const existingCodes = new Set(orders.map((o) => o.serviceCouponCode).filter(Boolean));
     let serviceCouponCode = existingDraft?.serviceCouponCode || `${branchPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
     if (!existingDraft?.serviceCouponCode) {
@@ -1051,6 +1527,12 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       (bomDeductionPolicy === 'on_order_submit' ||
         (bomDeductionPolicy === 'on_payment' && Boolean(params.markAsPaid)));
 
+    const resolvedReferralWaiterId =
+      params.referralWaiterId ||
+      (activeReferralCode
+        ? waiters.find((w) => w.referralCode === activeReferralCode)?.id || waiters[0]?.id
+        : undefined);
+
     const newOrder: Order = {
       id: orderId,
       orderNumber: nextOrderNum,
@@ -1067,7 +1549,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       status: targetStatus,
       paymentStatus: params.markAsPaid ? 'paid' : 'unpaid',
       paymentMethod: params.paymentMethod,
-      referralWaiterId: params.referralWaiterId || (activeReferralCode ? 'waiter-john' : undefined),
+      referralWaiterId: resolvedReferralWaiterId,
       servingWaiterId: params.servingWaiterId,
       subtotal,
       originalAmount: existingDraft?.originalAmount ?? total,
@@ -3340,6 +3822,897 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return false;
   };
 
+  // ============================================================================
+  // OPERATIONAL BOM SCALING, PRODUCTION ORDERS, SHORTAGES & CATERING ENGINE
+  // ============================================================================
+  const calculateScaledRequirements = (
+    items: Array<{
+      recipeId?: string;
+      menuItemId?: string;
+      portions: number;
+      portionName?: string;
+      modifierNames?: string[];
+      substituteOverrides?: Record<string, string>;
+    }>
+  ): ScaledRequirementsResult => {
+    const rawAccumulator = new Map<
+      string,
+      { requiredQty: number; substituteOverrideId?: string; defaultSubstituteId?: string }
+    >();
+    const subAccumulator = new Map<string, { requiredQty: number; unit: string }>();
+
+    items.forEach((item) => {
+      const portions = Math.max(0, item.portions || 0);
+      if (portions <= 0) return;
+
+      const recipe =
+        (item.recipeId ? recipes.find((r) => r.id === item.recipeId) : undefined) ||
+        (item.menuItemId ? recipes.find((r) => r.menuItemId === item.menuItemId) : undefined);
+
+      // Direct-stock menu item fallback (e.g. Chilled Soda Bottle)
+      if (!recipe) {
+        if (item.menuItemId === 'menu-soda-bottle') {
+          const cur = rawAccumulator.get('ing-soda') || { requiredQty: 0 };
+          rawAccumulator.set('ing-soda', { ...cur, requiredQty: cur.requiredQty + portions });
+        }
+        return;
+      }
+
+      const batchYield = Math.max(1, recipe.batchYieldPlates || 1);
+      const variant = item.portionName
+        ? recipe.variants?.find((v) => v.name.toLowerCase() === item.portionName?.toLowerCase())
+        : undefined;
+      const portionMultiplier = variant?.portionMultiplier ?? 1;
+
+      recipe.ingredients.forEach((ri) => {
+        const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
+
+        if (ri.isSubRecipe && ri.subRecipeId) {
+          const perUnit =
+            ri.subRecipeQuantity && batchYield > 0
+              ? ri.subRecipeQuantity / batchYield
+              : ri.quantity;
+          const totalSubQty = (perUnit * portionMultiplier / yieldFactor) * portions;
+          const sr = recipes.find((r) => r.id === ri.subRecipeId);
+          const cur = subAccumulator.get(ri.subRecipeId) || {
+            requiredQty: 0,
+            unit: ri.subRecipeUnit || sr?.yieldUnit || 'portions',
+          };
+          subAccumulator.set(ri.subRecipeId, {
+            ...cur,
+            requiredQty: cur.requiredQty + totalSubQty,
+          });
+          return;
+        }
+
+        const override = variant?.ingredientOverrides?.find((ov) => ov.ingredientId === ri.ingredientId);
+        const perUnit = override
+          ? override.quantity
+          : (ri.batchQuantity !== undefined ? ri.batchQuantity / batchYield : ri.quantity) * portionMultiplier;
+        const totalRaw = (perUnit / yieldFactor) * portions;
+        const chosenId = item.substituteOverrides?.[ri.ingredientId] || ri.ingredientId;
+        const cur = rawAccumulator.get(chosenId) || {
+          requiredQty: 0,
+          defaultSubstituteId: ri.substituteIngredientId,
+          substituteOverrideId: item.substituteOverrides?.[ri.ingredientId],
+        };
+        rawAccumulator.set(chosenId, {
+          ...cur,
+          requiredQty: cur.requiredQty + totalRaw,
+        });
+      });
+
+      // Apply modifier BOM deltas
+      const modLowers = (item.modifierNames || []).map((m) => m.toLowerCase());
+      (recipe.modifierRules || []).forEach((rule) => {
+        const ruleLower = rule.modifierName.toLowerCase();
+        if (!modLowers.some((m) => m.includes(ruleLower) || ruleLower.includes(m))) return;
+        const targetIng = ingredients.find((i) => i.id === rule.ingredientId);
+        const deltaInBase =
+          targetIng && rule.unit
+            ? convertQuantity(rule.quantityDelta, rule.unit, targetIng.consumptionUnit)
+            : rule.quantityDelta;
+        const cur = rawAccumulator.get(rule.ingredientId) || { requiredQty: 0 };
+        if (rule.action === 'add') {
+          rawAccumulator.set(rule.ingredientId, {
+            ...cur,
+            requiredQty: cur.requiredQty + deltaInBase * portions,
+          });
+        } else if (rule.action === 'remove') {
+          rawAccumulator.set(rule.ingredientId, {
+            ...cur,
+            requiredQty: Math.max(0, cur.requiredQty - deltaInBase * portions),
+          });
+        }
+      });
+    });
+
+    const rows: ScaledRequirementRow[] = [];
+
+    subAccumulator.forEach((entry, subRecipeId) => {
+      const subRec = recipes.find((r) => r.id === subRecipeId);
+      const activeBatches = subRecipeBatches.filter(
+        (sb) => sb.subRecipeId === subRecipeId && sb.remainingQty > 0 && sb.status !== 'reversed' && sb.status !== 'expired'
+      );
+      const availPool = Math.round(activeBatches.reduce((s, b) => s + b.remainingQty, 0) * 100) / 100;
+      const unitCost =
+        activeBatches.length > 0 ? activeBatches[0].costPerUnit : computeRecipeUnitCost(subRecipeId).unitCost;
+      const requiredQty = Math.round(entry.requiredQty * 100) / 100;
+      const shortage = Math.max(0, Math.round((requiredQty - availPool) * 100) / 100);
+
+      rows.push({
+        key: `sub:${subRecipeId}`,
+        ingredientId: subRecipeId,
+        ingredientName: `${subRec?.name || subRecipeId} (Sub-Recipe Pool)`,
+        isSubRecipe: true,
+        subRecipeId,
+        requiredQty,
+        unit: entry.unit,
+        availableKitchenQty: availPool,
+        availableStoreQty: 0,
+        reservedQty: 0,
+        totalAvailableQty: availPool,
+        netUnreservedTotalQty: availPool,
+        kitchenShortageQty: shortage,
+        globalShortageQty: shortage,
+        status: shortage <= 0 ? 'ok' : 'shortage',
+        unitCost,
+        estimatedCost: Math.round(requiredQty * unitCost),
+      });
+    });
+
+    rawAccumulator.forEach((entry, ingId) => {
+      const ing = ingredients.find((i) => i.id === ingId);
+      if (!ing) return;
+      const requiredQty = Math.round(entry.requiredQty);
+      const availKitchen = ing.kitchenStockUnits ?? 0;
+      const availStore = ing.storeStockUnits ?? 0;
+      const reservedQty = ing.reservedStockUnits ?? 0;
+      const totalAvail = availKitchen + availStore;
+      const netUnreserved = Math.max(0, totalAvail - reservedQty);
+      const kitchenShortage = Math.max(0, requiredQty - availKitchen);
+      const globalShortage = Math.max(0, requiredQty - netUnreserved);
+      const unitCost = ing.conversionRatio > 0 ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
+      const subIng = entry.defaultSubstituteId
+        ? ingredients.find((i) => i.id === entry.defaultSubstituteId)
+        : undefined;
+
+      rows.push({
+        key: `raw:${ingId}`,
+        ingredientId: ingId,
+        ingredientName: ing.name,
+        isSubRecipe: false,
+        requiredQty,
+        unit: ing.consumptionUnit,
+        availableKitchenQty: availKitchen,
+        availableStoreQty: availStore,
+        reservedQty,
+        totalAvailableQty: totalAvail,
+        netUnreservedTotalQty: netUnreserved,
+        kitchenShortageQty: kitchenShortage,
+        globalShortageQty: globalShortage,
+        status:
+          kitchenShortage <= 0 && globalShortage <= 0
+            ? 'ok'
+            : globalShortage <= 0
+            ? 'kitchen_short_store_ok'
+            : 'shortage',
+        unitCost,
+        estimatedCost: Math.round(requiredQty * unitCost),
+        substituteIngredientId: subIng?.id,
+        substituteIngredientName: subIng?.name,
+        substituteAvailableQty: subIng ? subIng.currentStockUnits : undefined,
+      });
+    });
+
+    const totalPortions = items.reduce((s, it) => s + Math.max(0, it.portions || 0), 0);
+    let maxProducible = totalPortions > 0 ? Infinity : 0;
+    if (totalPortions > 0) {
+      rows.forEach((r) => {
+        if (r.requiredQty > 0) {
+          const ratio = r.netUnreservedTotalQty / r.requiredQty;
+          const cap = Math.floor(totalPortions * ratio);
+          if (cap < maxProducible) maxProducible = cap;
+        }
+      });
+    }
+    if (!Number.isFinite(maxProducible)) maxProducible = totalPortions;
+
+    return {
+      rows,
+      canProduceFromKitchen: rows.every((r) => r.kitchenShortageQty <= 0),
+      canProduceWithStore: rows.every((r) => r.globalShortageQty <= 0),
+      totalEstimatedCost: rows.reduce((s, r) => s + r.estimatedCost, 0),
+      maxProduciblePortions: Math.max(0, maxProducible),
+    };
+  };
+
+  const updateRecipeStatus = (
+    recipeId: string,
+    status: RecipeStatus,
+    actor: string = 'Executive Chef Juma',
+    note?: string
+  ) => {
+    const nowStr = `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`;
+    setRecipes((prev) =>
+      prev.map((r) => {
+        if (r.id !== recipeId) return r;
+        const costInfo = computeRecipeUnitCost(r.id);
+        const linkedDish = menuItems.find((m) => m.id === r.menuItemId);
+        const sellPrice = linkedDish?.price || 0;
+        const hist: RecipeVersionHistoryItem = {
+          version: r.version,
+          changedAt: nowStr,
+          changedBy: actor,
+          changeSummary: note || `Governance status updated from ${r.status || 'approved'} to ${status}`,
+          batchYieldPlates: r.batchYieldPlates,
+          ingredients: r.ingredients,
+          totalBatchCost: costInfo.batchCost,
+          costPerPlate: costInfo.perPlateCost,
+          foodCostPercentage: sellPrice > 0 ? (costInfo.perPlateCost / sellPrice) * 100 : 0,
+          sellingPrice: sellPrice,
+          foodGrossProfit: Math.max(0, sellPrice - costInfo.perPlateCost),
+          status,
+          name: r.name,
+          productionMethod: r.productionMethod,
+          productionModel: r.productionModel,
+        };
+        return {
+          ...r,
+          status,
+          approvedBy: status === 'approved' ? actor : r.approvedBy,
+          approvedAt: status === 'approved' ? nowStr : r.approvedAt,
+          history: [hist, ...(r.history || [])],
+        };
+      })
+    );
+
+    logAuditEvent({
+      actor,
+      actorRole: 'manager',
+      action: 'RECIPE_STATUS_CHANGED',
+      details: `Recipe ${recipeId} transitioned to "${status}". ${note || ''}`,
+    });
+  };
+
+  const createProductionOrder = (params: {
+    recipeId: string;
+    targetPortions: number;
+    sourceType?: ProductionOrder['sourceType'];
+    productionModel?: ProductionModel;
+    assignedTo?: string;
+    scheduledFor?: string;
+    cateringOrderId?: string;
+    cateringOrderNumber?: string;
+    substituteOverrides?: Record<string, string>;
+  }): ProductionOrder | null => {
+    const recipe = recipes.find((r) => r.id === params.recipeId);
+    if (!recipe || params.targetPortions <= 0) return null;
+
+    const scaled = calculateScaledRequirements([
+      {
+        recipeId: recipe.id,
+        portions: params.targetPortions,
+        substituteOverrides: params.substituteOverrides,
+      },
+    ]);
+
+    const today = new Date().toISOString().split('T')[0];
+    const nowStr = `${today} ${new Date().toTimeString().substring(0, 5)}`;
+    const newOrder: ProductionOrder = {
+      id: `po-kit-${Date.now()}`,
+      orderNumber: `PRD-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+      sourceType: params.sourceType || 'manager_plan',
+      cateringOrderId: params.cateringOrderId,
+      cateringOrderNumber: params.cateringOrderNumber,
+      recipeId: recipe.id,
+      recipeCode: recipe.code,
+      recipeName: recipe.name || 'Standard Recipe',
+      isSubRecipe: recipe.isSubRecipe,
+      productionModel:
+        params.productionModel ||
+        recipe.productionModel ||
+        (recipe.cookingMethod === 'batch_cooking' ? 'batch_production' : 'made_to_order'),
+      station: recipe.productionLocation || 'hot_kitchen',
+      targetPortions: params.targetPortions,
+      yieldUnit: recipe.yieldUnit || (recipe.isSubRecipe ? 'grams' : 'plates'),
+      status: scaled.canProduceWithStore ? 'stock_checked' : 'planned',
+      standardCost: scaled.totalEstimatedCost,
+      assignedTo: params.assignedTo || 'Chef Hamisi Juma',
+      scheduledFor: params.scheduledFor || `Today · ${new Date().toTimeString().substring(0, 5)}`,
+      createdBy: 'David Kasambala (Manager)',
+      createdAt: nowStr,
+      stockCheckedAt: scaled.canProduceWithStore ? nowStr : undefined,
+      lines: scaled.rows.map((r) => ({
+        ingredientId: r.ingredientId,
+        ingredientName: r.ingredientName,
+        isSubRecipe: r.isSubRecipe,
+        subRecipeId: r.subRecipeId,
+        standardQty: r.requiredQty,
+        actualQty: r.requiredQty,
+        unit: r.unit,
+        unitCost: r.unitCost,
+      })),
+    };
+
+    setProductionOrders((prev) => [newOrder, ...prev]);
+
+    addNotification({
+      title: `Production Order ${newOrder.orderNumber}`,
+      message: `Scheduled ${newOrder.targetPortions} ${newOrder.yieldUnit} of ${newOrder.recipeName} (${newOrder.station.replace('_', ' ')}).`,
+      type: 'kitchen',
+      actionRole: 'kitchen',
+      actionLabel: 'Open Production Orders',
+    });
+
+    return newOrder;
+  };
+
+  const advanceProductionOrderStage = (
+    orderId: string,
+    nextStage: ProductionOrderStatus,
+    options?: {
+      actualPortions?: number;
+      wastagePortions?: number;
+      wastageReason?: string;
+      actualLineQtys?: Record<string, number>;
+      exceptionReason?: string;
+      actor?: string;
+    }
+  ): { success: boolean; error?: string } => {
+    const order = productionOrders.find((po) => po.id === orderId);
+    if (!order) return { success: false, error: 'Production order not found.' };
+    const actor = options?.actor || 'Executive Chef Juma';
+    const today = new Date().toISOString().split('T')[0];
+    const nowStr = `${today} ${new Date().toTimeString().substring(0, 5)}`;
+
+    if (nextStage === 'stock_checked') {
+      const scaled = calculateScaledRequirements([
+        { recipeId: order.recipeId, portions: order.targetPortions },
+      ]);
+      if (!scaled.canProduceWithStore && !options?.exceptionReason) {
+        return {
+          success: false,
+          error: 'Stock shortage detected. Resolve via Store Transfer, Purchase Request, Substitute, or Manager Exception.',
+        };
+      }
+      setProductionOrders((prev) =>
+        prev.map((po) =>
+          po.id === orderId
+            ? {
+                ...po,
+                status: 'stock_checked',
+                stockCheckedAt: nowStr,
+                exceptionApprovedBy: options?.exceptionReason ? actor : po.exceptionApprovedBy,
+                exceptionReason: options?.exceptionReason || po.exceptionReason,
+              }
+            : po
+        )
+      );
+      return { success: true };
+    }
+
+    if (nextStage === 'ingredients_issued') {
+      // Auto-transfer from Main Store to Kitchen if Kitchen lacks stock
+      const scaled = calculateScaledRequirements([
+        { recipeId: order.recipeId, portions: order.targetPortions },
+      ]);
+      if (!scaled.canProduceWithStore && !options?.exceptionReason) {
+        return {
+          success: false,
+          error: 'Insufficient total stock (Store + Kitchen) to issue ingredients.',
+        };
+      }
+      scaled.rows
+        .filter((r) => !r.isSubRecipe && r.kitchenShortageQty > 0 && r.availableStoreQty > 0)
+        .forEach((r) => {
+          const transferAmt = Math.min(r.kitchenShortageQty, r.availableStoreQty);
+          if (transferAmt > 0) {
+            transferStock({
+              ingredientId: r.ingredientId,
+              quantityUnits: transferAmt,
+              fromLocation: 'main_store',
+              toLocation: 'kitchen',
+              reason: `Issued for Production Order ${order.orderNumber} (${order.recipeName})`,
+              shift: 'Production Issue',
+              recordedBy: actor,
+            });
+          }
+        });
+
+      setProductionOrders((prev) =>
+        prev.map((po) =>
+          po.id === orderId
+            ? {
+                ...po,
+                status: 'ingredients_issued',
+                ingredientsIssuedAt: nowStr,
+                exceptionApprovedBy: options?.exceptionReason ? actor : po.exceptionApprovedBy,
+                exceptionReason: options?.exceptionReason || po.exceptionReason,
+              }
+            : po
+        )
+      );
+      return { success: true };
+    }
+
+    if (nextStage === 'in_production') {
+      setProductionOrders((prev) =>
+        prev.map((po) => (po.id === orderId ? { ...po, status: 'in_production' } : po))
+      );
+      return { success: true };
+    }
+
+    if (nextStage === 'completed') {
+      const recipe = recipes.find((r) => r.id === order.recipeId);
+      if (!recipe) return { success: false, error: 'Linked recipe missing.' };
+      const batches = order.targetPortions / Math.max(1, recipe.batchYieldPlates || 1);
+      const actualPortions = options?.actualPortions ?? order.targetPortions;
+      const wastagePortions = options?.wastagePortions ?? 0;
+
+      const cookRes = cookBatchProduction({
+        recipeId: recipe.id,
+        batches,
+        actualPlatesProduced: actualPortions,
+        actualInputs: options?.actualLineQtys,
+        chefName: actor,
+        managerOverride: Boolean(options?.exceptionReason || order.exceptionReason),
+        overrideReason: options?.exceptionReason || order.exceptionReason,
+      });
+
+      if (!cookRes.success) {
+        return { success: false, error: cookRes.error || 'Could not complete production order.' };
+      }
+
+      const actualCost = cookRes.log?.totalCost ?? order.standardCost;
+      const costVariance = actualCost - order.standardCost;
+
+      setProductionOrders((prev) =>
+        prev.map((po) =>
+          po.id === orderId
+            ? {
+                ...po,
+                status: 'completed',
+                actualPortions,
+                wastagePortions,
+                wastageReason: options?.wastageReason,
+                actualCost,
+                costVariance,
+                completedAt: nowStr,
+                lines: po.lines.map((ln) => ({
+                  ...ln,
+                  actualQty:
+                    options?.actualLineQtys && options.actualLineQtys[ln.ingredientId] !== undefined
+                      ? options.actualLineQtys[ln.ingredientId]
+                      : ln.standardQty,
+                })),
+              }
+            : po
+        )
+      );
+
+      if (wastagePortions > 0 && recipe.menuItemId) {
+        handleLeftoverPreparedPlates(
+          recipe.menuItemId,
+          Math.min(wastagePortions, actualPortions),
+          'log_as_waste',
+          options?.wastageReason || `Production loss on ${order.orderNumber}`
+        );
+      }
+
+      return { success: true };
+    }
+
+    setProductionOrders((prev) =>
+      prev.map((po) => (po.id === orderId ? { ...po, status: nextStage } : po))
+    );
+    return { success: true };
+  };
+
+  const cancelProductionOrder = (orderId: string, reason: string, actor: string = 'David Kasambala') => {
+    setProductionOrders((prev) =>
+      prev.map((po) =>
+        po.id === orderId
+          ? { ...po, status: 'cancelled', exceptionApprovedBy: actor, exceptionReason: reason }
+          : po
+      )
+    );
+  };
+
+  const resolveShortageViaPurchaseRequest = (params: {
+    ingredientId: string;
+    requestedQty: number;
+    reason: string;
+    linkedOrderRef?: string;
+    requestedBy?: string;
+  }): PurchaseRequest | null => {
+    const ing = ingredients.find((i) => i.id === params.ingredientId);
+    if (!ing || params.requestedQty <= 0) return null;
+    const unitCost = ing.conversionRatio > 0 ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
+    const pr: PurchaseRequest = {
+      id: `pr-${Date.now()}`,
+      requestNumber: `PR-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+      ingredientId: ing.id,
+      ingredientName: ing.name,
+      requestedQty: Math.round(params.requestedQty),
+      unit: ing.consumptionUnit,
+      estimatedCost: Math.round(params.requestedQty * unitCost),
+      supplier: ing.supplier,
+      reason: params.reason,
+      linkedOrderRef: params.linkedOrderRef,
+      status: 'pending',
+      requestedBy: params.requestedBy || 'Executive Chef Juma',
+      createdAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
+    };
+    setPurchaseRequests((prev) => [pr, ...prev]);
+
+    addNotification({
+      title: `Purchase Requisition ${pr.requestNumber}`,
+      message: `Requested ${pr.requestedQty.toLocaleString()} ${pr.unit} of ${pr.ingredientName} (${formatMoney(pr.estimatedCost)}).`,
+      type: 'stock',
+      actionRole: 'manager',
+      actionLabel: 'Review Purchase Request',
+    });
+
+    return pr;
+  };
+
+  const updatePurchaseRequestStatus = (requestId: string, status: PurchaseRequest['status']) => {
+    const target = purchaseRequests.find((p) => p.id === requestId);
+    setPurchaseRequests((prev) =>
+      prev.map((p) => (p.id === requestId ? { ...p, status } : p))
+    );
+    if (status === 'received' && target) {
+      recordStockIntake(
+        target.ingredientId,
+        target.requestedQty,
+        target.estimatedCost,
+        target.supplier,
+        target.requestNumber
+      );
+    }
+  };
+
+  const resolveShortageViaBranchTransfer = (params: {
+    ingredientId: string;
+    quantity: number;
+    fromBranch: string;
+    requestedBy?: string;
+  }): BranchTransferRequest | null => {
+    const ing = ingredients.find((i) => i.id === params.ingredientId);
+    if (!ing || params.quantity <= 0) return null;
+    const bt: BranchTransferRequest = {
+      id: `bt-${Date.now()}`,
+      transferNumber: `BTR-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+      fromBranch: params.fromBranch,
+      toBranch: currentTenant.name,
+      ingredientId: ing.id,
+      ingredientName: ing.name,
+      quantity: Math.round(params.quantity),
+      unit: ing.consumptionUnit,
+      status: 'in_transit',
+      requestedBy: params.requestedBy || 'David Kasambala (Manager)',
+      createdAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
+    };
+    setBranchTransfers((prev) => [bt, ...prev]);
+    addNotification({
+      title: `Inter-Branch Transfer ${bt.transferNumber}`,
+      message: `${bt.quantity.toLocaleString()} ${bt.unit} of ${bt.ingredientName} dispatched from ${bt.fromBranch}.`,
+      type: 'transfer',
+      actionRole: 'manager',
+      actionLabel: 'Receive Transfer',
+    });
+    return bt;
+  };
+
+  const receiveBranchTransfer = (transferId: string) => {
+    const bt = branchTransfers.find((b) => b.id === transferId);
+    if (!bt || bt.status === 'received') return;
+    setBranchTransfers((prev) =>
+      prev.map((b) => (b.id === transferId ? { ...b, status: 'received' } : b))
+    );
+    const ing = ingredients.find((i) => i.id === bt.ingredientId);
+    if (ing) {
+      const unitCost = ing.conversionRatio > 0 ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
+      recordStockIntake(
+        ing.id,
+        bt.quantity,
+        Math.round(bt.quantity * unitCost),
+        `Branch Transfer (${bt.fromBranch})`,
+        bt.transferNumber
+      );
+    }
+  };
+
+  const createCateringOrder = (params: {
+    eventName: string;
+    eventType: CateringOrder['eventType'];
+    customerName: string;
+    customerPhone: string;
+    siteLocation: string;
+    eventDate: string;
+    items: Array<{ menuItemId: string; quantity: number; portion?: string; notes?: string }>;
+    depositPaid?: number;
+    notes?: string;
+  }): CateringOrder => {
+    const nowStr = `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`;
+    const builtItems: CateringOrderItem[] = params.items
+      .filter((it) => it.quantity > 0)
+      .map((it) => {
+        const dish = menuItems.find((m) => m.id === it.menuItemId);
+        const rec = recipes.find((r) => r.menuItemId === it.menuItemId);
+        const unitCost = rec
+          ? computeRecipeUnitCost(rec.id).perPlateCost
+          : it.menuItemId === 'menu-soda-bottle'
+          ? 917
+          : Math.round((dish?.price || 0) * 0.35);
+        return {
+          menuItemId: it.menuItemId,
+          recipeId: rec?.id,
+          name: dish?.name || 'Catering Item',
+          quantity: it.quantity,
+          fulfilledQuantity: 0,
+          unitPrice: dish?.price || 0,
+          unitCost,
+          portion: it.portion,
+          notes: it.notes,
+        };
+      });
+
+    const totalRevenue = builtItems.reduce((s, it) => s + it.unitPrice * it.quantity, 0);
+    const estimatedFoodCost = builtItems.reduce((s, it) => s + it.unitCost * it.quantity, 0);
+    const foodGrossProfit = Math.max(0, totalRevenue - estimatedFoodCost);
+    const foodCostPercentage = totalRevenue > 0 ? (estimatedFoodCost / totalRevenue) * 100 : 0;
+
+    const newCat: CateringOrder = {
+      id: `cat-${Date.now()}`,
+      orderNumber: `CAT-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+      eventName: params.eventName,
+      eventType: params.eventType,
+      customerName: params.customerName,
+      customerPhone: params.customerPhone,
+      siteLocation: params.siteLocation,
+      eventDate: params.eventDate,
+      status: 'confirmed',
+      items: builtItems,
+      totalRevenue,
+      estimatedFoodCost,
+      foodGrossProfit,
+      foodCostPercentage: Math.round(foodCostPercentage * 10) / 10,
+      depositPaid: params.depositPaid || 0,
+      notes: params.notes,
+      createdBy: 'David Kasambala (Manager)',
+      createdAt: nowStr,
+      updatedAt: nowStr,
+    };
+
+    setCateringOrders((prev) => [newCat, ...prev]);
+
+    addNotification({
+      title: `Catering Order ${newCat.orderNumber}`,
+      message: `${newCat.eventName} (${builtItems.reduce((s, i) => s + i.quantity, 0)} items) scheduled for ${newCat.eventDate}.`,
+      type: 'order',
+      actionRole: 'manager',
+      actionLabel: 'Plan Kitchen Production',
+    });
+
+    return newCat;
+  };
+
+  const reserveCateringIngredients = (cateringOrderId: string): { success: boolean; message: string } => {
+    const order = cateringOrders.find((c) => c.id === cateringOrderId);
+    if (!order) return { success: false, message: 'Catering order not found.' };
+    if (order.reservedIngredients && order.reservedIngredients.length > 0) {
+      return { success: true, message: 'Ingredients already reserved for this event.' };
+    }
+
+    const scaled = calculateScaledRequirements(
+      order.items.map((it) => ({
+        recipeId: it.recipeId,
+        menuItemId: it.menuItemId,
+        portions: it.quantity,
+        portionName: it.portion,
+      }))
+    );
+
+    if (!scaled.canProduceWithStore) {
+      return {
+        success: false,
+        message: 'Insufficient unreserved stock for one or more ingredients. Resolve shortages or create purchase request first.',
+      };
+    }
+
+    const rawReservations = scaled.rows.filter((r) => !r.isSubRecipe && r.requiredQty > 0);
+    setIngredients((prev) =>
+      prev.map((ing) => {
+        const match = rawReservations.find((r) => r.ingredientId === ing.id);
+        if (!match) return ing;
+        return {
+          ...ing,
+          reservedStockUnits: (ing.reservedStockUnits ?? 0) + match.requiredQty,
+        };
+      })
+    );
+
+    setCateringOrders((prev) =>
+      prev.map((c) =>
+        c.id === cateringOrderId
+          ? {
+              ...c,
+              status: c.status === 'confirmed' || c.status === 'draft' ? 'ingredients_reserved' : c.status,
+              reservedIngredients: rawReservations.map((r) => ({
+                ingredientId: r.ingredientId,
+                ingredientName: r.ingredientName,
+                qty: r.requiredQty,
+                unit: r.unit,
+              })),
+              updatedAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
+            }
+          : c
+      )
+    );
+
+    return {
+      success: true,
+      message: `Reserved ${rawReservations.length} consolidated ingredients for ${order.orderNumber}.`,
+    };
+  };
+
+  const generateCateringProductionPlan = (cateringOrderId: string): ProductionOrder[] => {
+    const order = cateringOrders.find((c) => c.id === cateringOrderId);
+    if (!order) return [];
+    const created: ProductionOrder[] = [];
+    order.items.forEach((it) => {
+      if (!it.recipeId) return;
+      const po = createProductionOrder({
+        recipeId: it.recipeId,
+        targetPortions: it.quantity,
+        sourceType: 'catering',
+        productionModel: 'catering',
+        scheduledFor: `${order.eventDate} · ${order.eventName}`,
+        cateringOrderId: order.id,
+        cateringOrderNumber: order.orderNumber,
+      });
+      if (po) created.push(po);
+    });
+
+    if (created.length > 0) {
+      setCateringOrders((prev) =>
+        prev.map((c) =>
+          c.id === cateringOrderId
+            ? {
+                ...c,
+                status: 'in_production',
+                productionOrderIds: [...(c.productionOrderIds || []), ...created.map((p) => p.id)],
+                updatedAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
+              }
+            : c
+        )
+      );
+    }
+    return created;
+  };
+
+  const recordCateringFulfillment = (
+    cateringOrderId: string,
+    fulfilledByMenuId: Record<string, number>,
+    nextStatus?: CateringOrderStatus
+  ) => {
+    setCateringOrders((prev) =>
+      prev.map((c) => {
+        if (c.id !== cateringOrderId) return c;
+        const updatedItems = c.items.map((it) => ({
+          ...it,
+          fulfilledQuantity:
+            fulfilledByMenuId[it.menuItemId] !== undefined
+              ? Math.min(it.quantity, Math.max(0, fulfilledByMenuId[it.menuItemId]))
+              : it.fulfilledQuantity,
+        }));
+        const allDone = updatedItems.every((it) => it.fulfilledQuantity >= it.quantity);
+        const someDone = updatedItems.some((it) => it.fulfilledQuantity > 0);
+        const derivedStatus: CateringOrderStatus =
+          nextStatus || (allDone ? 'completed' : someDone ? 'partial_fulfilled' : c.status);
+
+        // Release reserved stock once completed
+        if (derivedStatus === 'completed' && c.reservedIngredients && c.reservedIngredients.length > 0) {
+          setIngredients((prevIng) =>
+            prevIng.map((ing) => {
+              const resMatch = c.reservedIngredients?.find((r) => r.ingredientId === ing.id);
+              if (!resMatch) return ing;
+              return {
+                ...ing,
+                reservedStockUnits: Math.max(0, (ing.reservedStockUnits ?? 0) - resMatch.qty),
+              };
+            })
+          );
+        }
+
+        return {
+          ...c,
+          items: updatedItems,
+          status: derivedStatus,
+          updatedAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
+        };
+      })
+    );
+  };
+
+  const amendCateringOrder = (
+    cateringOrderId: string,
+    items: Array<{ menuItemId: string; quantity: number; portion?: string; notes?: string }>,
+    note: string
+  ) => {
+    const nowStr = `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`;
+    setCateringOrders((prev) =>
+      prev.map((c) => {
+        if (c.id !== cateringOrderId) return c;
+        const builtItems: CateringOrderItem[] = items
+          .filter((it) => it.quantity > 0)
+          .map((it) => {
+            const existing = c.items.find((e) => e.menuItemId === it.menuItemId);
+            const dish = menuItems.find((m) => m.id === it.menuItemId);
+            const rec = recipes.find((r) => r.menuItemId === it.menuItemId);
+            const unitCost = rec
+              ? computeRecipeUnitCost(rec.id).perPlateCost
+              : it.menuItemId === 'menu-soda-bottle'
+              ? 917
+              : Math.round((dish?.price || 0) * 0.35);
+            return {
+              menuItemId: it.menuItemId,
+              recipeId: rec?.id,
+              name: dish?.name || existing?.name || 'Catering Item',
+              quantity: it.quantity,
+              fulfilledQuantity: Math.min(it.quantity, existing?.fulfilledQuantity || 0),
+              unitPrice: dish?.price || existing?.unitPrice || 0,
+              unitCost,
+              portion: it.portion,
+              notes: it.notes,
+            };
+          });
+        const totalRevenue = builtItems.reduce((s, it) => s + it.unitPrice * it.quantity, 0);
+        const estimatedFoodCost = builtItems.reduce((s, it) => s + it.unitCost * it.quantity, 0);
+        const foodGrossProfit = Math.max(0, totalRevenue - estimatedFoodCost);
+        const foodCostPercentage = totalRevenue > 0 ? (estimatedFoodCost / totalRevenue) * 100 : 0;
+
+        return {
+          ...c,
+          items: builtItems,
+          totalRevenue,
+          estimatedFoodCost,
+          foodGrossProfit,
+          foodCostPercentage: Math.round(foodCostPercentage * 10) / 10,
+          amendments: [
+            {
+              id: `amd-${Date.now()}`,
+              summary: note || 'Amended event quantities',
+              timestamp: nowStr,
+              actor: 'David Kasambala (Manager)',
+            },
+            ...(c.amendments || []),
+          ],
+          updatedAt: nowStr,
+        };
+      })
+    );
+  };
+
+  const generateCateringInvoice = (cateringOrderId: string): string => {
+    const invNum = `INV-CAT-${Math.floor(10000 + Math.random() * 89999)}`;
+    setCateringOrders((prev) =>
+      prev.map((c) =>
+        c.id === cateringOrderId
+          ? {
+              ...c,
+              invoiceNumber: c.invoiceNumber || invNum,
+              status: 'invoiced',
+              updatedAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
+            }
+          : c
+      )
+    );
+    return invNum;
+  };
+
   const logBlockedCookingAttempt = (attempt: Omit<BlockedCookingAttempt, 'id' | 'timestamp'>) => {
     const newAttempt: BlockedCookingAttempt = {
       ...attempt,
@@ -4127,12 +5500,1287 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const dismissSoundAlert = () => setSoundAlertTriggered(false);
 
+  // ============== MAIN HQ MULTI-BRANCH OVERVIEW & CONTROL (TENANT-ISOLATED) ==============
+  const branchMetricsSummaries: BranchMetricsSummary[] = useMemo(() => {
+    return tenants.map((branch) => {
+      const store = branchStores[branch.id];
+      if (!store) {
+        return {
+          branch,
+          todaySales: 0,
+          collectedSales: 0,
+          outstandingAmount: 0,
+          activeOrdersCount: 0,
+          kitchenPendingCount: 0,
+          completedOrdersCount: 0,
+          tablesTotal: 0,
+          tablesOccupied: 0,
+          ingredientsCount: 0,
+          lowStockCount: 0,
+          inventoryValuation: 0,
+          employeesCount: 0,
+          pendingApprovalsCount: 0,
+          openPurchaseRequestsCount: 0,
+          unreadEmailsCount: 0,
+        };
+      }
+      const validOrders = store.orders.filter(
+        (o) => o.status !== 'draft' && o.status !== 'cancelled' && o.status !== 'rejected'
+      );
+      const todaySales = validOrders.reduce((s, o) => s + o.total, 0);
+      const collectedSales = validOrders.reduce((s, o) => s + (o.paidAmount || 0), 0);
+      const outstandingAmount = validOrders.reduce(
+        (s, o) => s + Math.max(0, o.total - (o.paidAmount || 0)),
+        0
+      );
+      const kitchenPendingCount = store.orders.filter((o) =>
+        ['sent_to_kitchen', 'accepted', 'preparing'].includes(o.status)
+      ).length;
+      const completedOrdersCount = store.orders.filter(
+        (o) => o.status === 'completed' || o.paymentStatus === 'paid'
+      ).length;
+      const tablesOccupied = store.tables.filter((t) => t.status !== 'available').length;
+      const lowStockCount = store.ingredients.filter(
+        (i) => i.currentStockUnits <= i.minimumThreshold
+      ).length;
+      const inventoryValuation = store.ingredients.reduce(
+        (s, i) =>
+          s + (i.conversionRatio > 0 ? (i.currentStockUnits / i.conversionRatio) * i.costPerPurchaseUnit : 0),
+        0
+      );
+      const pendingApprovalsCount = store.approvalRequests.filter((a) => a.status === 'pending').length;
+      const openPurchaseRequestsCount = store.purchaseRequests.filter(
+        (p) => p.status !== 'received'
+      ).length;
+      const unreadEmailsCount = store.emails.filter((e) => e.folder === 'inbox' && !e.read).length;
+
+      return {
+        branch,
+        todaySales,
+        collectedSales,
+        outstandingAmount,
+        activeOrdersCount: validOrders.length,
+        kitchenPendingCount,
+        completedOrdersCount,
+        tablesTotal: store.tables.length,
+        tablesOccupied,
+        ingredientsCount: store.ingredients.length,
+        lowStockCount,
+        inventoryValuation: Math.round(inventoryValuation),
+        employeesCount: store.employees.length,
+        pendingApprovalsCount,
+        openPurchaseRequestsCount,
+        unreadEmailsCount,
+      };
+    });
+  }, [tenants, branchStores]);
+
+  const hqAllOrders = useMemo(() => {
+    return tenants
+      .flatMap((b) =>
+        (branchStores[b.id]?.orders || []).map((o) => ({
+          ...o,
+          branchId: b.id,
+          branchName: b.name,
+        }))
+      )
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [tenants, branchStores]);
+
+  const hqAllApprovals = useMemo(() => {
+    return tenants.flatMap((b) =>
+      (branchStores[b.id]?.approvalRequests || []).map((a) => ({
+        ...a,
+        branchId: b.id,
+        branchName: b.name,
+      }))
+    );
+  }, [tenants, branchStores]);
+
+  const hqAllPurchaseRequests = useMemo(() => {
+    return tenants.flatMap((b) =>
+      (branchStores[b.id]?.purchaseRequests || []).map((p) => ({
+        ...p,
+        branchId: b.id,
+        branchName: b.name,
+      }))
+    );
+  }, [tenants, branchStores]);
+
+  const hqAllBranchTransfers = useMemo(() => {
+    return tenants.flatMap((b) =>
+      (branchStores[b.id]?.branchTransfers || []).map((t) => ({
+        ...t,
+        branchId: b.id,
+        branchName: b.name,
+      }))
+    );
+  }, [tenants, branchStores]);
+
+  const getBranchIngredients = (branchId: string): Ingredient[] => {
+    if (!tenants.some((b) => b.id === branchId)) return [];
+    return branchStores[branchId]?.ingredients || [];
+  };
+
+  const hqReviewApproval = (
+    branchId: string,
+    requestId: string,
+    approve: boolean,
+    managerName: string = `${currentOrganization.ownerName} (Main HQ)`
+  ) => {
+    // Strictly ensure target branch belongs to current organization
+    const targetBranch = tenants.find((b) => b.id === branchId);
+    if (!targetBranch) return;
+    const store = branchStores[branchId];
+    const req = store?.approvalRequests.find((a) => a.id === requestId);
+    if (!store || !req || req.status !== 'pending') return;
+
+    const nowIso = new Date().toISOString();
+    updateBranchSlice(
+      'approvalRequests',
+      (prev) =>
+        prev.map((a) =>
+          a.id === requestId
+            ? { ...a, status: approve ? 'approved' : 'rejected', reviewedBy: managerName, reviewedAt: nowIso }
+            : a
+        ),
+      branchId
+    );
+
+    if (approve && req.actionType === 'discount' && req.payload) {
+      updateBranchSlice(
+        'orders',
+        (prev) =>
+          prev.map((o) => {
+            if (o.id !== req.orderId) return o;
+            const disc =
+              req.payload?.discountType === 'percent'
+                ? Math.round(o.subtotal * ((req.payload.discountValue || 0) / 100))
+                : req.payload?.discountValue || 0;
+            const discountedSub = Math.max(0, o.subtotal - disc);
+            const newTotal = Math.max(0, discountedSub + o.tax + o.deliveryFee + o.donation);
+            return {
+              ...o,
+              discount: disc,
+              discountType: req.payload?.discountType,
+              discountValue: req.payload?.discountValue,
+              discountReason: `${req.reason} (Approved by HQ)`,
+              total: newTotal,
+              updatedAt: nowIso,
+            };
+          }),
+        branchId
+      );
+    } else if (approve && req.actionType === 'cancel_order') {
+      updateBranchSlice(
+        'orders',
+        (prev) =>
+          prev.map((o) =>
+            o.id === req.orderId
+              ? {
+                  ...o,
+                  status: 'cancelled',
+                  cancellationRecord: {
+                    cancelledBy: req.requestedBy,
+                    approvedBy: managerName,
+                    reason: req.reason,
+                    timestamp: nowIso,
+                  },
+                  updatedAt: nowIso,
+                }
+              : o
+          ),
+        branchId
+      );
+    }
+
+    updateBranchSlice(
+      'auditLogs',
+      (prev) => [
+        {
+          id: `aud-hq-${Date.now()}`,
+          orderId: req.orderId,
+          orderNumber: req.orderNumber,
+          actor: managerName,
+          actorRole: 'owner',
+          action: approve ? 'HQ_APPROVAL_GRANTED' : 'HQ_APPROVAL_REJECTED',
+          details: `${approve ? 'Approved' : 'Rejected'} ${req.actionType} on ${req.orderNumber}: ${req.details}`,
+          timestamp: nowIso,
+        },
+        ...prev,
+      ],
+      branchId
+    );
+  };
+
+  const hqDispatchBranchTransfer = (params: {
+    fromBranchId: string;
+    toBranchId: string;
+    ingredientId: string;
+    quantityUnits: number;
+    actor?: string;
+  }): { success: boolean; message: string } => {
+    const fromBranch = tenants.find((b) => b.id === params.fromBranchId);
+    const toBranch = tenants.find((b) => b.id === params.toBranchId);
+    if (!fromBranch || !toBranch || fromBranch.id === toBranch.id) {
+      return { success: false, message: 'Select two distinct branches within your organization.' };
+    }
+    const sourceStore = branchStores[fromBranch.id];
+    const destStore = branchStores[toBranch.id];
+    if (!sourceStore || !destStore) {
+      return { success: false, message: 'Branch workspace not initialized.' };
+    }
+    const srcIng = sourceStore.ingredients.find((i) => i.id === params.ingredientId);
+    if (!srcIng || params.quantityUnits <= 0) {
+      return { success: false, message: 'Select a valid ingredient and quantity.' };
+    }
+    if (srcIng.storeStockUnits < params.quantityUnits) {
+      return {
+        success: false,
+        message: `${fromBranch.name} only has ${srcIng.storeStockUnits.toLocaleString()} ${srcIng.consumptionUnit} in Main Store.`,
+      };
+    }
+
+    const actor = params.actor || `${currentOrganization.ownerName} (Main HQ)`;
+    const transferNum = `HQ-BTR-${Date.now().toString().slice(-4)}`;
+    const unitCost = srcIng.conversionRatio > 0 ? srcIng.costPerPurchaseUnit / srcIng.conversionRatio : 0;
+    const costImpact = Math.round(params.quantityUnits * unitCost);
+    const today = new Date().toISOString().split('T')[0];
+
+    // 1. Deduct from source branch store
+    updateBranchSlice(
+      'ingredients',
+      (prev) =>
+        prev.map((i) =>
+          i.id === srcIng.id
+            ? {
+                ...i,
+                storeStockUnits: Math.max(0, i.storeStockUnits - params.quantityUnits),
+                currentStockUnits: Math.max(0, i.currentStockUnits - params.quantityUnits),
+              }
+            : i
+        ),
+      fromBranch.id
+    );
+    updateBranchSlice(
+      'stockMovements',
+      (prev) => [
+        {
+          id: `sm-hq-out-${Date.now()}`,
+          ingredientId: srcIng.id,
+          ingredientName: srcIng.name,
+          type: 'stock_transfer',
+          quantityDelta: -params.quantityUnits,
+          unit: srcIng.consumptionUnit,
+          costImpact,
+          date: today,
+          reference: transferNum,
+          reason: `HQ Inter-Branch Dispatch to ${toBranch.name}`,
+          recordedBy: actor,
+          sourceLocation: 'main_store',
+          transferStatus: 'received',
+        },
+        ...prev,
+      ],
+      fromBranch.id
+    );
+
+    // 2. Credit destination branch store (match by id or name, or create master item in destination branch)
+    updateBranchSlice(
+      'ingredients',
+      (prev) => {
+        const existing = prev.find(
+          (i) => i.id === srcIng.id || i.name.toLowerCase() === srcIng.name.toLowerCase()
+        );
+        if (existing) {
+          return prev.map((i) =>
+            i.id === existing.id
+              ? {
+                  ...i,
+                  storeStockUnits: i.storeStockUnits + params.quantityUnits,
+                  currentStockUnits: i.currentStockUnits + params.quantityUnits,
+                }
+              : i
+          );
+        }
+        return [
+          ...prev,
+          {
+            ...srcIng,
+            storeStockUnits: params.quantityUnits,
+            kitchenStockUnits: 0,
+            currentStockUnits: params.quantityUnits,
+            reservedStockUnits: 0,
+          },
+        ];
+      },
+      toBranch.id
+    );
+    updateBranchSlice(
+      'stockMovements',
+      (prev) => [
+        {
+          id: `sm-hq-in-${Date.now()}`,
+          ingredientId: srcIng.id,
+          ingredientName: srcIng.name,
+          type: 'stock_transfer',
+          quantityDelta: params.quantityUnits,
+          unit: srcIng.consumptionUnit,
+          costImpact,
+          date: today,
+          reference: transferNum,
+          reason: `HQ Inter-Branch Transfer received from ${fromBranch.name}`,
+          recordedBy: actor,
+          destinationLocation: 'main_store',
+          transferStatus: 'received',
+          receivedAt: new Date().toLocaleTimeString(),
+          receivedBy: toBranch.managerName,
+        },
+        ...prev,
+      ],
+      toBranch.id
+    );
+    updateBranchSlice(
+      'branchTransfers',
+      (prev) => [
+        {
+          id: `bt-hq-${Date.now()}`,
+          transferNumber: transferNum,
+          fromBranch: fromBranch.name,
+          toBranch: toBranch.name,
+          ingredientId: srcIng.id,
+          ingredientName: srcIng.name,
+          quantity: params.quantityUnits,
+          unit: srcIng.consumptionUnit,
+          status: 'received',
+          requestedBy: actor,
+          createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+        },
+        ...prev,
+      ],
+      toBranch.id
+    );
+    updateBranchSlice(
+      'notifications',
+      (prev) => [
+        {
+          id: `notif-hq-trf-${Date.now()}`,
+          title: `HQ Stock Transfer Received (${transferNum})`,
+          message: `Main HQ transferred ${params.quantityUnits.toLocaleString()} ${srcIng.consumptionUnit} of ${srcIng.name} from ${fromBranch.branchCode} to ${toBranch.branchCode}.`,
+          type: 'transfer',
+          timestamp: new Date().toISOString(),
+          read: false,
+          actionRole: 'manager',
+          actionLabel: 'Inspect Inventory',
+        },
+        ...prev,
+      ],
+      toBranch.id
+    );
+
+    return {
+      success: true,
+      message: `Dispatched ${params.quantityUnits.toLocaleString()} ${srcIng.consumptionUnit} of ${srcIng.name} from ${fromBranch.branchCode} to ${toBranch.branchCode}.`,
+    };
+  };
+
+  const hqUpdatePurchaseRequestStatus = (
+    branchId: string,
+    requestId: string,
+    nextStatus: PurchaseRequest['status']
+  ) => {
+    const targetBranch = tenants.find((b) => b.id === branchId);
+    if (!targetBranch) return;
+    const req = branchStores[branchId]?.purchaseRequests.find((p) => p.id === requestId);
+    if (!req) return;
+
+    updateBranchSlice(
+      'purchaseRequests',
+      (prev) => prev.map((p) => (p.id === requestId ? { ...p, status: nextStatus } : p)),
+      branchId
+    );
+    if (nextStatus === 'received') {
+      updateBranchSlice(
+        'ingredients',
+        (prev) =>
+          prev.map((i) =>
+            i.id === req.ingredientId
+              ? {
+                  ...i,
+                  storeStockUnits: i.storeStockUnits + req.requestedQty,
+                  currentStockUnits: i.currentStockUnits + req.requestedQty,
+                }
+              : i
+          ),
+        branchId
+      );
+    }
+  };
+
+  const currentBranchQuota = useMemo(() => {
+    const used = tenants.length;
+    const max = currentOrganization.maxBranches || 1;
+    return {
+      used,
+      max,
+      remaining: Math.max(0, max - used),
+      isAtLimit: used >= max,
+    };
+  }, [tenants.length, currentOrganization.maxBranches]);
+
+  const addBranchToCurrentOrg = (params: {
+    name: string;
+    branchCode: string;
+    operatingModel: RestaurantTenant['operatingModel'];
+    phone: string;
+    email: string;
+    managerName: string;
+    address: string;
+    cloneCatalogFromCurrent?: boolean;
+  }): RestaurantTenant | null => {
+    if (tenants.length >= currentOrganization.maxBranches) {
+      return null;
+    }
+    const cleanCode = params.branchCode.trim().toUpperCase() || `BR-${tenants.length + 1}`;
+    const slug = params.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+    const branchId = `branch-${currentOrganization.slug}-${Date.now()}`;
+    const branchEmail =
+      params.email.trim() || `${cleanCode.toLowerCase()}@${currentOrganization.domain}`;
+    const newBranch: RestaurantTenant = {
+      id: branchId,
+      organizationId: currentOrganization.id,
+      branchCode: cleanCode,
+      isHqBranch: false,
+      status: 'active',
+      name: params.name.trim(),
+      slug,
+      tagline: `${currentOrganization.name} · ${params.name.trim()}`,
+      operatingModel: params.operatingModel,
+      phone: params.phone.trim() || '+255 700 000 000',
+      email: branchEmail,
+      managerName: params.managerName.trim() || 'Branch Manager',
+      managerEmail: branchEmail,
+      address: params.address.trim() || 'Dar es Salaam, Tanzania',
+      operatingHours: '09:00 AM – 11:00 PM (Daily)',
+      logo: currentOrganization.logo,
+      bannerImage: currentTenant.bannerImage,
+      currency: currentOrganization.currency,
+      currencyRate: currentOrganization.currencyRate,
+      taxRate: 0.18,
+      deliveryFee: 4000,
+    };
+
+    const starterStore = createStarterBranchStore(
+      newBranch,
+      currentOrganization,
+      params.cloneCatalogFromCurrent !== false ? activeStore : undefined
+    );
+    setAllBranches((prev) => [...prev, newBranch]);
+    setBranchStores((prev) => ({ ...prev, [branchId]: starterStore }));
+    return newBranch;
+  };
+
+  const toggleBranchStatus = (branchId: string) => {
+    setAllBranches((prev) =>
+      prev.map((b) =>
+        b.id === branchId && b.organizationId === currentOrganization.id
+          ? { ...b, status: b.status === 'active' ? 'maintenance' : 'active' }
+          : b
+      )
+    );
+  };
+
+  const createSaasTenant = (params: {
+    orgName: string;
+    ownerName: string;
+    ownerEmail: string;
+    branchName: string;
+    branchCode: string;
+    operatingModel: RestaurantTenant['operatingModel'];
+    phone: string;
+    address: string;
+    plan?: SaasPlanId;
+    status?: SaasTenantStatus;
+    password?: string;
+    switchToNew?: boolean;
+  }) => {
+    const slug = params.orgName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '') || 'tenant';
+    const domain = `${slug.replace(/-/g, '')}.co.tz`;
+    const orgId = `org-${slug}-${Date.now()}`;
+    const chosenPlan =
+      saasPlans.find((p) => p.id === (params.plan || 'Enterprise Multi-Branch') || p.name === params.plan) ||
+      saasPlans[saasPlans.length - 1] ||
+      SAAS_PLANS[2];
+    const nextMonth = new Date(
+      Date.now() + (params.status === 'trial' ? chosenPlan.trialDays : 30) * 24 * 60 * 60 * 1000
+    )
+      .toISOString()
+      .split('T')[0];
+
+    const newOrg: SaasOrganization = {
+      id: orgId,
+      name: params.orgName.trim(),
+      slug,
+      plan: chosenPlan.id,
+      status: params.status || 'active',
+      monthlyFeeTzs: chosenPlan.monthlyFeeTzs,
+      maxBranches: chosenPlan.maxBranches,
+      billingStatus: params.status === 'trial' ? 'pending' : 'paid',
+      nextBillingDate: nextMonth,
+      country: 'Tanzania',
+      ownerName: params.ownerName.trim() || 'Tenant Owner',
+      ownerEmail: params.ownerEmail.trim() || `owner@${domain}`,
+      hqEmail: `hq@${domain}`,
+      domain,
+      logo: '🏢',
+      currency: 'TZS',
+      currencyRate: 2600,
+      createdAt: new Date().toISOString().split('T')[0],
+    };
+    const branchId = `branch-${slug}-hq-${Date.now()}`;
+    const branchCode = params.branchCode.trim().toUpperCase() || 'HQ-01';
+    const hqBranch: RestaurantTenant = {
+      id: branchId,
+      organizationId: orgId,
+      branchCode,
+      isHqBranch: true,
+      status: 'active',
+      name: params.branchName.trim() || `${params.orgName.trim()} — Main HQ`,
+      slug: `${slug}-hq`,
+      tagline: `${params.orgName.trim()} Flagship Location`,
+      operatingModel: params.operatingModel,
+      phone: params.phone.trim() || '+255 700 000 000',
+      email: `hq@${domain}`,
+      managerName: newOrg.ownerName,
+      managerEmail: newOrg.ownerEmail,
+      address: params.address.trim() || 'Dar es Salaam, Tanzania',
+      operatingHours: '08:00 AM – 11:00 PM (Daily)',
+      logo: '🏢',
+      bannerImage: '/src/assets/images/hero_restaurant_dining_1794223268333.jpg',
+      currency: 'TZS',
+      currencyRate: 2600,
+      taxRate: 0.18,
+      deliveryFee: 4000,
+    };
+    const starterStore = createStarterBranchStore(hqBranch, newOrg);
+
+    setOrganizations((prev) => [...prev, newOrg]);
+    setAllBranches((prev) => [...prev, hqBranch]);
+    setBranchStores((prev) => ({ ...prev, [branchId]: starterStore }));
+
+    const newOwnerAccount: SaasAccount = {
+      id: `acc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: newOrg.ownerName,
+      email: newOrg.ownerEmail,
+      password: params.password || 'tenant123',
+      role: 'tenant_owner',
+      status: 'active',
+      organizationId: orgId,
+      phone: params.phone.trim() || '+255 700 000 000',
+      lastLoginAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      createdAt: new Date().toISOString().split('T')[0],
+    };
+    setSaasAccounts((prev) => {
+      if (prev.some((a) => a.email.toLowerCase() === newOwnerAccount.email.toLowerCase())) {
+        return prev;
+      }
+      return [newOwnerAccount, ...prev];
+    });
+
+    if (params.switchToNew !== false) {
+      setCurrentOrganizationIdState(orgId);
+      setCurrentBranchIdState(branchId);
+      setViewScopeState('branch');
+      setWorkspaceRevision((r) => r + 1);
+    }
+    return { org: newOrg, branch: hqBranch, account: newOwnerAccount };
+  };
+
+  // ============== SAAS PROVIDER CONTROL, AUTH & LANDING ACTIONS ==============
+  const recordProviderAudit = (action: string, target: string, details: string) => {
+    const actor = authenticatedAccount || {
+      name: 'System Provider Admin',
+      email: 'provider@restaurantos.io',
+    };
+    setProviderAuditLogs((prev) => [
+      {
+        id: `paud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        actorName: actor.name,
+        actorEmail: actor.email,
+        action,
+        target,
+        details,
+        timestamp: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      },
+      ...prev,
+    ]);
+  };
+
+  const providerTenantSummaries = useMemo(() => {
+    return organizations.map((org) => {
+      const orgBranches = allBranches.filter((b) => b.organizationId === org.id);
+      const activeBranchesCount = orgBranches.filter((b) => b.status === 'active').length;
+      let liveOrdersCount = 0;
+      let liveGmvTzs = 0;
+      orgBranches.forEach((b) => {
+        const st = branchStores[b.id];
+        if (!st) return;
+        const valid = st.orders.filter(
+          (o) => o.status !== 'draft' && o.status !== 'cancelled' && o.status !== 'rejected'
+        );
+        liveOrdersCount += valid.length;
+        liveGmvTzs += valid.reduce((sum, o) => sum + o.total, 0);
+      });
+      const accountsCount = saasAccounts.filter((a) => a.organizationId === org.id).length;
+      return {
+        org,
+        branchesCount: orgBranches.length,
+        activeBranchesCount,
+        liveOrdersCount,
+        liveGmvTzs,
+        accountsCount,
+      };
+    });
+  }, [organizations, allBranches, branchStores, saasAccounts]);
+
+  const providerStats = useMemo(() => {
+    const totalTenants = organizations.length;
+    const activeTenants = organizations.filter((o) => o.status === 'active').length;
+    const trialTenants = organizations.filter((o) => o.status === 'trial').length;
+    const suspendedTenants = organizations.filter((o) => o.status === 'suspended').length;
+    const monthlyRecurringRevenueTzs = organizations
+      .filter((o) => o.status !== 'suspended')
+      .reduce((sum, o) => sum + o.monthlyFeeTzs, 0);
+    const platformGmvTzs = providerTenantSummaries.reduce((sum, t) => sum + t.liveGmvTzs, 0);
+    return {
+      totalTenants,
+      activeTenants,
+      trialTenants,
+      suspendedTenants,
+      totalBranches: allBranches.length,
+      activeAccountsCount: saasAccounts.filter((a) => a.status === 'active').length,
+      pendingAccountsCount: saasAccounts.filter((a) => a.status === 'pending').length,
+      monthlyRecurringRevenueTzs,
+      platformGmvTzs,
+      openLeadsCount: leadInquiries.filter((l) => l.status !== 'converted').length,
+    };
+  }, [organizations, allBranches.length, saasAccounts, providerTenantSummaries, leadInquiries]);
+
+  const loginWithCredentials = (
+    email: string,
+    password: string
+  ): { success: boolean; error?: string; account?: SaasAccount } => {
+    const cleanEmail = email.trim().toLowerCase();
+    const account = saasAccounts.find((a) => a.email.toLowerCase() === cleanEmail);
+    if (!account || account.password !== password) {
+      return { success: false, error: 'Invalid email address or password.' };
+    }
+    if (account.status === 'pending') {
+      return {
+        success: false,
+        error: 'Account is awaiting System Provider activation. Sign in as System Provider to approve this account.',
+      };
+    }
+    if (account.status === 'suspended') {
+      return {
+        success: false,
+        error: 'This user account has been suspended by the System Provider.',
+      };
+    }
+
+    const nowLabel = new Date().toISOString().slice(0, 16).replace('T', ' ');
+
+    if (account.role === 'provider_admin') {
+      const updated = { ...account, lastLoginAt: nowLabel };
+      setSaasAccounts((prev) => prev.map((a) => (a.id === account.id ? updated : a)));
+      setAuthenticatedAccount(updated);
+      setImpersonatingOrgId(null);
+      setPlatformSurface('provider');
+      return { success: true, account: updated };
+    }
+
+    const targetOrg = organizations.find((o) => o.id === account.organizationId);
+    if (!targetOrg) {
+      return { success: false, error: 'No tenant organization is linked to this account.' };
+    }
+    if (targetOrg.status === 'suspended') {
+      return {
+        success: false,
+        error: `${targetOrg.name} subscription is currently suspended by System Provider. Reactivate tenant in Provider Control.`,
+      };
+    }
+
+    const updated = { ...account, lastLoginAt: nowLabel };
+    setSaasAccounts((prev) => prev.map((a) => (a.id === account.id ? updated : a)));
+    setAuthenticatedAccount(updated);
+    setImpersonatingOrgId(null);
+    setCurrentOrganizationIdState(targetOrg.id);
+
+    const orgBranches = allBranches.filter((b) => b.organizationId === targetOrg.id);
+    const preferredBranch =
+      (account.branchId && orgBranches.find((b) => b.id === account.branchId)) ||
+      orgBranches.find((b) => b.isHqBranch) ||
+      orgBranches[0];
+
+    if (preferredBranch) {
+      setCurrentBranchIdState(preferredBranch.id);
+      const brWaiters = branchStores[preferredBranch.id]?.waiters || [];
+      setActiveWaiterId(brWaiters[0]?.id || '');
+      setActiveReferralCode(brWaiters[0]?.referralCode || null);
+    }
+
+    if (account.role === 'tenant_owner') {
+      setViewScopeState(orgBranches.length > 1 ? 'hq_overview' : 'branch');
+      setActiveRole('owner');
+    } else {
+      setViewScopeState('branch');
+      setActiveRole('cashier');
+    }
+    setWorkspaceRevision((r) => r + 1);
+    setPlatformSurface('erp');
+    return { success: true, account: updated };
+  };
+
+  const registerTenantAccount = (params: {
+    orgName: string;
+    ownerName: string;
+    ownerEmail: string;
+    password: string;
+    plan: SaasPlanId;
+    operatingModel: RestaurantTenant['operatingModel'];
+    branchName: string;
+    branchCode: string;
+    phone: string;
+    address: string;
+  }): { success: boolean; error?: string } => {
+    const cleanEmail = params.ownerEmail.trim().toLowerCase();
+    if (!cleanEmail || !params.orgName.trim() || !params.ownerName.trim() || params.password.length < 4) {
+      return { success: false, error: 'Complete all required fields (password minimum 4 characters).' };
+    }
+    if (saasAccounts.some((a) => a.email.toLowerCase() === cleanEmail)) {
+      return { success: false, error: 'An account with this email already exists. Please sign in instead.' };
+    }
+
+    const created = createSaasTenant({
+      orgName: params.orgName,
+      ownerName: params.ownerName,
+      ownerEmail: cleanEmail,
+      branchName: params.branchName,
+      branchCode: params.branchCode,
+      operatingModel: params.operatingModel,
+      phone: params.phone,
+      address: params.address,
+      plan: params.plan,
+      status: 'trial',
+      password: params.password,
+      switchToNew: true,
+    });
+
+    setAuthenticatedAccount(created.account);
+    setImpersonatingOrgId(null);
+    setActiveRole('owner');
+    setViewScopeState('branch');
+    setProviderAuditLogs((prev) => [
+      {
+        id: `paud-reg-${Date.now()}`,
+        actorName: created.account.name,
+        actorEmail: created.account.email,
+        action: 'TENANT_SELF_REGISTERED',
+        target: `${created.org.name} (${created.org.plan})`,
+        details: `Self-onboarded 14-day trial with flagship branch ${created.branch.branchCode}.`,
+        timestamp: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      },
+      ...prev,
+    ]);
+    setPlatformSurface('erp');
+    return { success: true };
+  };
+
+  const quickLaunchWorkspace = (preset: 'provider' | 'savanna_hq' | 'kona_hq' | 'cashier_pos') => {
+    setImpersonatingOrgId(null);
+    if (preset === 'provider') {
+      const prov = saasAccounts.find((a) => a.role === 'provider_admin') || saasAccounts[0];
+      setAuthenticatedAccount(prov);
+      setPlatformSurface('provider');
+      return;
+    }
+    if (preset === 'kona_hq') {
+      const konaAcc = saasAccounts.find((a) => a.organizationId === 'org-kona') || saasAccounts[3];
+      setAuthenticatedAccount(konaAcc);
+      setCurrentOrganizationId('org-kona');
+      setViewScopeState('hq_overview');
+      setActiveRole('owner');
+      setPlatformSurface('erp');
+      return;
+    }
+    const savAcc = saasAccounts.find((a) => a.organizationId === 'org-savanna' && a.role === 'tenant_owner') || saasAccounts[1];
+    setAuthenticatedAccount(savAcc);
+    setCurrentOrganizationId('org-savanna');
+    if (preset === 'cashier_pos') {
+      setViewScopeState('branch');
+      setActiveRole('cashier');
+    } else {
+      setViewScopeState('hq_overview');
+      setActiveRole('owner');
+    }
+    setPlatformSurface('erp');
+  };
+
+  const logoutAccount = () => {
+    setAuthenticatedAccount(null);
+    setImpersonatingOrgId(null);
+    setPlatformSurface('login');
+  };
+
+  const providerUpdateTenantStatus = (orgId: string, status: SaasTenantStatus) => {
+    const target = organizations.find((o) => o.id === orgId);
+    if (!target) return;
+    setOrganizations((prev) => prev.map((o) => (o.id === orgId ? { ...o, status } : o)));
+    recordProviderAudit('TENANT_STATUS_CHANGED', target.name, `Set subscription status to ${status.toUpperCase()}.`);
+  };
+
+  const providerUpdateTenantPlan = (orgId: string, plan: SaasPlanId) => {
+    const target = organizations.find((o) => o.id === orgId);
+    const planDef = saasPlans.find((p) => p.id === plan || p.name === plan);
+    if (!target || !planDef) return;
+    setOrganizations((prev) =>
+      prev.map((o) =>
+        o.id === orgId
+          ? {
+              ...o,
+              plan: planDef.id,
+              monthlyFeeTzs: planDef.monthlyFeeTzs,
+              maxBranches: planDef.maxBranches,
+            }
+          : o
+      )
+    );
+    recordProviderAudit(
+      'TENANT_PLAN_UPDATED',
+      target.name,
+      `Switched package to ${planDef.name} (quota: ${planDef.maxBranches} branches, fee: TZS ${planDef.monthlyFeeTzs.toLocaleString()}/mo).`
+    );
+  };
+
+  const providerCreatePlan = (params: {
+    name: string;
+    tagline: string;
+    audience: string;
+    monthlyFeeTzs: number;
+    annualDiscountPct: number;
+    trialDays: number;
+    maxBranches: number;
+    maxStaffSeats: number;
+    maxRecipes: number;
+    includedModules: string[];
+    summary: string;
+    isFeatured?: boolean;
+    isPublic?: boolean;
+  }): { success: boolean; error?: string; plan?: SaasPlanDefinition } => {
+    const cleanName = params.name.trim();
+    if (!cleanName || params.monthlyFeeTzs < 0 || params.maxBranches < 1) {
+      return { success: false, error: 'Provide package name, valid monthly fee, and minimum 1 branch quota.' };
+    }
+    if (saasPlans.some((p) => p.id.toLowerCase() === cleanName.toLowerCase() || p.name.toLowerCase() === cleanName.toLowerCase())) {
+      return { success: false, error: `A package named "${cleanName}" already exists.` };
+    }
+    const newPlan: SaasPlanDefinition = {
+      id: cleanName,
+      name: cleanName,
+      tagline: params.tagline.trim() || `${cleanName} Hospitality Package`,
+      audience: params.audience.trim() || 'For growing hospitality operations',
+      monthlyFeeTzs: Math.round(params.monthlyFeeTzs),
+      annualDiscountPct: Math.min(50, Math.max(0, Math.round(params.annualDiscountPct))),
+      trialDays: Math.max(0, Math.round(params.trialDays)),
+      maxBranches: Math.max(1, Math.round(params.maxBranches)),
+      maxStaffSeats: Math.max(1, Math.round(params.maxStaffSeats)),
+      maxRecipes: Math.max(10, Math.round(params.maxRecipes)),
+      includedModules: params.includedModules.length > 0 ? params.includedModules : ['Cashier POS & Split Payments', 'Kitchen Display System (KDS)'],
+      summary: params.summary.trim() || 'Custom provider-managed SaaS hospitality package.',
+      isFeatured: Boolean(params.isFeatured),
+      isPublic: params.isPublic !== false,
+      status: 'active',
+    };
+    setSaasPlans((prev) => {
+      const base = newPlan.isFeatured ? prev.map((p) => ({ ...p, isFeatured: false })) : prev;
+      return [...base, newPlan];
+    });
+    recordProviderAudit(
+      'PACKAGE_CREATED',
+      newPlan.name,
+      `Published ${newPlan.name} (TZS ${newPlan.monthlyFeeTzs.toLocaleString()}/mo · ${newPlan.maxBranches} branches · ${newPlan.isPublic ? 'Visible on Landing' : 'Private'}).`
+    );
+    return { success: true, plan: newPlan };
+  };
+
+  const providerUpdatePlan = (planId: string, patch: Partial<SaasPlanDefinition>) => {
+    const currentPlan = saasPlans.find((p) => p.id === planId);
+    if (!currentPlan) return;
+    const updatedPlan: SaasPlanDefinition = {
+      ...currentPlan,
+      ...patch,
+      id: currentPlan.id,
+    };
+    setSaasPlans((prev) =>
+      prev.map((p) => {
+        if (p.id === planId) return updatedPlan;
+        if (patch.isFeatured) return { ...p, isFeatured: false };
+        return p;
+      })
+    );
+    if (patch.monthlyFeeTzs !== undefined || patch.maxBranches !== undefined) {
+      setOrganizations((prev) =>
+        prev.map((o) =>
+          o.plan === planId
+            ? {
+                ...o,
+                monthlyFeeTzs: updatedPlan.monthlyFeeTzs,
+                maxBranches: updatedPlan.maxBranches,
+              }
+            : o
+        )
+      );
+    }
+    recordProviderAudit(
+      'PACKAGE_UPDATED',
+      updatedPlan.name,
+      `Updated fee TZS ${updatedPlan.monthlyFeeTzs.toLocaleString()}/mo, branch quota ${updatedPlan.maxBranches}, seats ${updatedPlan.maxStaffSeats}, landing visibility: ${updatedPlan.isPublic ? 'PUBLIC' : 'HIDDEN'}.`
+    );
+  };
+
+  const providerTogglePlanVisibility = (planId: string) => {
+    const target = saasPlans.find((p) => p.id === planId);
+    if (!target) return;
+    const nextPublic = !target.isPublic;
+    setSaasPlans((prev) => prev.map((p) => (p.id === planId ? { ...p, isPublic: nextPublic } : p)));
+    recordProviderAudit(
+      'PACKAGE_VISIBILITY_CHANGED',
+      target.name,
+      `${nextPublic ? 'Published' : 'Hidden'} package on Public Landing Page & Self-Registration.`
+    );
+  };
+
+  const providerTogglePlanStatus = (planId: string) => {
+    const target = saasPlans.find((p) => p.id === planId);
+    if (!target) return;
+    const nextStatus = target.status === 'active' ? 'archived' : 'active';
+    setSaasPlans((prev) =>
+      prev.map((p) =>
+        p.id === planId
+          ? { ...p, status: nextStatus, isPublic: nextStatus === 'active' ? p.isPublic : false }
+          : p
+      )
+    );
+    recordProviderAudit('PACKAGE_STATUS_CHANGED', target.name, `Set package lifecycle status to ${nextStatus.toUpperCase()}.`);
+  };
+
+  const providerMarkBillingPaid = (orgId: string) => {
+    const target = organizations.find((o) => o.id === orgId);
+    if (!target) return;
+    const nextMonth = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    setOrganizations((prev) =>
+      prev.map((o) =>
+        o.id === orgId
+          ? { ...o, billingStatus: 'paid', status: o.status === 'suspended' ? 'active' : o.status, nextBillingDate: nextMonth }
+          : o
+      )
+    );
+    recordProviderAudit('BILLING_VERIFIED', target.name, `Marked monthly subscription invoice settled (next cycle ${nextMonth}).`);
+  };
+
+  const providerInspectTenant = (orgId: string) => {
+    const target = organizations.find((o) => o.id === orgId);
+    if (!target) return;
+    setCurrentOrganizationId(orgId);
+    setViewScopeState('hq_overview');
+    setActiveRole('owner');
+    setImpersonatingOrgId(orgId);
+    setPlatformSurface('erp');
+    recordProviderAudit('TENANT_IMPERSONATION_STARTED', target.name, 'System Provider entered tenant Main HQ for live inspection.');
+  };
+
+  const providerExitInspection = () => {
+    setImpersonatingOrgId(null);
+    setPlatformSurface('provider');
+  };
+
+  const providerCreateAccount = (params: {
+    name: string;
+    email: string;
+    password: string;
+    role: SaasAccountRole;
+    organizationId?: string;
+    branchId?: string;
+    phone?: string;
+  }): { success: boolean; error?: string } => {
+    const cleanEmail = params.email.trim().toLowerCase();
+    if (!cleanEmail || !params.name.trim() || params.password.length < 4) {
+      return { success: false, error: 'Provide name, valid email, and password (min 4 chars).' };
+    }
+    if (saasAccounts.some((a) => a.email.toLowerCase() === cleanEmail)) {
+      return { success: false, error: 'Email already registered on platform.' };
+    }
+    const newAcc: SaasAccount = {
+      id: `acc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: params.name.trim(),
+      email: cleanEmail,
+      password: params.password,
+      role: params.role,
+      status: 'active',
+      organizationId: params.role === 'provider_admin' ? undefined : params.organizationId,
+      branchId: params.role === 'branch_manager' ? params.branchId : undefined,
+      phone: params.phone?.trim(),
+      lastLoginAt: 'Never',
+      createdAt: new Date().toISOString().split('T')[0],
+    };
+    setSaasAccounts((prev) => [newAcc, ...prev]);
+    recordProviderAudit('ACCOUNT_CREATED', cleanEmail, `Created ${params.role} account for ${params.name.trim()}.`);
+    return { success: true };
+  };
+
+  const providerUpdateAccountStatus = (accountId: string, status: SaasAccountStatus) => {
+    const acc = saasAccounts.find((a) => a.id === accountId);
+    if (!acc) return;
+    setSaasAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, status } : a)));
+    recordProviderAudit('ACCOUNT_STATUS_CHANGED', acc.email, `Set user account status to ${status.toUpperCase()}.`);
+  };
+
+  const providerUpdateAccountRole = (accountId: string, role: SaasAccountRole) => {
+    const acc = saasAccounts.find((a) => a.id === accountId);
+    if (!acc) return;
+    setSaasAccounts((prev) =>
+      prev.map((a) =>
+        a.id === accountId
+          ? { ...a, role, organizationId: role === 'provider_admin' ? undefined : a.organizationId || organizations[0]?.id }
+          : a
+      )
+    );
+    recordProviderAudit('ACCOUNT_ROLE_CHANGED', acc.email, `Changed platform role to ${role}.`);
+  };
+
+  const providerResetAccountPassword = (accountId: string, newPassword: string) => {
+    const acc = saasAccounts.find((a) => a.id === accountId);
+    if (!acc || newPassword.length < 4) return;
+    setSaasAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, password: newPassword } : a)));
+    recordProviderAudit('ACCOUNT_PASSWORD_RESET', acc.email, 'System Provider issued new account password.');
+  };
+
+  const submitLeadInquiry = (params: {
+    companyName: string;
+    contactName: string;
+    email: string;
+    phone: string;
+    branchesCount: number;
+    planInterest: SaasPlanId;
+    notes: string;
+  }): PlatformLeadInquiry => {
+    const newLead: PlatformLeadInquiry = {
+      id: `lead-${Date.now()}`,
+      companyName: params.companyName.trim(),
+      contactName: params.contactName.trim(),
+      email: params.email.trim().toLowerCase(),
+      phone: params.phone.trim(),
+      branchesCount: Math.max(1, params.branchesCount || 1),
+      planInterest: params.planInterest,
+      notes: params.notes.trim(),
+      status: 'new',
+      createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+    };
+    setLeadInquiries((prev) => [newLead, ...prev]);
+    return newLead;
+  };
+
+  const providerConvertLeadToTenant = (leadId: string): { success: boolean; message: string } => {
+    const lead = leadInquiries.find((l) => l.id === leadId);
+    if (!lead || lead.status === 'converted') {
+      return { success: false, message: 'Lead already converted or not found.' };
+    }
+    const codePrefix = lead.companyName.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'TEN';
+    const created = createSaasTenant({
+      orgName: lead.companyName,
+      ownerName: lead.contactName,
+      ownerEmail: lead.email,
+      branchName: `${lead.companyName} — Main HQ`,
+      branchCode: `${codePrefix}-HQ`,
+      operatingModel: 'dine_in_restaurant',
+      phone: lead.phone || '+255 754 000 000',
+      address: 'Dar es Salaam, Tanzania',
+      plan: lead.planInterest,
+      status: 'active',
+      switchToNew: false,
+    });
+    setLeadInquiries((prev) => prev.map((l) => (l.id === leadId ? { ...l, status: 'converted' } : l)));
+    recordProviderAudit(
+      'LEAD_CONVERTED_TO_TENANT',
+      created.org.name,
+      `Provisioned active ${created.org.plan} tenant and owner credentials for ${lead.email}.`
+    );
+    return {
+      success: true,
+      message: `Converted ${lead.companyName} into active Tenant (${created.branch.branchCode}).`,
+    };
+  };
+
+  // ============== WORKING EMAIL SITE / WORKSPACE (TENANT & BRANCH ISOLATED) ==============
+  const emails: EmailMessage[] = useMemo(() => {
+    if (viewScope === 'hq_overview') {
+      return tenants
+        .flatMap((b) => branchStores[b.id]?.emails || [])
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    }
+    return [...(activeStore.emails || [])].sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+  }, [viewScope, tenants, branchStores, activeStore.emails]);
+
+  const unreadEmailCount = useMemo(() => {
+    return emails.filter((e) => e.folder === 'inbox' && !e.read).length;
+  }, [emails]);
+
+  const sendEmail = (params: {
+    to: string[];
+    cc?: string[];
+    subject: string;
+    body: string;
+    category?: EmailMessage['category'];
+    priority?: EmailMessage['priority'];
+    broadcastAllBranches?: boolean;
+    relatedRef?: string;
+  }): EmailMessage => {
+    const cleanTo = params.broadcastAllBranches
+      ? tenants.map((b) => b.email)
+      : params.to.map((e) => e.trim()).filter(Boolean);
+    const nowIso = new Date().toISOString();
+    const senderBranch = viewScope === 'hq_overview' ? tenants.find((b) => b.isHqBranch) || currentTenant : currentTenant;
+
+    const sentMsg: EmailMessage = {
+      id: `mail-sent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      organizationId: currentOrganization.id,
+      branchId: senderBranch.id,
+      branchName: viewScope === 'hq_overview' ? `${currentOrganization.name} Main HQ` : senderBranch.name,
+      fromName: activeOperator.name,
+      fromEmail: activeOperator.email,
+      to: cleanTo,
+      cc: params.cc,
+      subject: params.subject.trim(),
+      body: params.body.trim(),
+      folder: 'sent',
+      category: params.category || (viewScope === 'hq_overview' ? 'hq_directive' : 'branch_ops'),
+      priority: params.priority || 'normal',
+      read: true,
+      starred: false,
+      timestamp: nowIso,
+      relatedRef: params.relatedRef,
+    };
+
+    updateBranchSlice('emails', (prev) => [sentMsg, ...prev], senderBranch.id);
+
+    // Deliver intra-tenant copies strictly to matching branches inside currentOrganization ONLY
+    const lowerTargets = new Set(cleanTo.map((t) => t.toLowerCase()));
+    tenants.forEach((b) => {
+      const matchesBranch =
+        params.broadcastAllBranches ||
+        lowerTargets.has(b.email.toLowerCase()) ||
+        lowerTargets.has(b.managerEmail.toLowerCase()) ||
+        (b.isHqBranch &&
+          (lowerTargets.has(currentOrganization.hqEmail.toLowerCase()) ||
+            lowerTargets.has(currentOrganization.ownerEmail.toLowerCase())));
+
+      if (matchesBranch && b.id !== senderBranch.id) {
+        const inboxCopy: EmailMessage = {
+          ...sentMsg,
+          id: `mail-in-${Date.now()}-${b.branchCode}`,
+          branchId: b.id,
+          branchName: b.name,
+          folder: 'inbox',
+          read: false,
+        };
+        updateBranchSlice('emails', (prev) => [inboxCopy, ...prev], b.id);
+        updateBranchSlice(
+          'notifications',
+          (prev) => [
+            {
+              id: `notif-mail-${Date.now()}-${b.branchCode}`,
+              title: `New Email: ${sentMsg.subject}`,
+              message: `From ${sentMsg.fromName} (${sentMsg.fromEmail})`,
+              type: 'order',
+              timestamp: nowIso,
+              read: false,
+              actionRole: 'owner',
+              actionLabel: 'Open Mail',
+            },
+            ...prev,
+          ],
+          b.id
+        );
+      }
+    });
+
+    return sentMsg;
+  };
+
+  const markEmailRead = (emailId: string, branchId: string, read: boolean = true) => {
+    updateBranchSlice(
+      'emails',
+      (prev) => prev.map((e) => (e.id === emailId ? { ...e, read } : e)),
+      branchId
+    );
+  };
+
+  const toggleEmailStar = (emailId: string, branchId: string) => {
+    updateBranchSlice(
+      'emails',
+      (prev) => prev.map((e) => (e.id === emailId ? { ...e, starred: !e.starred } : e)),
+      branchId
+    );
+  };
+
+  const deleteEmail = (emailId: string, branchId: string) => {
+    updateBranchSlice(
+      'emails',
+      (prev) => prev.filter((e) => e.id !== emailId),
+      branchId
+    );
+  };
+
   return (
     <RestaurantContext.Provider
       value={{
+        organizations,
+        currentOrganization,
+        setCurrentOrganizationId,
+        createSaasTenant,
         tenants,
         currentTenant,
         setCurrentTenantId,
+        viewScope,
+        setViewScope,
+        switchToHqOverview,
+        workspaceRevision,
+        activeOperator,
+        addBranchToCurrentOrg,
+        toggleBranchStatus,
+        branchMetricsSummaries,
+        hqAllOrders,
+        hqAllApprovals,
+        hqAllPurchaseRequests,
+        hqAllBranchTransfers,
+        hqReviewApproval,
+        hqDispatchBranchTransfer,
+        hqUpdatePurchaseRequestStatus,
+        getBranchIngredients,
+        emails,
+        unreadEmailCount,
+        sendEmail,
+        markEmailRead,
+        toggleEmailStar,
+        deleteEmail,
         activeRole,
         setActiveRole,
         isStandalonePortal,
@@ -4232,6 +6880,25 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         cookBatchProduction,
         reverseProductionBatch,
         createRequisitionForMissing,
+        productionOrders,
+        cateringOrders,
+        purchaseRequests,
+        branchTransfers,
+        calculateScaledRequirements,
+        updateRecipeStatus,
+        createProductionOrder,
+        advanceProductionOrderStage,
+        cancelProductionOrder,
+        resolveShortageViaPurchaseRequest,
+        updatePurchaseRequestStatus,
+        resolveShortageViaBranchTransfer,
+        receiveBranchTransfer,
+        createCateringOrder,
+        reserveCateringIngredients,
+        generateCateringProductionPlan,
+        recordCateringFulfillment,
+        amendCateringOrder,
+        generateCateringInvoice,
         addAdvanceRequest,
         approveAdvance,
         rejectAdvance,
@@ -4243,6 +6910,40 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         cashierShift,
         soundAlertTriggered,
         dismissSoundAlert,
+        platformSurface,
+        setPlatformSurface,
+        landingPage,
+        setLandingPage,
+        selectedRegisterPlan,
+        setSelectedRegisterPlan,
+        saasAccounts,
+        authenticatedAccount,
+        impersonatingOrgId,
+        providerAuditLogs,
+        leadInquiries,
+        providerTenantSummaries,
+        providerStats,
+        loginWithCredentials,
+        registerTenantAccount,
+        quickLaunchWorkspace,
+        logoutAccount,
+        providerUpdateTenantStatus,
+        providerUpdateTenantPlan,
+        providerMarkBillingPaid,
+        providerInspectTenant,
+        providerExitInspection,
+        providerCreateAccount,
+        providerUpdateAccountStatus,
+        providerUpdateAccountRole,
+        providerResetAccountPassword,
+        currentBranchQuota,
+        saasPlans,
+        providerCreatePlan,
+        providerUpdatePlan,
+        providerTogglePlanVisibility,
+        providerTogglePlanStatus,
+        submitLeadInquiry,
+        providerConvertLeadToTenant,
       }}
     >
       {children}

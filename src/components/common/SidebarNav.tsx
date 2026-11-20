@@ -7,16 +7,23 @@ import {
   Smartphone,
   Boxes,
   ShieldCheck,
-  ChevronRight,
   UtensilsCrossed,
-  Bell,
   LogOut,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { Role } from '../../types/restaurant';
 
 export const SidebarNav: React.FC = () => {
-  const { activeRole, setActiveRole, orders, currentTenant } = useRestaurant();
+  const {
+    activeRole,
+    setActiveRole,
+    orders,
+    activeOperator,
+    currentOrganization,
+    authenticatedAccount,
+    providerExitInspection,
+    logoutAccount,
+  } = useRestaurant();
   const [hoveredRole, setHoveredRole] = useState<Role | null>(null);
 
   const pendingKitchenCount = orders.filter(
@@ -154,16 +161,36 @@ export const SidebarNav: React.FC = () => {
         </div>
       </div>
 
-      {/* Bottom Profile / Quick User Avatar */}
-      <div className="flex flex-col items-center gap-3 w-full">
+      {/* Bottom Profile & Session Controls */}
+      <div className="flex flex-col items-center gap-2.5 w-full">
+        {authenticatedAccount?.role === 'provider_admin' && (
+          <button
+            type="button"
+            onClick={providerExitInspection}
+            title="Return to System Provider Console"
+            aria-label="Provider Console"
+            className="w-10 h-10 rounded-xl border border-orange-200 bg-orange-50 text-orange-700 hover:bg-orange-100 flex items-center justify-center transition-colors cursor-pointer"
+          >
+            <ShieldCheck className="w-4 h-4" />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setActiveRole('owner')}
-          title="Tony Danza · Restaurant Owner & Admin"
-          aria-label="Tony Danza Owner Profile"
+          title={`${activeOperator.name} · ${activeOperator.roleLabel} (${currentOrganization.name})`}
+          aria-label={`${activeOperator.name} Profile`}
           className="w-10 h-10 rounded-full border border-neutral-300 bg-neutral-900 text-white flex items-center justify-center font-bold text-xs tracking-tight hover:bg-neutral-800 transition-colors cursor-pointer"
         >
-          TD
+          {activeOperator.initials}
+        </button>
+        <button
+          type="button"
+          onClick={logoutAccount}
+          title="Sign Out & Switch Account"
+          aria-label="Sign Out"
+          className="w-10 h-9 rounded-xl border border-neutral-200 bg-neutral-50 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 flex items-center justify-center transition-colors cursor-pointer"
+        >
+          <LogOut className="w-4 h-4" />
         </button>
       </div>
     </aside>

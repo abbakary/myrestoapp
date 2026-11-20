@@ -32,7 +32,15 @@ export type Role = 'owner' | 'manager' | 'cashier' | 'reception' | 'waiter' | 'k
 
 export type ProductionMethod = 'recipe_bom' | 'semi_standardized' | 'direct_stock';
 
-export type RecipeStatus = 'draft' | 'testing' | 'approved' | 'archived';
+export type ProductionModel = 'made_to_order' | 'batch_production' | 'buffet' | 'catering';
+
+export type RecipeStatus =
+  | 'draft'
+  | 'testing'
+  | 'pending_approval'
+  | 'approved'
+  | 'suspended'
+  | 'archived';
 
 export type BomDeductionPolicy = 'on_kitchen_start' | 'on_order_submit' | 'on_payment';
 
@@ -306,6 +314,7 @@ export interface Ingredient {
   currentStockUnits: number; // total = storeStockUnits + kitchenStockUnits
   storeStockUnits: number; // Main warehouse / store stock
   kitchenStockUnits: number; // Kitchen floor / daily operations stock
+  reservedStockUnits?: number; // Stock reserved for active production/catering orders
   minimumThreshold: number;
   supplier: string;
   category?: 'Produce' | 'Meat & Seafood' | 'Dry Goods' | 'Oils & Dairy' | 'Beverages';
@@ -404,6 +413,8 @@ export interface RecipeModifierRule {
   action: 'add' | 'remove' | 'substitute';
   ingredientId: string;
   quantityDelta: number; // positive for add, or absolute quantity to remove/replace
+  unit?: string;
+  priceDelta?: number; // Selling price adjustment in TZS
   substituteIngredientId?: string;
 }
 
@@ -417,9 +428,13 @@ export interface RecipeVersionHistoryItem {
   totalBatchCost: number;
   costPerPlate: number;
   foodCostPercentage: number;
+  sellingPrice?: number;
+  foodGrossProfit?: number;
+  status?: RecipeStatus;
   name?: string;
   cookingMethod?: 'batch_cooking' | 'on_sale_order';
   productionMethod?: ProductionMethod;
+  productionModel?: ProductionModel;
   preparationInstructions?: string;
   cookingInstructions?: string;
   archivedAt?: string;
@@ -435,7 +450,9 @@ export interface Recipe {
   category?: string;
   productionLocation?: KitchenStation | 'prep_kitchen';
   productionMethod?: ProductionMethod; // Method 1: recipe_bom | Method 2: semi_standardized | Method 3: direct_stock
-  status?: RecipeStatus; // draft | testing | approved | archived
+  productionModel?: ProductionModel; // made_to_order | batch_production | buffet | catering
+  status?: RecipeStatus; // draft | testing | pending_approval | approved | suspended | archived
+  effectiveDate?: string;
   standardPortionSize?: string; // e.g. "350g Plate", "5 kg Usable"
   yieldUnit?: string; // "plates" | "grams" | "ml" | "portions"
   expectedYieldPct?: number; // e.g. 92
@@ -445,14 +462,15 @@ export interface Recipe {
   ingredients: RecipeIngredient[];
   preparationInstructions?: string;
   cookingInstructions?: string;
+  cookingTemp?: string;
+  cookingTimeMins?: number;
+  foodSafetyNotes?: string;
   allergens?: string[];
   shelfLifeHours?: number;
   variants?: RecipeVariant[];
   modifierRules?: RecipeModifierRule[];
   isSubRecipe?: boolean;
   history?: RecipeVersionHistoryItem[];
-  isAiGenerated?: boolean;
-  aiConfidence?: number;
   approvedBy?: string;
   approvedAt?: string;
   costSnapshotAt?: string;
@@ -587,37 +605,274 @@ export interface BomAuditLog {
   foodCostPercentage: number;
 }
 
-export interface AiParsedLineItem {
-  rawText: string;
-  rawIngredientName: string;
-  matchedIngredientId: string | null;
-  matchedIngredientName: string;
-  confidence: number;
-  quantityPerBatch: number;
-  rawUnit: string;
-  normalizedBaseQuantity: number;
-  baseUnit: string;
-  typicalYieldPercentage: number;
-  notes?: string;
-  isAnomaly: boolean;
-  anomalyReason?: string;
+export type ProductionOrderStatus =
+  | 'planned'
+  | 'stock_checked'
+  | 'ingredients_issued'
+  | 'in_production'
+  | 'completed'
+  | 'cancelled'
+  | 'reversed';
+
+export interface ProductionOrderLine {
+  ingredientId: string;
+  ingredientName: string;
+  isSubRecipe?: boolean;
+  subRecipeId?: string;
+  standardQty: number;
+  actualQty: number;
+  wastageQty?: number;
+  unit: string;
+  unitCost: number;
+  substituteUsedId?: string;
+  substituteUsedName?: string;
 }
 
-export interface AiParsedBOMResult {
+export interface ProductionOrder {
+  id: string;
+  orderNumber: string; // e.g. PO-KIT-2026-01
+  sourceType: 'pos_sale' | 'catering' | 'manager_plan' | 'forecast' | 'buffet';
+  cateringOrderId?: string;
+  cateringOrderNumber?: string;
+  recipeId: string;
+  recipeCode?: string;
   recipeName: string;
-  batchPortions: number;
-  prepInstructions?: string;
-  lines: AiParsedLineItem[];
-  anomalies: string[];
+  isSubRecipe?: boolean;
+  productionModel: ProductionModel;
+  station: KitchenStation | 'prep_kitchen';
+  targetPortions: number;
+  actualPortions?: number;
+  yieldUnit: string;
+  wastagePortions?: number;
+  wastageReason?: string;
+  status: ProductionOrderStatus;
+  standardCost: number;
+  actualCost?: number;
+  costVariance?: number;
+  assignedTo: string;
+  scheduledFor: string;
+  createdBy: string;
+  createdAt: string;
+  stockCheckedAt?: string;
+  ingredientsIssuedAt?: string;
+  completedAt?: string;
+  exceptionApprovedBy?: string;
+  exceptionReason?: string;
+  lines: ProductionOrderLine[];
+}
+
+export interface PurchaseRequest {
+  id: string;
+  requestNumber: string;
+  ingredientId: string;
+  ingredientName: string;
+  requestedQty: number;
+  unit: string;
+  estimatedCost: number;
+  supplier: string;
+  reason: string;
+  linkedOrderRef?: string;
+  status: 'pending' | 'approved' | 'ordered' | 'received';
+  requestedBy: string;
+  createdAt: string;
+}
+
+export interface BranchTransferRequest {
+  id: string;
+  transferNumber: string;
+  fromBranch: string;
+  toBranch: string;
+  ingredientId: string;
+  ingredientName: string;
+  quantity: number;
+  unit: string;
+  status: 'requested' | 'in_transit' | 'received';
+  requestedBy: string;
+  createdAt: string;
+}
+
+export type CateringOrderStatus =
+  | 'draft'
+  | 'confirmed'
+  | 'ingredients_reserved'
+  | 'in_production'
+  | 'partial_fulfilled'
+  | 'completed'
+  | 'invoiced'
+  | 'cancelled';
+
+export interface CateringOrderItem {
+  menuItemId: string;
+  recipeId?: string;
+  name: string;
+  quantity: number;
+  fulfilledQuantity: number;
+  unitPrice: number;
+  unitCost: number;
+  portion?: string;
+  notes?: string;
+}
+
+export interface CateringOrder {
+  id: string;
+  orderNumber: string;
+  eventName: string;
+  eventType: 'corporate' | 'wedding' | 'school' | 'private' | 'other';
+  customerName: string;
+  customerPhone: string;
+  siteLocation: string;
+  eventDate: string;
+  status: CateringOrderStatus;
+  items: CateringOrderItem[];
+  totalRevenue: number;
+  estimatedFoodCost: number;
+  foodGrossProfit: number;
+  foodCostPercentage: number;
+  depositPaid: number;
+  invoiceNumber?: string;
+  reservedIngredients?: {
+    ingredientId: string;
+    ingredientName: string;
+    qty: number;
+    unit: string;
+  }[];
+  productionOrderIds?: string[];
+  amendments?: {
+    id: string;
+    summary: string;
+    timestamp: string;
+    actor: string;
+  }[];
+  notes?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type BranchViewScope = 'hq_overview' | 'branch';
+
+export type PlatformSurface = 'landing' | 'login' | 'register' | 'provider' | 'erp';
+
+export type LandingPageId = 'home' | 'solutions' | 'pricing' | 'customers';
+
+export type SaasPlanId = 'Starter' | 'Growth' | 'Enterprise Multi-Branch' | (string & {});
+
+export type SaasTenantStatus = 'active' | 'trial' | 'suspended';
+
+export type SaasAccountRole = 'provider_admin' | 'tenant_owner' | 'branch_manager';
+
+export type SaasAccountStatus = 'active' | 'pending' | 'suspended';
+
+export interface SaasPlanDefinition {
+  id: string;
+  name: string;
+  tagline: string;
+  audience: string;
+  monthlyFeeTzs: number;
+  annualDiscountPct: number;
+  trialDays: number;
+  maxBranches: number;
+  maxStaffSeats: number;
+  maxRecipes: number;
+  includedModules: string[];
+  summary: string;
+  isFeatured?: boolean;
+  isPublic: boolean;
+  status: 'active' | 'archived';
+}
+
+export interface SaasOrganization {
+  id: string;
+  name: string;
+  slug: string;
+  plan: SaasPlanId;
+  status: SaasTenantStatus;
+  monthlyFeeTzs: number;
+  maxBranches: number;
+  billingStatus: 'paid' | 'pending' | 'overdue';
+  nextBillingDate: string;
+  country: string;
+  ownerName: string;
+  ownerEmail: string;
+  hqEmail: string;
+  domain: string;
+  logo: string;
+  currency: 'TZS' | 'USD';
+  currencyRate: number;
+  createdAt: string;
+}
+
+export interface SaasAccount {
+  id: string;
+  name: string;
+  email: string;
+  password: string;
+  role: SaasAccountRole;
+  status: SaasAccountStatus;
+  organizationId?: string;
+  branchId?: string;
+  phone?: string;
+  lastLoginAt: string;
+  createdAt: string;
+}
+
+export interface ProviderAuditEvent {
+  id: string;
+  actorName: string;
+  actorEmail: string;
+  action: string;
+  target: string;
+  details: string;
+  timestamp: string;
+}
+
+export interface PlatformLeadInquiry {
+  id: string;
+  companyName: string;
+  contactName: string;
+  email: string;
+  phone: string;
+  branchesCount: number;
+  planInterest: SaasPlanId;
+  notes: string;
+  status: 'new' | 'contacted' | 'converted';
+  createdAt: string;
+}
+
+export interface EmailMessage {
+  id: string;
+  organizationId: string;
+  branchId: string; // 'hq' or specific branch id
+  branchName: string;
+  fromName: string;
+  fromEmail: string;
+  to: string[];
+  cc?: string[];
+  subject: string;
+  body: string;
+  folder: 'inbox' | 'sent' | 'drafts';
+  category: 'hq_directive' | 'supplier' | 'customer' | 'catering' | 'branch_ops' | 'payroll';
+  priority: 'normal' | 'urgent';
+  read: boolean;
+  starred: boolean;
+  timestamp: string;
+  relatedRef?: string;
 }
 
 export interface RestaurantTenant {
   id: string;
+  organizationId: string;
+  branchCode: string;
+  isHqBranch?: boolean;
+  status: 'active' | 'maintenance';
   name: string;
   slug: string;
   tagline: string;
   operatingModel: 'dine_in_restaurant' | 'fast_food_chips' | 'cafe_bistro';
   phone: string;
+  email: string;
+  managerName: string;
+  managerEmail: string;
   address: string;
   operatingHours: string;
   logo: string;
@@ -627,3 +882,23 @@ export interface RestaurantTenant {
   taxRate: number;
   deliveryFee: number;
 }
+
+export interface BranchMetricsSummary {
+  branch: RestaurantTenant;
+  todaySales: number;
+  collectedSales: number;
+  outstandingAmount: number;
+  activeOrdersCount: number;
+  kitchenPendingCount: number;
+  completedOrdersCount: number;
+  tablesTotal: number;
+  tablesOccupied: number;
+  ingredientsCount: number;
+  lowStockCount: number;
+  inventoryValuation: number;
+  employeesCount: number;
+  pendingApprovalsCount: number;
+  openPurchaseRequestsCount: number;
+  unreadEmailsCount: number;
+}
+

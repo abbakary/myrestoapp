@@ -68,10 +68,13 @@ export const PosView: React.FC = () => {
     setActiveRole,
     waiters,
     preparedDishStocks,
+    activeOperator,
   } = useRestaurant();
 
   // Active Category matching screenshot: 'Sweets', 'Fruits', 'Coffee & Tea', 'Breakfast', 'All Items'
-  const [selectedCategory, setSelectedCategory] = useState<string>('Sweets');
+  const [selectedCategory, setSelectedCategory] = useState<string>(() =>
+    menuItems.some((m) => m.category === 'Sweets' || m.category === 'Desserts') ? 'Sweets' : 'All Items'
+  );
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSearchActive, setIsSearchActive] = useState<boolean>(false);
 
@@ -80,7 +83,7 @@ export const PosView: React.FC = () => {
 
   // Ticket settings & Order types: dine_in, pickup, delivery
   const [orderType, setOrderType] = useState<OrderType>('dine_in');
-  const [selectedTable, setSelectedTable] = useState<string>('Table 03');
+  const [selectedTable, setSelectedTable] = useState<string>(() => tables[0]?.number || 'Table 01');
   const [guestCount, setGuestCount] = useState<number>(2);
   const [deliveryAddress, setDeliveryAddress] = useState<string>('Mikocheni B, Mwai Kibaki Rd, House 14');
   const [isTicketMenuOpen, setIsTicketMenuOpen] = useState<boolean>(false);
@@ -90,7 +93,7 @@ export const PosView: React.FC = () => {
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState<boolean>(false);
   const [customerName, setCustomerName] = useState<string>('');
   const [customerPhone, setCustomerPhone] = useState<string>('');
-  const [selectedWaiterId, setSelectedWaiterId] = useState<string>('waiter-john');
+  const [selectedWaiterId, setSelectedWaiterId] = useState<string>(() => waiters[0]?.id || '');
 
   // Coupon & Orders lookup modal
   const [isCouponLookupOpen, setIsCouponLookupOpen] = useState<boolean>(false);
@@ -1391,7 +1394,7 @@ export const PosView: React.FC = () => {
                 </span>
               </div>
               <div className="text-[10px] text-neutral-400">
-                Cashier: Tony Danza · Shift opened {cashierShift.openedAt}
+                Cashier: {activeOperator.name} · Shift opened {cashierShift.openedAt}
               </div>
             </div>
           </div>
@@ -2064,7 +2067,7 @@ export const PosView: React.FC = () => {
                                 requestApproval({
                                   orderId: ord.id,
                                   actionType: 'cancel_order',
-                                  requestedBy: 'Tony Danza (Cashier)',
+                                  requestedBy: `${activeOperator.name} (Cashier)`,
                                   requestedRole: 'cashier',
                                   details: `Cancel ${ord.orderNumber} (${formatMoney(ord.total)})`,
                                   amountImpact: ord.total,

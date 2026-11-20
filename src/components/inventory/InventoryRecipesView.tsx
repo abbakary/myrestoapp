@@ -29,7 +29,6 @@ import {
   Check,
   CheckCheck,
   Layers,
-  Sparkles,
   History,
   ShieldCheck,
   Percent,
@@ -52,10 +51,11 @@ import {
   CommissionMode,
   StockMovement,
 } from '../../types/restaurant';
-import { AiBomBuilderModal } from './AiBomBuilderModal';
 import { BatchCookingModal } from './BatchCookingModal';
 import { RecipeCardModal } from './RecipeCardModal';
-import { suggestCatalogueItemDetails } from '../../utils/aiBomEngine';
+import { ProductionOrdersPanel } from './ProductionOrdersPanel';
+import { CateringOrdersPanel } from './CateringOrdersPanel';
+import { suggestCatalogueItemDetails, parsePackagingSpec } from '../../utils/unitConversion';
 
 import { MenuManagementView } from '../menu/MenuManagementView';
 import { TableManagementView } from '../tables/TableManagementView';
@@ -75,11 +75,11 @@ export const InventoryRecipesView: React.FC = () => {
     stockMovements,
     currentTenant,
     bomAuditLogs,
-    productionLogs,
-    preparedDishStocks,
+    productionOrders,
+    cateringOrders,
+    updateRecipeStatus,
     validateBatchKitchenStock,
     createRequisitionForMissing,
-    blockedCookingAttempts,
     dailyReconciliations,
     confirmStockTransferReceipt,
     rejectStockTransfer,
@@ -93,7 +93,6 @@ export const InventoryRecipesView: React.FC = () => {
     subRecipeBatches,
     computeRecipeUnitCost,
     recordDirectConsumption,
-    reverseProductionBatch,
     taxEnabled,
     setTaxEnabled,
     taxRatePct,
@@ -141,13 +140,11 @@ export const InventoryRecipesView: React.FC = () => {
 
   // BOM Center Sub-tabs & Filters
   const [recipeSubTab, setRecipeSubTab] = useState<
-    'library' | 'sub_recipes' | 'batches' | 'costing_variants' | 'yield_subs' | 'variance'
+    'library' | 'sub_recipes' | 'batches' | 'catering' | 'costing_variants' | 'yield_subs' | 'variance'
   >('library');
   const [recipeMethodFilter, setRecipeMethodFilter] = useState<'all' | ProductionMethod>('all');
   const [recipeStatusFilter, setRecipeStatusFilter] = useState<'all' | RecipeStatus>('all');
   const [selectedRecipeId, setSelectedRecipeId] = useState<string>('rec-wali-nyama');
-  const [reversingLogId, setReversingLogId] = useState<string | null>(null);
-  const [reversalReason, setReversalReason] = useState<string>('');
   const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [confirmReturnTransfers, setConfirmReturnTransfers] = useState(false);
   const [confirmReturnClosing, setConfirmReturnClosing] = useState(false);
@@ -203,11 +200,7 @@ export const InventoryRecipesView: React.FC = () => {
   const [newIngThreshold, setNewIngThreshold] = useState(5000);
   const [newIngSupplier, setNewIngSupplier] = useState('');
   const [newIngCategory, setNewIngCategory] = useState<'Produce' | 'Meat & Seafood' | 'Dry Goods' | 'Oils & Dairy' | 'Beverages'>('Dry Goods');
-  const [aiSuggestionMessage, setAiSuggestionMessage] = useState<string | null>(null);
-
-  // AI Recipe-to-BOM Creator Modal State
-  const [isAiBomModalOpen, setIsAiBomModalOpen] = useState(false);
-  const [aiBomTargetDishId, setAiBomTargetDishId] = useState<string>('menu-wali-nyama');
+  const [presetSuggestionMessage, setPresetSuggestionMessage] = useState<string | null>(null);
 
   // Batch Production & Recipe Card Modal States
   const [isBatchCookModalOpen, setIsBatchCookModalOpen] = useState(false);
@@ -215,6 +208,7 @@ export const InventoryRecipesView: React.FC = () => {
   const [isRecipeCardModalOpen, setIsRecipeCardModalOpen] = useState(false);
   const [recipeCardToEdit, setRecipeCardToEdit] = useState<Recipe | null>(null);
   const [recipeCardDefaultSubRecipe, setRecipeCardDefaultSubRecipe] = useState<boolean>(false);
+  const [recipeCardDefaultMenuItemId, setRecipeCardDefaultMenuItemId] = useState<string | undefined>(undefined);
 
   const showActionBanner = (type: 'success' | 'error', text: string) => {
     setActionFeedback({ type, text });
@@ -222,8 +216,11 @@ export const InventoryRecipesView: React.FC = () => {
   };
 
   const handleAutoSuggestCatalogue = (nameQuery?: string) => {
-    const target = nameQuery || newIngName;
-    if (!target.trim()) return;
+    const target = nameQuery ?? newIngName;
+    if (!target.trim()) {
+      setPresetSuggestionMessage(null);
+      return;
+    }
     const suggestion = suggestCatalogueItemDetails(target);
     setNewIngCategory(suggestion.category);
     setNewIngPurchaseUnit(suggestion.purchaseUnit);
@@ -231,8 +228,11 @@ export const InventoryRecipesView: React.FC = () => {
     setNewIngConversionRatio(suggestion.conversionRatio);
     setNewIngCost(suggestion.typicalCost);
     setNewIngSupplier(suggestion.supplier);
-    setAiSuggestionMessage(
-      `AI Auto-filled: ${suggestion.category} · ${suggestion.purchaseUnit} (${suggestion.conversionRatio.toLocaleString()} ${suggestion.consumptionUnit}) · Est. TZS ${suggestion.typicalCost.toLocaleString()}`
+    setNewIngStoreStock(suggestion.defaultOpeningPacks * suggestion.conversionRatio);
+    setPresetSuggestionMessage(
+      `${suggestion.matchedLabel}: ${suggestion.purchaseUnit} (${suggestion.conversionRatio.toLocaleString()} ${suggestion.consumptionUnit}) · Unit Cost ${(
+        suggestion.typicalCost / Math.max(1, suggestion.conversionRatio)
+      ).toFixed(2)} TZS/${suggestion.consumptionUnit}`
     );
   };
 
@@ -318,11 +318,13 @@ export const InventoryRecipesView: React.FC = () => {
       : '0.0';
 
   // Recipe calculation for selected dish or recipe
-  const activeDish = menuItems.find((m) => m.id === selectedRecipeItem) || menuItems[0];
   const activeRecipe =
     recipes.find((r) => r.id === selectedRecipeId) ||
-    recipes.find((r) => r.menuItemId === activeDish?.id) ||
+    recipes.find((r) => r.menuItemId === selectedRecipeItem) ||
     recipes[0];
+  const activeDish = activeRecipe?.menuItemId
+    ? menuItems.find((m) => m.id === activeRecipe.menuItemId)
+    : undefined;
 
   const recipeBreakdown = activeRecipe
     ? activeRecipe.ingredients.map((ri) => {
@@ -1867,6 +1869,7 @@ export const InventoryRecipesView: React.FC = () => {
                 onClick={() => {
                   setRecipeCardToEdit(null);
                   setRecipeCardDefaultSubRecipe(false);
+                  setRecipeCardDefaultMenuItemId(undefined);
                   setIsRecipeCardModalOpen(true);
                 }}
                 className="px-3.5 py-2 bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
@@ -1880,6 +1883,7 @@ export const InventoryRecipesView: React.FC = () => {
                 onClick={() => {
                   setRecipeCardToEdit(null);
                   setRecipeCardDefaultSubRecipe(true);
+                  setRecipeCardDefaultMenuItemId(undefined);
                   setIsRecipeCardModalOpen(true);
                 }}
                 className="px-3.5 py-2 bg-white hover:bg-neutral-50 text-neutral-800 font-bold text-xs rounded-xl border border-neutral-200 flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
@@ -1887,28 +1891,17 @@ export const InventoryRecipesView: React.FC = () => {
                 <BookOpen className="w-3.5 h-3.5 text-orange-600" />
                 <span>New Sub-Recipe</span>
               </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setAiBomTargetDishId(selectedRecipeItem);
-                  setIsAiBomModalOpen(true);
-                }}
-                className="px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>AI Parse Notes</span>
-              </button>
             </div>
           </div>
 
-          {/* 6 Segmented Sub-Tabs */}
+          {/* 7 Segmented Sub-Tabs */}
           <div className="flex items-center gap-1 p-1 bg-neutral-200/70 rounded-xl overflow-x-auto">
             {[
               { id: 'library', label: 'Recipe Library' },
+              { id: 'batches', label: `Production Calculator & Orders (${productionOrders.length})` },
               { id: 'sub_recipes', label: `Sub-Recipes & Prep (${subRecipeBatches.filter((b) => b.status !== 'reversed').length})` },
-              { id: 'batches', label: `Production Batches (${productionLogs.length})` },
-              { id: 'costing_variants', label: 'Costing & Variants' },
+              { id: 'catering', label: `Catering & Site Orders (${cateringOrders.length})` },
+              { id: 'costing_variants', label: 'Costing & Food Gross Profit' },
               { id: 'yield_subs', label: 'Yield & Substitutions' },
               { id: 'variance', label: 'Consumption Variance' },
             ].map((tab) => (
@@ -1954,8 +1947,10 @@ export const InventoryRecipesView: React.FC = () => {
                   >
                     <option value="all">All Statuses</option>
                     <option value="approved">Approved</option>
+                    <option value="pending_approval">Pending Approval</option>
                     <option value="testing">Testing</option>
                     <option value="draft">Draft</option>
+                    <option value="suspended">Suspended</option>
                     <option value="archived">Archived</option>
                   </select>
                 </div>
@@ -1999,6 +1994,7 @@ export const InventoryRecipesView: React.FC = () => {
                           <div className="text-[11px] text-neutral-500 mt-1 flex items-center justify-between font-mono tabular-nums">
                             <span>
                               {methodLabel} · {rec.status || 'approved'}
+                              {!rec.isSubRecipe && !rec.menuItemId ? ' · Unlinked' : ''}
                             </span>
                             <span className="font-semibold text-neutral-800">
                               Cost: {formatMoney(costInfo.perPlateCost)}
@@ -2034,6 +2030,7 @@ export const InventoryRecipesView: React.FC = () => {
                                 setSelectedRecipeItem(item.id);
                                 setRecipeCardToEdit(null);
                                 setRecipeCardDefaultSubRecipe(false);
+                                setRecipeCardDefaultMenuItemId(item.id);
                                 setIsRecipeCardModalOpen(true);
                               }}
                               className="px-2 py-1 text-[11px] font-semibold text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
@@ -2055,12 +2052,12 @@ export const InventoryRecipesView: React.FC = () => {
                       <div>
                         <div className="text-xs text-neutral-500 font-mono">
                           {activeRecipe.code || activeRecipe.id} · v{activeRecipe.version} ·{' '}
-                          <span className="capitalize">{(activeRecipe.status || 'approved')}</span> ·{' '}
-                          {activeRecipe.productionMethod === 'semi_standardized'
-                            ? 'Method 2: Semi-Standardized'
-                            : activeRecipe.productionMethod === 'direct_stock'
-                            ? 'Method 3: Direct Stock'
-                            : 'Method 1: Standardized BOM'}
+                          <span className="capitalize">{(activeRecipe.status || 'approved').replace(/_/g, ' ')}</span> ·{' '}
+                          {activeRecipe.productionModel
+                            ? activeRecipe.productionModel.replace(/_/g, ' ')
+                            : activeRecipe.productionMethod === 'semi_standardized'
+                            ? 'Semi-Standardized'
+                            : 'Standardized BOM'}
                         </div>
                         <h3 className="text-lg font-bold text-neutral-900 mt-1">
                           {activeRecipe.name || activeDish?.name}
@@ -2070,10 +2067,33 @@ export const InventoryRecipesView: React.FC = () => {
                           {activeRecipe.standardPortionSize ? ` · Portion: ${activeRecipe.standardPortionSize}` : ''}
                           {activeRecipe.expectedYieldPct ? ` · Expected Yield: ${activeRecipe.expectedYieldPct}%` : ''}
                           {activeRecipe.shelfLifeHours ? ` · Shelf Life: ${activeRecipe.shelfLifeHours}h` : ''}
+                          {activeRecipe.cookingTemp ? ` · Temp: ${activeRecipe.cookingTemp}` : ''}
+                          {activeRecipe.cookingTimeMins ? ` · ${activeRecipe.cookingTimeMins} mins` : ''}
                         </div>
                       </div>
 
                       <div className="flex items-center gap-2 flex-wrap shrink-0">
+                        <select
+                          aria-label="Recipe Governance Status"
+                          value={activeRecipe.status || 'approved'}
+                          onChange={(e) => {
+                            const nextStatus = e.target.value as RecipeStatus;
+                            updateRecipeStatus(activeRecipe.id, nextStatus, 'Executive Chef Juma');
+                            showActionBanner(
+                              'success',
+                              `Recipe ${activeRecipe.code || activeRecipe.name} status set to ${nextStatus.replace(/_/g, ' ')}.`
+                            );
+                          }}
+                          className="px-2.5 py-2 bg-neutral-50 border border-neutral-200 rounded-xl text-xs font-semibold text-neutral-800 cursor-pointer"
+                        >
+                          <option value="draft">Status: Draft</option>
+                          <option value="testing">Status: Testing</option>
+                          <option value="pending_approval">Status: Pending Approval</option>
+                          <option value="approved">Status: Approved</option>
+                          <option value="suspended">Status: Suspended</option>
+                          <option value="archived">Status: Archived</option>
+                        </select>
+
                         <button
                           type="button"
                           onClick={() => {
@@ -2083,7 +2103,7 @@ export const InventoryRecipesView: React.FC = () => {
                           className="px-3.5 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                         >
                           <Flame className="w-3.5 h-3.5" />
-                          <span>Cook Batch ({activeRecipe.batchYieldPlates})</span>
+                          <span>Scale &amp; Cook Batch</span>
                         </button>
 
                         <button
@@ -2171,38 +2191,49 @@ export const InventoryRecipesView: React.FC = () => {
                     </div>
 
                     {/* Financial Rollup Strip */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3 border-t border-neutral-200">
-                      <div>
-                        <span className="text-[11px] font-semibold text-neutral-500">Selling Price</span>
-                        <div className="text-base font-bold font-mono tabular-nums text-neutral-900 mt-0.5">
-                          {formatMoney(sellingPrice)}
+                    <div className="space-y-2 pt-3 border-t border-neutral-200">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        <div>
+                          <span className="text-[11px] font-semibold text-neutral-500">Selling Price</span>
+                          <div className="text-base font-bold font-mono tabular-nums text-neutral-900 mt-0.5">
+                            {activeDish ? formatMoney(sellingPrice) : 'Not on POS'}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-[11px] font-semibold text-neutral-500">Ingredient Cost / Plate</span>
+                          <div className="text-base font-bold font-mono tabular-nums text-blue-700 mt-0.5">
+                            {formatMoney(Math.round(totalIngredientCost))}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-[11px] font-semibold text-neutral-500">Food Gross Profit</span>
+                          <div className="text-base font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
+                            {activeDish ? formatMoney(Math.round(grossContribution)) : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-[11px] font-semibold text-neutral-500">Food Cost %</span>
+                          <div
+                            className={`text-base font-bold font-mono tabular-nums mt-0.5 ${
+                              !activeDish
+                                ? 'text-neutral-500'
+                                : foodCostPercentage <= 35
+                                ? 'text-emerald-700'
+                                : 'text-amber-700'
+                            }`}
+                          >
+                            {activeDish ? `${foodCostPercentage.toFixed(1)}%` : '—'}
+                          </div>
                         </div>
                       </div>
-                      <div>
-                        <span className="text-[11px] font-semibold text-neutral-500">Ingredient Cost / Plate</span>
-                        <div className="text-base font-bold font-mono tabular-nums text-blue-700 mt-0.5">
-                          {formatMoney(Math.round(totalIngredientCost))}
-                        </div>
-                      </div>
-                      <div>
-                        <span className="text-[11px] font-semibold text-neutral-500">Gross Profit</span>
-                        <div className="text-base font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
-                          {formatMoney(Math.round(grossContribution))}
-                        </div>
-                      </div>
-                      <div>
-                        <span className="text-[11px] font-semibold text-neutral-500">Food Cost %</span>
-                        <div
-                          className={`text-base font-bold font-mono tabular-nums mt-0.5 ${
-                            foodCostPercentage <= 35 ? 'text-emerald-700' : 'text-amber-700'
-                          }`}
-                        >
-                          {foodCostPercentage.toFixed(1)}%
-                        </div>
-                      </div>
+                      <p className="text-[11px] text-neutral-500">
+                        {activeDish
+                          ? 'Food Gross Profit equals Selling Price minus direct BOM ingredient & sub-recipe costs (excludes packaging, labour, energy & overheads).'
+                          : 'Standalone / unlinked recipe card — not yet published to POS Menu. Click Edit Recipe Card to link an existing dish or create a new POS menu item.'}
+                      </p>
                     </div>
 
-                    {(activeRecipe.preparationInstructions || activeRecipe.cookingInstructions || (activeRecipe.allergens && activeRecipe.allergens.length > 0)) && (
+                    {(activeRecipe.preparationInstructions || activeRecipe.cookingInstructions || activeRecipe.foodSafetyNotes || (activeRecipe.allergens && activeRecipe.allergens.length > 0)) && (
                       <div className="pt-3 border-t border-neutral-200 text-xs text-neutral-600 space-y-1">
                         {activeRecipe.preparationInstructions && (
                           <div>
@@ -2212,6 +2243,11 @@ export const InventoryRecipesView: React.FC = () => {
                         {activeRecipe.cookingInstructions && (
                           <div>
                             <strong className="text-neutral-800">Cooking SOP:</strong> {activeRecipe.cookingInstructions}
+                          </div>
+                        )}
+                        {activeRecipe.foodSafetyNotes && (
+                          <div>
+                            <strong className="text-neutral-800">Food Safety:</strong> {activeRecipe.foodSafetyNotes}
                           </div>
                         )}
                         {activeRecipe.allergens && activeRecipe.allergens.length > 0 && (
@@ -2374,222 +2410,35 @@ export const InventoryRecipesView: React.FC = () => {
             </div>
           )}
 
-          {/* SUB-TAB 3: Production Batches & Controlled Reversals */}
+          {/* SUB-TAB 3: Production Calculator & Orders */}
           {recipeSubTab === 'batches' && (
-            <div className="space-y-5">
-              {/* Prepared Dish Pool */}
-              <div className="bg-white rounded-2xl p-5 border border-neutral-200 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-bold text-neutral-900">Ready-to-Serve Batch Dishes</h3>
-                    <p className="text-xs text-neutral-500">
-                      Finished batch pools ready for POS/Waiter/Customer sales. Orders decrement remaining portions without re-deducting raw stock.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {preparedDishStocks.map((dish) => {
-                    const linkedRec = recipes.find((r) => r.menuItemId === dish.menuItemId);
-                    return (
-                      <div key={dish.menuItemId} className="p-4 rounded-xl border border-neutral-200 space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-bold text-sm text-neutral-900">{dish.dishName}</span>
-                          <span
-                            className={`text-xs font-semibold ${
-                              dish.preparedPlatesAvailable === 0
-                                ? 'text-red-700'
-                                : dish.preparedPlatesAvailable <= 10
-                                ? 'text-amber-700'
-                                : 'text-emerald-700'
-                            }`}
-                          >
-                            {dish.preparedPlatesAvailable === 0
-                              ? 'Sold Out'
-                              : dish.preparedPlatesAvailable <= 10
-                              ? 'Low'
-                              : 'Ready'}
-                          </span>
-                        </div>
-                        <div className="flex items-baseline justify-between">
-                          <div className="text-2xl font-bold font-mono tabular-nums text-neutral-900">
-                            {dish.preparedPlatesAvailable}{' '}
-                            <span className="text-xs font-sans font-normal text-neutral-500">plates left</span>
-                          </div>
-                          <div className="text-right text-[11px] font-mono tabular-nums text-neutral-500">
-                            Cooked {dish.totalCookedToday} · Sold {dish.totalSoldToday}
-                          </div>
-                        </div>
-                        {linkedRec && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setBatchModalRecipe(linkedRec);
-                              setIsBatchCookModalOpen(true);
-                            }}
-                            className="w-full py-1.5 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg cursor-pointer"
-                          >
-                            Cook New Batch
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Production Ledger with Controlled Reversal */}
-              <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
-                <div className="px-5 py-3.5 border-b border-neutral-200 flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-bold text-neutral-900">
-                      Production Batch Ledger &amp; Controlled Reversals
-                    </h3>
-                    <p className="text-xs text-neutral-500">
-                      Reversing a batch restores remaining ingredients to Kitchen Stock while preserving the immutable audit log.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs text-left">
-                    <thead className="bg-neutral-50 text-neutral-500 font-semibold border-b border-neutral-200">
-                      <tr>
-                        <th className="py-2.5 px-4">Batch #</th>
-                        <th className="py-2.5 px-3">Dish / Sub-Recipe</th>
-                        <th className="py-2.5 px-3">Type</th>
-                        <th className="py-2.5 px-3 text-right">Produced</th>
-                        <th className="py-2.5 px-3 text-right">Remaining</th>
-                        <th className="py-2.5 px-3 text-right">Batch COGS</th>
-                        <th className="py-2.5 px-3">Cooked By</th>
-                        <th className="py-2.5 px-4 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-100">
-                      {productionLogs.map((log) => {
-                        const isReversed = log.status === 'reversed';
-                        return (
-                          <React.Fragment key={log.id}>
-                            <tr className={isReversed ? 'bg-neutral-50 text-neutral-400' : 'hover:bg-neutral-50/70'}>
-                              <td className="py-3 px-4 font-mono font-bold text-neutral-900">
-                                {log.batchNumber || log.id}
-                              </td>
-                              <td className="py-3 px-3">
-                                <div className="font-bold text-neutral-900">{log.dishName}</div>
-                                <div className="text-[11px] text-neutral-500">{log.timestamp}</div>
-                              </td>
-                              <td className="py-3 px-3 text-neutral-600 capitalize">
-                                {(log.productionType || 'batch_finished').replace(/_/g, ' ')}
-                              </td>
-                              <td className="py-3 px-3 text-right font-mono tabular-nums">
-                                {log.actualPlatesProduced.toLocaleString()} {log.unitLabel || 'plates'}
-                              </td>
-                              <td className="py-3 px-3 text-right font-mono tabular-nums font-bold">
-                                {log.remainingPlates.toLocaleString()} {log.unitLabel || 'plates'}
-                              </td>
-                              <td className="py-3 px-3 text-right font-mono tabular-nums font-bold text-neutral-900">
-                                {formatMoney(log.totalCost)}
-                              </td>
-                              <td className="py-3 px-3 text-neutral-600">{log.cookedBy}</td>
-                              <td className="py-3 px-4 text-right">
-                                {isReversed ? (
-                                  <span className="text-red-700 font-semibold">
-                                    Reversed · {log.reversalReason}
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setReversingLogId(log.id);
-                                      setReversalReason('Incorrect batch entry / prep cancelled');
-                                    }}
-                                    className="px-2.5 py-1 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg whitespace-nowrap cursor-pointer"
-                                  >
-                                    Reverse Batch
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                            {reversingLogId === log.id && (
-                              <tr className="bg-red-50/60">
-                                <td colSpan={8} className="px-4 py-3">
-                                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                                    <div className="flex-1 w-full">
-                                      <input
-                                        type="text"
-                                        value={reversalReason}
-                                        onChange={(e) => setReversalReason(e.target.value)}
-                                        placeholder="Enter mandatory audit reason for reversing this production batch..."
-                                        className="w-full px-3 py-1.5 text-xs bg-white border border-red-300 rounded-lg"
-                                      />
-                                    </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const res = reverseProductionBatch(log.id, reversalReason, 'David Kasambala (Manager)');
-                                          if (res.success) {
-                                            setReversingLogId(null);
-                                            showActionBanner('success', `Batch ${log.batchNumber || log.id} reversed with full audit trail.`);
-                                          } else {
-                                            showActionBanner('error', res.error || 'Could not reverse batch.');
-                                          }
-                                        }}
-                                        className="px-3 py-1.5 text-xs font-bold bg-red-600 text-white rounded-lg cursor-pointer"
-                                      >
-                                        Confirm Controlled Reversal
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => setReversingLogId(null)}
-                                        className="px-3 py-1.5 text-xs font-semibold bg-white border border-neutral-300 text-neutral-700 rounded-lg cursor-pointer"
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {blockedCookingAttempts.length > 0 && (
-                <div className="bg-white rounded-2xl p-5 border border-neutral-200 space-y-2">
-                  <h4 className="text-xs font-bold text-neutral-900">
-                    Blocked Production Attempts ({blockedCookingAttempts.length})
-                  </h4>
-                  <div className="divide-y divide-neutral-100 text-xs">
-                    {blockedCookingAttempts.map((b) => (
-                      <div key={b.id} className="py-2 flex items-center justify-between gap-3">
-                        <div>
-                          <span className="font-semibold text-neutral-900">{b.dishName}</span> ·{' '}
-                          <span className="text-neutral-500">{b.reason}</span>
-                        </div>
-                        <span className="font-mono text-neutral-500">{b.timestamp}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+            <ProductionOrdersPanel
+              onOpenBatchModal={(rec) => {
+                setBatchModalRecipe(rec);
+                setIsBatchCookModalOpen(true);
+              }}
+              onFeedback={showActionBanner}
+            />
           )}
 
-          {/* SUB-TAB 4: Recipe Costing & Variants */}
+          {/* SUB-TAB 4: Customer Site & Catering Production Management */}
+          {recipeSubTab === 'catering' && (
+            <CateringOrdersPanel
+              onFeedback={showActionBanner}
+              onSwitchToProductionTab={() => setRecipeSubTab('batches')}
+            />
+          )}
+
+          {/* SUB-TAB 5: Recipe Costing & Food Gross Profit */}
           {recipeSubTab === 'costing_variants' && (
             <div className="space-y-5">
               <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden">
                 <div className="px-5 py-3.5 border-b border-neutral-200">
                   <h3 className="text-sm font-bold text-neutral-900">
-                    Live Recipe Costing &amp; Margin Matrix
+                    Live Recipe Costing &amp; Food Gross Profit Matrix
                   </h3>
                   <p className="text-xs text-neutral-500">
-                    Automatically recalculates from weighted-average supplier purchase prices while keeping historical production logs locked.
+                    Automatically recalculates from weighted-average supplier purchase prices while keeping historical production logs locked. Food Gross Profit excludes packaging, kitchen labour &amp; overheads.
                   </p>
                 </div>
                 <div className="overflow-x-auto">
@@ -2601,7 +2450,7 @@ export const InventoryRecipesView: React.FC = () => {
                         <th className="py-2.5 px-3 text-right">Batch Yield</th>
                         <th className="py-2.5 px-3 text-right">Sell Price</th>
                         <th className="py-2.5 px-3 text-right">Live Plate Cost</th>
-                        <th className="py-2.5 px-3 text-right">Gross Margin</th>
+                        <th className="py-2.5 px-3 text-right">Food Gross Profit</th>
                         <th className="py-2.5 px-4 text-right">Food Cost %</th>
                       </tr>
                     </thead>
@@ -2693,9 +2542,10 @@ export const InventoryRecipesView: React.FC = () => {
                                 return (
                                   <div key={mr.id} className="flex justify-between text-neutral-700">
                                     <span>{mr.modifierName}</span>
-                                    <span className="font-mono">
+                                    <span className="font-mono tabular-nums">
+                                      {mr.priceDelta ? `${mr.priceDelta > 0 ? '+' : ''}${formatMoney(mr.priceDelta)} · ` : ''}
                                       {mr.action === 'remove' ? '-' : '+'}
-                                      {mr.quantityDelta} {ing?.consumptionUnit} {ing?.name}
+                                      {mr.quantityDelta} {mr.unit || ing?.consumptionUnit} {ing?.name}
                                     </span>
                                   </div>
                                 );
@@ -4097,30 +3947,30 @@ export const InventoryRecipesView: React.FC = () => {
                     disabled={!newIngName.trim()}
                     className="text-[11px] font-bold text-orange-600 hover:text-orange-700 disabled:opacity-40 inline-flex items-center gap-1 cursor-pointer"
                   >
-                    <Sparkles className="w-3 h-3" />
-                    <span>AI Auto-Suggest Packaging & Unit</span>
+                    <PackagePlus className="w-3 h-3" />
+                    <span>Auto-Fill Packaging Preset</span>
                   </button>
                 </div>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Cooking oil 20L jerrycan, or Nyanya (Roma Tomatoes), or Basmati Rice 25kg"
+                  placeholder="e.g. Coconut Milk 1L, Cooking Oil 20L, Roma Tomatoes, Basmati Rice 25kg"
                   value={newIngName}
                   onChange={(e) => {
-                    setNewIngName(e.target.value);
-                    if (aiSuggestionMessage) setAiSuggestionMessage(null);
-                  }}
-                  onBlur={() => {
-                    if (newIngName.trim() && !newIngSupplier) {
-                      handleAutoSuggestCatalogue(newIngName);
+                    const val = e.target.value;
+                    setNewIngName(val);
+                    if (val.trim().length >= 3) {
+                      handleAutoSuggestCatalogue(val);
+                    } else if (presetSuggestionMessage) {
+                      setPresetSuggestionMessage(null);
                     }
                   }}
                   className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
                 />
-                {aiSuggestionMessage && (
+                {presetSuggestionMessage && (
                   <p className="text-[11px] text-emerald-700 font-medium flex items-center gap-1 mt-1 bg-emerald-50 p-2 rounded-lg border border-emerald-200">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span>{aiSuggestionMessage}</span>
+                    <span>{presetSuggestionMessage}</span>
                   </p>
                 )}
               </div>
@@ -4152,73 +4002,119 @@ export const InventoryRecipesView: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-neutral-700">Purchase Packaging:</label>
+                <label className="text-xs font-semibold text-neutral-700">How You Buy It (Pack Name):</label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. 25kg Bag, 20L Jerrycan"
+                  placeholder="e.g. 400ml Can, 25kg Bag, 20L Jerrycan"
                   value={newIngPurchaseUnit}
-                  onChange={(e) => setNewIngPurchaseUnit(e.target.value)}
+                  onChange={(e) => {
+                    const packText = e.target.value;
+                    setNewIngPurchaseUnit(packText);
+                    const parsed = parsePackagingSpec(packText);
+                    if (parsed) {
+                      setNewIngConsumptionUnit(parsed.consumptionUnit);
+                      setNewIngConversionRatio(parsed.conversionRatio);
+                    }
+                  }}
                   className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-neutral-700">Consumption Unit:</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. grams, ml, pcs, bottle"
+                <label className="text-xs font-semibold text-neutral-700">Recipe &amp; Stock Unit:</label>
+                <select
                   value={newIngConsumptionUnit}
                   onChange={(e) => setNewIngConsumptionUnit(e.target.value)}
                   className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl"
-                />
+                >
+                  <option value="grams">grams</option>
+                  <option value="ml">ml</option>
+                  <option value="pcs">pcs</option>
+                  <option value="bottle">bottle</option>
+                </select>
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-neutral-700">Conversion Ratio:</label>
+                <label className="text-xs font-semibold text-neutral-700">
+                  Qty Inside 1 Pack ({newIngConsumptionUnit}):
+                </label>
                 <input
                   type="number"
+                  min={1}
                   required
                   placeholder="e.g. 25000"
                   value={newIngConversionRatio}
-                  onChange={(e) => setNewIngConversionRatio(Number(e.target.value))}
+                  onChange={(e) => setNewIngConversionRatio(Math.max(1, Number(e.target.value) || 1))}
                   className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-neutral-700">Cost Per Package (TZS):</label>
+                <label className="text-xs font-semibold text-neutral-700">Cost Per Pack (TZS):</label>
                 <input
                   type="number"
+                  min={0}
                   required
                   placeholder="e.g. 65000"
                   value={newIngCost}
-                  onChange={(e) => setNewIngCost(Number(e.target.value))}
+                  onChange={(e) => setNewIngCost(Math.max(0, Number(e.target.value) || 0))}
                   className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-neutral-700">Initial Store Stock:</label>
+                <label className="text-xs font-semibold text-neutral-700">
+                  Initial Store Stock ({newIngConsumptionUnit}):
+                </label>
                 <input
                   type="number"
+                  min={0}
                   required
                   value={newIngStoreStock}
-                  onChange={(e) => setNewIngStoreStock(Number(e.target.value))}
+                  onChange={(e) => setNewIngStoreStock(Math.max(0, Number(e.target.value) || 0))}
                   className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-neutral-700">Initial Kitchen Prep:</label>
+                <label className="text-xs font-semibold text-neutral-700">
+                  Initial Kitchen Prep ({newIngConsumptionUnit}):
+                </label>
                 <input
                   type="number"
+                  min={0}
                   required
                   value={newIngKitchenStock}
-                  onChange={(e) => setNewIngKitchenStock(Number(e.target.value))}
+                  onChange={(e) => setNewIngKitchenStock(Math.max(0, Number(e.target.value) || 0))}
                   className="w-full p-2.5 text-xs bg-neutral-50 border border-neutral-200 rounded-xl font-mono"
                 />
+              </div>
+
+              {/* Live Unit Economics Calculation */}
+              <div className="col-span-2 p-3 bg-neutral-50 border border-neutral-200 rounded-xl text-[11px] font-mono text-neutral-700 space-y-1">
+                <div>
+                  <strong>Unit Cost:</strong>{' '}
+                  {(newIngCost / Math.max(1, newIngConversionRatio)).toFixed(2)} TZS /{' '}
+                  {newIngConsumptionUnit}
+                  {(newIngConsumptionUnit === 'grams' || newIngConsumptionUnit === 'ml') &&
+                    ` (${formatMoney(
+                      Math.round((newIngCost / Math.max(1, newIngConversionRatio)) * 1000)
+                    )}/${newIngConsumptionUnit === 'grams' ? 'kg' : 'L'})`}
+                </div>
+                <div>
+                  <strong>Opening Stock:</strong>{' '}
+                  {(newIngStoreStock + newIngKitchenStock).toLocaleString()} {newIngConsumptionUnit} (
+                  {((newIngStoreStock + newIngKitchenStock) / Math.max(1, newIngConversionRatio)).toFixed(2)}{' '}
+                  packs · Valued{' '}
+                  {formatMoney(
+                    Math.round(
+                      (newIngStoreStock + newIngKitchenStock) *
+                        (newIngCost / Math.max(1, newIngConversionRatio))
+                    )
+                  )}
+                  )
+                </div>
               </div>
             </div>
 
@@ -4339,13 +4235,6 @@ export const InventoryRecipesView: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL: AI Recipe-to-BOM Creator (Interactive Review & Approval) */}
-      <AiBomBuilderModal
-        isOpen={isAiBomModalOpen}
-        onClose={() => setIsAiBomModalOpen(false)}
-        initialMenuItemId={aiBomTargetDishId}
-      />
-
       {/* MODAL: Batch Cooking Production (Finished Dishes & Sub-Recipes) */}
       {(batchModalRecipe || activeRecipe) && (
         <BatchCookingModal
@@ -4363,8 +4252,20 @@ export const InventoryRecipesView: React.FC = () => {
         isOpen={isRecipeCardModalOpen}
         onClose={() => setIsRecipeCardModalOpen(false)}
         recipe={recipeCardToEdit}
-        defaultMenuItemId={selectedRecipeItem}
+        defaultMenuItemId={recipeCardDefaultMenuItemId}
         defaultIsSubRecipe={recipeCardDefaultSubRecipe}
+        onSaved={(saved) => {
+          setSelectedRecipeId(saved.id);
+          if (saved.menuItemId) setSelectedRecipeItem(saved.menuItemId);
+          showActionBanner(
+            'success',
+            saved.menuItemId
+              ? `Saved recipe ${saved.code || saved.name} and linked to POS menu item.`
+              : saved.isSubRecipe
+              ? `Saved sub-recipe ${saved.code || saved.name}.`
+              : `Saved standalone recipe ${saved.code || saved.name} (not linked to POS).`
+          );
+        }}
       />
     </div>
   );
