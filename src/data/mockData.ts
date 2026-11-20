@@ -1,4 +1,4 @@
-import {
+import type {
   RestaurantTenant,
   MenuItem,
   Table,
@@ -22,7 +22,7 @@ import {
   PurchaseRequest,
   BranchTransferRequest,
   CateringOrder,
-} from '../types/restaurant';
+} from '../types/restaurant.ts';
 
 export const INITIAL_TENANTS: RestaurantTenant[] = [
   {

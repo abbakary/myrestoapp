@@ -1,4 +1,4 @@
-import {
+import type {
   SaasOrganization,
   SaasPlanDefinition,
   SaasAccount,
@@ -33,7 +33,7 @@ import {
   ApprovalRequest,
   CommissionMode,
   ModifierItem,
-} from '../types/restaurant';
+} from '../types/restaurant.ts';
 import {
   INITIAL_TENANTS,
   INITIAL_WAITERS,
@@ -58,7 +58,7 @@ import {
   INITIAL_CATERING_ORDERS,
   INITIAL_PURCHASE_REQUESTS,
   INITIAL_BRANCH_TRANSFERS,
-} from './mockData';
+} from './mockData.ts';
 
 export interface BranchCartItem {
   menuItem: MenuItem;

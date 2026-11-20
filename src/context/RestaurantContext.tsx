@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useMemo } from 'react';
+import React, { createContext, useContext, useState, useMemo, useEffect, useRef } from 'react';
 import {
   RestaurantTenant,
   MenuItem,
@@ -33,8 +33,6 @@ import {
   BomDeductionPolicy,
   StockBatchLot,
   SubRecipeStockBatch,
-  OrderItem,
-  MovementType,
   PayrollPaymentRecord,
   CommissionPayoutLog,
   ProductionOrder,
@@ -73,50 +71,28 @@ import {
   createStarterBranchStore,
 } from '../data/saasSeeds';
 import { parseAppDeepLink, notifyFlutterHost } from '../utils/mobileEnvironment';
-import { convertQuantity } from '../utils/unitConversion';
+import { apiClient, enqueueApiSync } from '../services/apiClient';
+import type { ScaledRequirementRow, ScaledRequirementsResult, CartItem } from '../shared/types';
+import {
+  computeRecipeUnitCostPure,
+  consumeStockLotsPure,
+  validateBatchKitchenStockPure,
+  calculateScaledRequirementsPure,
+  deductStockForOrderLinesPure,
+} from '../shared/costingEngine';
+import {
+  getOrderCommissionPure,
+  calculateWaiterStatsPure,
+  calculateEmployeePayrollPure,
+} from '../shared/payrollEngine';
+import {
+  computeDiscrepanciesPure,
+  computeBranchMetricsSummaryPure,
+  computeProviderTenantSummariesPure,
+  computeProviderStatsPure,
+} from '../shared/analyticsEngine';
 
-export interface ScaledRequirementRow {
-  key: string;
-  ingredientId: string;
-  ingredientName: string;
-  isSubRecipe: boolean;
-  subRecipeId?: string;
-  requiredQty: number;
-  unit: string;
-  availableKitchenQty: number;
-  availableStoreQty: number;
-  reservedQty: number;
-  totalAvailableQty: number;
-  netUnreservedTotalQty: number;
-  kitchenShortageQty: number;
-  globalShortageQty: number;
-  status: 'ok' | 'kitchen_short_store_ok' | 'shortage';
-  unitCost: number;
-  estimatedCost: number;
-  substituteIngredientId?: string;
-  substituteIngredientName?: string;
-  substituteAvailableQty?: number;
-  usedSubstituteName?: string;
-}
-
-export interface ScaledRequirementsResult {
-  rows: ScaledRequirementRow[];
-  canProduceFromKitchen: boolean;
-  canProduceWithStore: boolean;
-  totalEstimatedCost: number;
-  maxProduciblePortions: number;
-}
-
-export interface CartItem {
-  menuItem: MenuItem;
-  quantity: number;
-  selectedPortion?: { name: string; priceDelta: number };
-  selectedModifiers: ModifierItem[];
-  customerNotes?: string;
-  customInstructions?: string;
-  extraCharge?: number;
-  isCustomItem?: boolean;
-}
+export type { ScaledRequirementRow, ScaledRequirementsResult, CartItem };
 
 interface RestaurantContextType {
   organizations: SaasOrganization[];
@@ -683,6 +659,46 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return initial;
   });
 
+  const hasHydratedRef = useRef(false);
+  useEffect(() => {
+    if (hasHydratedRef.current) return;
+    hasHydratedRef.current = true;
+    let active = true;
+    apiClient.system
+      .bootstrap()
+      .then((state) => {
+        if (!active || !state) return;
+        setOrganizations(state.organizations);
+        setSaasPlans(state.saasPlans);
+        setAllBranches(state.allBranches);
+        setSaasAccounts(state.saasAccounts);
+        setProviderAuditLogs(state.providerAuditLogs);
+        setLeadInquiries(state.leadInquiries);
+        const nextStores = { ...state.branchStores };
+        if (deepLink.portal === 'customer') {
+          Object.keys(nextStores).forEach((k) => {
+            nextStores[k] = { ...nextStores[k], cart: [] };
+          });
+        }
+        setBranchStores(nextStores);
+        if (deepLink.tenantId) {
+          const matched = state.allBranches.find(
+            (b) => b.id === deepLink.tenantId || b.slug === deepLink.tenantId
+          );
+          if (matched) {
+            setCurrentOrganizationIdState(matched.organizationId);
+            setCurrentBranchIdState(matched.id);
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('[RestaurantOS] Bootstrap hydration fell back to seed state:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, [deepLink.portal, deepLink.tenantId]);
+
   const initialMatchedBranch = useMemo(() => {
     if (deepLink.tenantId) {
       return INITIAL_BRANCHES.find((b) => b.id === deepLink.tenantId || b.slug === deepLink.tenantId);
@@ -775,7 +791,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const subRecipeBatches = activeStore.subRecipeBatches;
   const setSubRecipeBatches: React.Dispatch<React.SetStateAction<SubRecipeStockBatch[]>> = (u) => updateBranchSlice('subRecipeBatches', u);
   const bomDeductionPolicy = activeStore.bomDeductionPolicy;
-  const setBomDeductionPolicy = (policy: BomDeductionPolicy) => updateBranchSlice('bomDeductionPolicy', policy);
+  const setBomDeductionPolicy = (policy: BomDeductionPolicy) => {
+    updateBranchSlice('bomDeductionPolicy', policy);
+    enqueueApiSync(() => apiClient.orders.updateSettings(activeBranchId, { bomDeductionPolicy: policy }), 'setBomDeductionPolicy');
+  };
   const bomAuditLogs = activeStore.bomAuditLogs;
   const setBomAuditLogs: React.Dispatch<React.SetStateAction<BomAuditLog[]>> = (u) => updateBranchSlice('bomAuditLogs', u);
   const productionLogs = activeStore.productionLogs;
@@ -817,9 +836,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const setCashierShift: React.Dispatch<React.SetStateAction<BranchWorkspaceStore['cashierShift']>> = (u) =>
     updateBranchSlice('cashierShift', u);
   const taxEnabled = activeStore.taxEnabled;
-  const setTaxEnabled = (enabled: boolean) => updateBranchSlice('taxEnabled', enabled);
+  const setTaxEnabled = (enabled: boolean) => {
+    updateBranchSlice('taxEnabled', enabled);
+    enqueueApiSync(() => apiClient.orders.updateSettings(activeBranchId, { taxEnabled: enabled }), 'setTaxEnabled');
+  };
   const taxRatePct = activeStore.taxRatePct;
-  const setTaxRatePct = (ratePct: number) => updateBranchSlice('taxRatePct', ratePct);
+  const setTaxRatePct = (ratePct: number) => {
+    updateBranchSlice('taxRatePct', ratePct);
+    enqueueApiSync(() => apiClient.orders.updateSettings(activeBranchId, { taxRatePct: ratePct }), 'setTaxRatePct');
+  };
   const defaultCommissionMode = activeStore.defaultCommissionMode;
   const setDefaultCommissionMode = (m: CommissionMode) => updateBranchSlice('defaultCommissionMode', m);
   const defaultCommissionValue = activeStore.defaultCommissionValue;
@@ -914,17 +939,20 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const markNotificationAsRead = (id: string) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    enqueueApiSync(() => apiClient.orders.markNotificationRead(activeBranchId, id), 'markNotificationAsRead');
   };
 
   const markAllNotificationsAsRead = () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    enqueueApiSync(() => apiClient.orders.markAllNotificationsRead(activeBranchId), 'markAllNotificationsAsRead');
   };
 
   const clearNotification = (id: string) => {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
+    enqueueApiSync(() => apiClient.orders.clearNotification(activeBranchId, id), 'clearNotification');
   };
 
-  const addNotification = (notif: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => {
+  const addNotificationLocal = (notif: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => {
     const newNotif: AppNotification = {
       ...notif,
       id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -932,6 +960,12 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       read: false,
     };
     setNotifications((prev) => [newNotif, ...prev]);
+    return newNotif;
+  };
+
+  const addNotification = (notif: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => {
+    addNotificationLocal(notif);
+    enqueueApiSync(() => apiClient.orders.addNotification(activeBranchId, notif), 'addNotification');
   };
 
   const toggleCurrency = () => {
@@ -954,140 +988,76 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     notes: string = '',
     quantity: number = 1
   ) => {
-    setCart((prev) => {
-      const existingIndex = prev.findIndex(
-        (ci) =>
-          ci.menuItem.id === item.id &&
-          ci.selectedPortion?.name === portion?.name &&
-          ci.customerNotes === notes &&
-          JSON.stringify(ci.selectedModifiers) === JSON.stringify(modifiers)
-      );
+    const existingIndex = cart.findIndex(
+      (ci) =>
+        ci.menuItem.id === item.id &&
+        ci.selectedPortion?.name === portion?.name &&
+        ci.customerNotes === notes &&
+        JSON.stringify(ci.selectedModifiers) === JSON.stringify(modifiers)
+    );
 
-      if (existingIndex > -1) {
-        const updated = [...prev];
-        updated[existingIndex].quantity += quantity;
-        return updated;
-      }
-      return [
-        ...prev,
-        {
-          menuItem: item,
-          quantity,
-          selectedPortion: portion,
-          selectedModifiers: modifiers,
-          customerNotes: notes,
-        },
-      ];
-    });
+    const nextCart: CartItem[] =
+      existingIndex > -1
+        ? cart.map((ci, idx) => (idx === existingIndex ? { ...ci, quantity: ci.quantity + quantity } : ci))
+        : [
+            ...cart,
+            {
+              menuItem: item,
+              quantity,
+              selectedPortion: portion,
+              selectedModifiers: modifiers,
+              customerNotes: notes,
+            },
+          ];
+
+    setCart(nextCart);
+    enqueueApiSync(() => apiClient.orders.syncCart(activeBranchId, nextCart), 'addToCart');
   };
 
   const updateCartItemQty = (index: number, delta: number) => {
-    setCart((prev) => {
-      const updated = [...prev];
-      const newQty = updated[index].quantity + delta;
-      if (newQty <= 0) {
-        return updated.filter((_, i) => i !== index);
-      }
-      updated[index].quantity = newQty;
-      return updated;
-    });
+    if (!cart[index]) return;
+    const newQty = cart[index].quantity + delta;
+    const nextCart =
+      newQty <= 0
+        ? cart.filter((_, i) => i !== index)
+        : cart.map((ci, i) => (i === index ? { ...ci, quantity: newQty } : ci));
+    setCart(nextCart);
+    enqueueApiSync(() => apiClient.orders.syncCart(activeBranchId, nextCart), 'updateCartItemQty');
   };
 
   const removeFromCart = (index: number) => {
-    setCart((prev) => prev.filter((_, i) => i !== index));
+    const nextCart = cart.filter((_, i) => i !== index);
+    setCart(nextCart);
+    enqueueApiSync(() => apiClient.orders.syncCart(activeBranchId, nextCart), 'removeFromCart');
+  };
+
+  const clearCartLocal = () => {
+    setCart([]);
   };
 
   const clearCart = () => {
     setCart([]);
+    enqueueApiSync(() => apiClient.orders.syncCart(activeBranchId, []), 'clearCart');
   };
 
-  // Recursive / Sub-recipe-aware BOM Costing Helper (Live from Master Data + Sub-Recipe Batches)
+  // Recursive / Sub-recipe-aware BOM Costing Helper (Delegated to shared costingEngine)
   const computeRecipeUnitCost = (recipeId: string, visited: Set<string> = new Set()): {
     batchCost: number;
     unitCost: number;
     perPlateCost: number;
-  } => {
-    if (visited.has(recipeId)) return { batchCost: 0, unitCost: 0, perPlateCost: 0 };
-    const nextVisited = new Set(visited);
-    nextVisited.add(recipeId);
+  } => computeRecipeUnitCostPure(recipeId, recipes, ingredients, subRecipeBatches, visited);
 
-    const recipe = recipes.find((r) => r.id === recipeId);
-    if (!recipe) return { batchCost: 0, unitCost: 0, perPlateCost: 0 };
-
-    const yieldQty = Math.max(1, recipe.batchYieldPlates || 1);
-    let batchCost = 0;
-
-    recipe.ingredients.forEach((ri) => {
-      const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
-      if (ri.isSubRecipe && ri.subRecipeId) {
-        const subQtyForBatch = ri.subRecipeQuantity ?? ri.batchQuantity ?? (ri.quantity * yieldQty);
-        // Prefer active sub-recipe batch cost if available, else compute from sub-recipe BOM
-        const activeSubBatches = subRecipeBatches.filter(
-          (sb) => sb.subRecipeId === ri.subRecipeId && sb.status !== 'reversed' && sb.remainingQty > 0
-        );
-        const subUnitCost =
-          activeSubBatches.length > 0
-            ? activeSubBatches[0].costPerUnit
-            : computeRecipeUnitCost(ri.subRecipeId, nextVisited).unitCost;
-        batchCost += (subQtyForBatch / yieldFactor) * subUnitCost;
-      } else {
-        const ing = ingredients.find((i) => i.id === ri.ingredientId);
-        if (ing && ing.conversionRatio > 0) {
-          const ingUnitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
-          const batchQty = ri.batchQuantity ?? (ri.quantity * yieldQty);
-          batchCost += (batchQty / yieldFactor) * ingUnitCost;
-        }
-      }
-    });
-
-    const roundedBatch = Math.round(batchCost);
-    const unitCost = batchCost / yieldQty;
-    return {
-      batchCost: roundedBatch,
-      unitCost,
-      perPlateCost: Math.round(unitCost),
-    };
-  };
-
-  // FEFO / FIFO Stock Lot deduction helper
+  // FEFO / FIFO Stock Lot deduction helper (Delegated to shared costingEngine)
   const consumeStockLots = (
     ingredientId: string,
     qtyToDeduct: number,
     location: 'kitchen' | 'main_store'
   ) => {
     if (qtyToDeduct <= 0) return;
-    setStockLots((prev) => {
-      let remaining = qtyToDeduct;
-      // Sort FEFO (earliest expiry first), then FIFO (earliest receivedDate first)
-      const matchingIds = prev
-        .filter((lot) => lot.ingredientId === ingredientId && lot.location === location && lot.remainingQty > 0)
-        .sort((a, b) => {
-          if (a.expiryDate && b.expiryDate) return a.expiryDate.localeCompare(b.expiryDate);
-          if (a.expiryDate) return -1;
-          if (b.expiryDate) return 1;
-          return a.receivedDate.localeCompare(b.receivedDate);
-        })
-        .map((l) => l.id);
-
-      const deductions = new Map<string, number>();
-      for (const lotId of matchingIds) {
-        if (remaining <= 0) break;
-        const lot = prev.find((l) => l.id === lotId);
-        if (!lot) continue;
-        const take = Math.min(lot.remainingQty, remaining);
-        deductions.set(lotId, take);
-        remaining -= take;
-      }
-
-      if (deductions.size === 0) return prev;
-      return prev.map((lot) => {
-        const take = deductions.get(lot.id);
-        return take ? { ...lot, remainingQty: Math.max(0, lot.remainingQty - take) } : lot;
-      });
-    });
+    setStockLots((prev) => consumeStockLotsPure(prev, ingredientId, qtyToDeduct, location));
   };
 
-  // Unified Order Stock Deduction Engine (Zero Double-Deduction, Sub-Recipe & Variant/Modifier Aware)
+  // Unified Order Stock Deduction Engine (Delegated to shared costingEngine)
   const deductStockForOrderLines = (
     orderItems: Array<{
       menuItemId: string;
@@ -1102,297 +1072,26 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     orderNum: string,
     stageLabel: string
   ) => {
-    const newMovements: StockMovement[] = [];
-    const lowKitchenAlerts: string[] = [];
-    const subRecipeDeductions: { subRecipeId: string; qty: number; dishName: string }[] = [];
-    const batchPlateDeductions: { menuItemId: string; qty: number }[] = [];
-    const ingredientDeductions: {
-      ingredientId: string;
-      qty: number;
-      reason: string;
-      type: MovementType;
-    }[] = [];
-
-    const activeLines = orderItems.filter((li) => li.status !== 'rejected');
-
-    activeLines.forEach((li) => {
-      const recipe = recipes.find((r) => r.menuItemId === li.menuItemId);
-
-      // Method 3 / Un-recipied packaged drinks direct 1:1 deduction (BOM is optional!)
-      if (!recipe) {
-        if (li.menuItemId === 'menu-soda-bottle' || li.name.toLowerCase().includes('soda')) {
-          ingredientDeductions.push({
-            ingredientId: 'ing-soda',
-            qty: li.quantity,
-            reason: `Direct stock consumption (${li.quantity}x ${li.name} · ${stageLabel})`,
-            type: 'direct_consumption',
-          });
-        }
-        return;
-      }
-
-      if (recipe.status === 'archived' || recipe.status === 'suspended') return;
-
-      // Batch-cooked dish: deduct ONLY from pre-prepared plates pool & production log remainingPlates (NEVER raw ingredients again!)
-      if (recipe.cookingMethod === 'batch_cooking') {
-        const variant = li.portion
-          ? recipe.variants?.find((v) => v.name.toLowerCase() === li.portion?.toLowerCase())
-          : undefined;
-        const plateScale = variant ? (variant.portionMultiplier >= 1.4 ? 1.5 : 1) : 1;
-        batchPlateDeductions.push({
-          menuItemId: li.menuItemId,
-          qty: Math.round(li.quantity * plateScale * 10) / 10,
-        });
-        return;
-      }
-
-      // Made-to-order BOM: scale by Portion Variant + apply Modifier Rules
-      const variant = li.portion
-        ? recipe.variants?.find((v) => v.name.toLowerCase() === li.portion?.toLowerCase())
-        : undefined;
-      const portionMultiplier = variant?.portionMultiplier ?? 1.0;
-
-      const combinedNotes = `${li.customerNotes || ''} ${li.customInstructions || ''}`.toLowerCase();
-      const modNames = (li.selectedModifiers || []).map((m) => m.name.toLowerCase());
-
-      // Track per-ingredient net quantity for this line item
-      const perLineRawQty = new Map<string, number>();
-
-      recipe.ingredients.forEach((ri) => {
-        const override = variant?.ingredientOverrides?.find((ov) => ov.ingredientId === ri.ingredientId);
-        const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
-
-        if (ri.isSubRecipe && ri.subRecipeId) {
-          const perPlateSubQty =
-            (ri.subRecipeQuantity && recipe.batchYieldPlates > 0
-              ? ri.subRecipeQuantity / recipe.batchYieldPlates
-              : ri.quantity) * portionMultiplier;
-          const totalSubQty = Math.round((perPlateSubQty / yieldFactor) * li.quantity * 100) / 100;
-          if (totalSubQty > 0) {
-            subRecipeDeductions.push({
-              subRecipeId: ri.subRecipeId,
-              qty: totalSubQty,
-              dishName: `${li.quantity}x ${li.name}${li.portion ? ` (${li.portion})` : ''}`,
-            });
-          }
-          return;
-        }
-
-        const basePerPlate = override ? override.quantity : ri.quantity * portionMultiplier;
-        const grossPerPlate = basePerPlate / yieldFactor;
-        const totalQty = grossPerPlate * li.quantity;
-
-        // Check if primary ingredient is out in kitchen and an approved substitute is configured
-        const primaryIng = ingredients.find((i) => i.id === ri.ingredientId);
-        let targetIngId = ri.ingredientId;
-        if (
-          primaryIng &&
-          (primaryIng.kitchenStockUnits ?? 0) < totalQty &&
-          ri.substituteIngredientId
-        ) {
-          const subIng = ingredients.find((i) => i.id === ri.substituteIngredientId);
-          if (subIng && (subIng.kitchenStockUnits ?? 0) >= totalQty) {
-            targetIngId = subIng.id;
-          }
-        }
-
-        perLineRawQty.set(targetIngId, (perLineRawQty.get(targetIngId) || 0) + totalQty);
-      });
-
-      // Apply Recipe Modifier Rules (Extra Chicken, Boiled Egg, No Onions, etc.)
-      (recipe.modifierRules || []).forEach((rule) => {
-        const ruleLower = rule.modifierName.toLowerCase();
-        const isTriggered =
-          modNames.some((mn) => mn.includes(ruleLower) || ruleLower.includes(mn)) ||
-          combinedNotes.includes(ruleLower);
-        if (!isTriggered) return;
-
-        const targetIng = ingredients.find((i) => i.id === rule.ingredientId);
-        const deltaInBase = targetIng && rule.unit
-          ? convertQuantity(rule.quantityDelta, rule.unit, targetIng.consumptionUnit)
-          : rule.quantityDelta;
-
-        if (rule.action === 'add') {
-          perLineRawQty.set(
-            rule.ingredientId,
-            (perLineRawQty.get(rule.ingredientId) || 0) + deltaInBase * li.quantity
-          );
-        } else if (rule.action === 'remove') {
-          const cur = perLineRawQty.get(rule.ingredientId) || 0;
-          perLineRawQty.set(rule.ingredientId, Math.max(0, cur - deltaInBase * li.quantity));
-        } else if (rule.action === 'substitute' && rule.substituteIngredientId) {
-          const cur = perLineRawQty.get(rule.ingredientId) || 0;
-          const removed = Math.min(cur, deltaInBase * li.quantity);
-          perLineRawQty.set(rule.ingredientId, Math.max(0, cur - removed));
-          perLineRawQty.set(
-            rule.substituteIngredientId,
-            (perLineRawQty.get(rule.substituteIngredientId) || 0) + removed
-          );
-        }
-      });
-
-      perLineRawQty.forEach((rawQty, ingId) => {
-        const rounded = Math.round(rawQty);
-        if (rounded > 0) {
-          ingredientDeductions.push({
-            ingredientId: ingId,
-            qty: rounded,
-            reason: `BOM consumption for ${li.quantity}x ${li.name}${li.portion ? ` (${li.portion})` : ''} · ${stageLabel}`,
-            type: 'kitchen_consumption',
-          });
-        }
-      });
+    const res = deductStockForOrderLinesPure({
+      orderItems,
+      orderNumber: orderNum,
+      stageLabel,
+      recipes,
+      ingredients,
+      stockLots,
+      subRecipeBatches,
+      preparedDishStocks,
+      productionLogs,
+      stockMovements,
+      notifications,
     });
-
-    // 1. Deduct batch-cooked finished plates & update ProductionLog remainingPlates FIFO
-    if (batchPlateDeductions.length > 0) {
-      setPreparedDishStocks((prev) =>
-        prev.map((p) => {
-          const match = batchPlateDeductions.filter((b) => b.menuItemId === p.menuItemId);
-          if (match.length === 0) return p;
-          const sumQty = match.reduce((s, b) => s + b.qty, 0);
-          const newAvailable = Math.max(0, p.preparedPlatesAvailable - sumQty);
-          return {
-            ...p,
-            preparedPlatesAvailable: newAvailable,
-            totalSoldToday: p.totalSoldToday + sumQty,
-            status: newAvailable === 0 ? 'out_of_stock' : newAvailable <= 10 ? 'low' : 'ready',
-          };
-        })
-      );
-
-      setProductionLogs((prev) => {
-        const remainingNeed = new Map<string, number>();
-        batchPlateDeductions.forEach((b) => {
-          remainingNeed.set(b.menuItemId, (remainingNeed.get(b.menuItemId) || 0) + b.qty);
-        });
-        return prev.map((pl) => {
-          if (pl.status === 'reversed' || pl.productionType === 'sub_recipe') return pl;
-          const need = remainingNeed.get(pl.menuItemId) || 0;
-          if (need <= 0 || pl.remainingPlates <= 0) return pl;
-          const take = Math.min(pl.remainingPlates, need);
-          remainingNeed.set(pl.menuItemId, need - take);
-          return {
-            ...pl,
-            remainingPlates: Math.max(0, pl.remainingPlates - take),
-          };
-        });
-      });
-    }
-
-    // 2. Deduct Sub-Recipe prepared stock batches (FEFO by expiresAt, never raw ingredients again!)
-    if (subRecipeDeductions.length > 0) {
-      const todayStr = new Date().toISOString().split('T')[0];
-      setSubRecipeBatches((prev) => {
-        const copy = prev.map((b) => ({ ...b }));
-        subRecipeDeductions.forEach((ded) => {
-          let rem = ded.qty;
-          const candidates = copy
-            .filter((b) => b.subRecipeId === ded.subRecipeId && b.remainingQty > 0 && b.status !== 'reversed' && b.status !== 'expired')
-            .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
-          for (const batch of candidates) {
-            if (rem <= 0) break;
-            const take = Math.min(batch.remainingQty, rem);
-            batch.remainingQty = Math.round((batch.remainingQty - take) * 100) / 100;
-            batch.status =
-              batch.remainingQty <= 0
-                ? 'consumed'
-                : batch.remainingQty <= batch.producedQty * 0.2
-                ? 'low'
-                : 'available';
-            rem -= take;
-
-            newMovements.push({
-              id: `sm-sub-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-              ingredientId: batch.subRecipeId,
-              ingredientName: `${batch.name} [Sub-Recipe]`,
-              type: 'kitchen_consumption',
-              quantityDelta: -take,
-              unit: batch.unit,
-              costImpact: Math.round(take * batch.costPerUnit),
-              date: todayStr,
-              reference: `Order ${orderNum}`,
-              batchNumber: batch.batchNumber,
-              recipeId: batch.subRecipeId,
-              reason: `Sub-recipe batch deduction for ${ded.dishName} (${stageLabel})`,
-              recordedBy: 'Auto Kitchen BOM Engine',
-              sourceLocation: 'kitchen',
-            });
-          }
-        });
-        return copy;
-      });
-    }
-
-    // 3. Deduct Raw Ingredients & FEFO/FIFO lots
-    if (ingredientDeductions.length > 0) {
-      setIngredients((prevIngredients) => {
-        const updated = [...prevIngredients];
-        ingredientDeductions.forEach((ded) => {
-          const ingIndex = updated.findIndex((ing) => ing.id === ded.ingredientId);
-          if (ingIndex === -1) return;
-          const ing = updated[ingIndex];
-          const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
-
-          const currentKitchen = ing.kitchenStockUnits ?? 0;
-          const currentStore = ing.storeStockUnits ?? Math.max(0, ing.currentStockUnits - currentKitchen);
-
-          let newKitchen = currentKitchen - ded.qty;
-          let newStore = currentStore;
-
-          if (newKitchen < 0) {
-            const deficit = -newKitchen;
-            newStore = Math.max(0, currentStore - deficit);
-            newKitchen = 0;
-            lowKitchenAlerts.push(`${ing.name} (Kitchen line ran out, drawn from Store)`);
-            consumeStockLots(ing.id, currentKitchen, 'kitchen');
-            consumeStockLots(ing.id, deficit, 'main_store');
-          } else {
-            consumeStockLots(ing.id, ded.qty, 'kitchen');
-            if (newKitchen <= ing.minimumThreshold * 0.25) {
-              lowKitchenAlerts.push(`${ing.name} (${newKitchen.toLocaleString()} ${ing.consumptionUnit} left in kitchen)`);
-            }
-          }
-
-          updated[ingIndex] = {
-            ...ing,
-            kitchenStockUnits: newKitchen,
-            storeStockUnits: newStore,
-            currentStockUnits: Math.max(0, newKitchen + newStore),
-          };
-
-          newMovements.push({
-            id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-            ingredientId: ing.id,
-            ingredientName: ing.name,
-            type: ded.type,
-            quantityDelta: -ded.qty,
-            unit: ing.consumptionUnit,
-            costImpact: Math.round(unitCost * ded.qty),
-            date: new Date().toISOString().split('T')[0],
-            reference: `Order ${orderNum}`,
-            reason: ded.reason,
-            recordedBy: 'Auto Kitchen BOM Engine',
-            sourceLocation: 'kitchen',
-          });
-        });
-        return updated;
-      });
-    }
-
-    if (newMovements.length > 0) {
-      setStockMovements((prev) => [...newMovements, ...prev]);
-    }
-
-    if (lowKitchenAlerts.length > 0) {
-      addNotification({
-        title: 'Kitchen Line Stock Running Low',
-        message: `Replenishment needed: ${lowKitchenAlerts.slice(0, 2).join('; ')}. Use Transfer Module to issue from Main Store.`,
-        type: 'stock',
-        actionRole: 'manager',
-        actionLabel: 'Transfer Stock',
-      });
-    }
+    setPreparedDishStocks(res.preparedDishStocks);
+    setProductionLogs(res.productionLogs);
+    setSubRecipeBatches(res.subRecipeBatches);
+    setIngredients(res.ingredients);
+    setStockLots(res.stockLots);
+    setStockMovements(res.stockMovements);
+    setNotifications(res.notifications);
   };
 
   // Backwards-compatible wrapper
@@ -1619,7 +1318,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         deductIngredientsForOrder(sourceItems, nextOrderNum);
       }
       setSoundAlertTriggered(true);
-      addNotification({
+      addNotificationLocal({
         title: `New Order ${nextOrderNum} (${serviceCouponCode})`,
         message: `${params.type === 'dine_in' ? `Table ${params.tableNumber}` : params.type.toUpperCase()} - ${items.map((i) => `${i.quantity}x ${i.name}`).join(', ')}`,
         type: 'order',
@@ -1627,7 +1326,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         actionLabel: 'Open KDS Ticket',
       });
     } else {
-      addNotification({
+      addNotificationLocal({
         title: `Waiter Draft Saved: ${nextOrderNum}`,
         message: `${actor} saved a draft (${formatMoney(total)}) for ${params.tableNumber || params.customerName}. Visible for accountability.`,
         type: 'order',
@@ -1648,7 +1347,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     });
 
     if (!params.customItems) {
-      clearCart();
+      clearCartLocal();
     }
 
     notifyFlutterHost('orderPlaced', {
@@ -1658,6 +1357,16 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       total: newOrder.total,
       type: newOrder.type,
     });
+
+    enqueueApiSync(
+      () =>
+        apiClient.orders.submit(activeBranchId, {
+          ...params,
+          id: newOrder.id,
+          activeReferralCode,
+        }),
+      'submitOrder'
+    );
 
     return newOrder;
   };
@@ -1706,7 +1415,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
 
     setSoundAlertTriggered(true);
-    addNotification({
+    addNotificationLocal({
       title: `Draft Dispatched: ${draft.orderNumber}`,
       message: `${draft.kotNumber || draft.orderNumber} sent to Kitchen by ${actorName}.`,
       type: 'order',
@@ -1722,6 +1431,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       action: 'DRAFT_DISPATCHED_TO_KITCHEN',
       details: `Converted draft ${draft.orderNumber} (${draft.kotNumber || ''}) into live Kitchen KOT.`,
     });
+
+    enqueueApiSync(
+      () => apiClient.orders.dispatchDraft(activeBranchId, orderId, actorName),
+      'submitDraftToKitchen'
+    );
   };
 
   const updateOrderStatus = (
@@ -1765,16 +1479,6 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             }));
           }
 
-          if (status === 'ready' && ord.status !== 'ready') {
-            addNotification({
-              title: `Order Ready: ${ord.orderNumber}`,
-              message: `${ord.tableNumber || ord.customerName} dishes are ready on the pass!`,
-              type: 'kitchen',
-              actionRole: 'cashier',
-              actionLabel: 'View POS Counter',
-            });
-          }
-
           return {
             ...ord,
             status,
@@ -1794,6 +1498,16 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return ord;
       })
     );
+
+    if (status === 'ready' && target && target.status !== 'ready') {
+      addNotificationLocal({
+        title: `Order Ready: ${target.orderNumber}`,
+        message: `${target.tableNumber || target.customerName} dishes are ready on the pass!`,
+        type: 'kitchen',
+        actionRole: 'cashier',
+        actionLabel: 'View POS Counter',
+      });
+    }
 
     if (target) {
       logAuditEvent({
@@ -1819,6 +1533,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         );
       }
     }
+
+    enqueueApiSync(
+      () => apiClient.orders.updateStatus(activeBranchId, orderId, status, actorName, note, activeRole),
+      'updateOrderStatus'
+    );
   };
 
   const fastForwardOrderToServed = (
@@ -1892,6 +1611,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       )} by ${actorName}${shouldDeductNow ? ' · BOM Stock Deducted' : ''}.`,
     });
 
+    enqueueApiSync(
+      () => apiClient.orders.fastForwardToServed(activeBranchId, orderId, actorName),
+      'fastForwardOrderToServed'
+    );
+
     return true;
   };
 
@@ -1961,6 +1685,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         }
         return ord;
       })
+    );
+
+    enqueueApiSync(
+      () => apiClient.orders.updateItemStatus(activeBranchId, orderId, itemIndex, itemStatus, actorName),
+      'updateOrderItemStatus'
     );
   };
 
@@ -2033,7 +1762,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       })
     );
 
-    addNotification({
+    addNotificationLocal({
       title: `Kitchen Rejected Item (${target.orderNumber})`,
       message: `${kitchenStaff} rejected ${rejectedItem.quantity}x ${rejectedItem.name} (${formatMoney(deductionAmount)}). Reason: ${reason}`,
       type: 'kitchen',
@@ -2049,6 +1778,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       action: 'KITCHEN_ITEM_REJECTED',
       details: `Marked ${rejectedItem.quantity}x ${rejectedItem.name} as REJECTED (-${formatMoney(deductionAmount)}). Reason: ${reason}`,
     });
+
+    enqueueApiSync(
+      () => apiClient.orders.rejectItem(activeBranchId, orderId, itemIndex, kitchenStaff, reason),
+      'rejectOrderItem'
+    );
   };
 
   const processPayment = (
@@ -2175,7 +1909,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
 
     if (options?.collectedBy && targetOrder) {
-      addNotification({
+      addNotificationLocal({
         title: `Payment Collected (${targetOrder.orderNumber})`,
         message: `${options.collectedBy} collected ${formatMoney(amount)} via ${method.toUpperCase()} for Coupon ${
           targetOrder.serviceCouponCode || targetOrder.orderNumber
@@ -2199,6 +1933,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         expectedCash: isCash ? prev.expectedCash + signedAmt : prev.expectedCash,
       };
     });
+
+    enqueueApiSync(
+      () => apiClient.orders.processPayment(activeBranchId, orderId, method, amount, options),
+      'processPayment'
+    );
   };
 
   const requestApproval = (params: {
@@ -2229,7 +1968,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
     setApprovalRequests((prev) => [newReq, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: `Approval Required: ${params.actionType.replace('_', ' ').toUpperCase()}`,
       message: `${params.requestedBy} requested ${params.details} on ${newReq.orderNumber}. Reason: ${params.reason}`,
       type: 'order',
@@ -2246,17 +1985,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       details: `${params.actionType.toUpperCase()} (${formatMoney(params.amountImpact)}): ${params.details} · Reason: ${params.reason}`,
     });
 
+    enqueueApiSync(
+      () => apiClient.orders.requestApproval(activeBranchId, { ...params, id: newReq.id }),
+      'requestApproval'
+    );
+
     return newReq;
   };
 
-  const cancelOrderControlled = (
+  const applyCancelOrderLocal = (
     orderId: string,
     reason: string,
     actor: string,
     approvedBy: string = 'Manager David Kasambala'
   ) => {
     const target = orders.find((o) => o.id === orderId);
-    if (!target || target.status === 'cancelled') return;
+    if (!target || target.status === 'cancelled') return false;
     const nowIso = new Date().toISOString();
 
     // Controlled Stock Return: Only restore recoverable prepared plates if order had deducted stock and wasn't already served
@@ -2349,6 +2093,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : 'Zero stock deduction occurred (cancelled before kitchen prep).'
       } Reason: ${reason}. Approved by: ${approvedBy}.`,
     });
+
+    return true;
+  };
+
+  const cancelOrderControlled = (
+    orderId: string,
+    reason: string,
+    actor: string,
+    approvedBy: string = 'Manager David Kasambala'
+  ) => {
+    const ok = applyCancelOrderLocal(orderId, reason, actor, approvedBy);
+    if (!ok) return;
+    enqueueApiSync(
+      () => apiClient.orders.cancelControlled(activeBranchId, orderId, reason, actor, approvedBy),
+      'cancelOrderControlled'
+    );
   };
 
   const reviewApprovalRequest = (
@@ -2375,7 +2135,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     if (approve) {
       if (req.actionType === 'cancel_order') {
-        cancelOrderControlled(req.orderId, req.reason, req.requestedBy, managerName);
+        applyCancelOrderLocal(req.orderId, req.reason, req.requestedBy, managerName);
       } else if (req.actionType === 'discount') {
         setOrders((prev) =>
           prev.map((ord) => {
@@ -2426,6 +2186,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       action: approve ? 'APPROVAL_GRANTED' : 'APPROVAL_DENIED',
       details: `${approve ? 'Approved' : 'Rejected'} ${req.actionType} request by ${req.requestedBy} for ${req.orderNumber} (${req.details}).`,
     });
+
+    enqueueApiSync(
+      () => apiClient.orders.reviewApproval(activeBranchId, requestId, approve, managerName),
+      'reviewApprovalRequest'
+    );
   };
 
   const promoteCustomItemToMenu = (
@@ -2473,85 +2238,31 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       details: `Added custom order item "${item.name}" (${formatMoney(item.price)}) from ${ord.orderNumber} into permanent ${category} menu.`,
     });
 
+    enqueueApiSync(
+      () => apiClient.orders.promoteCustomItem(activeBranchId, orderId, itemIndex, category, newMenuItem.id),
+      'promoteCustomItemToMenu'
+    );
+
     return newMenuItem;
   };
 
-  const discrepancies = useMemo<DiscrepancyAlert[]>(() => {
-    const alerts: DiscrepancyAlert[] = [];
-    const now = Date.now();
-
-    orders.forEach((ord) => {
-      if (ord.status === 'cancelled' || ord.status === 'draft') return;
-      const balance = Math.max(0, ord.total - (ord.paidAmount || 0));
-
-      if ((ord.status === 'served' || ord.status === 'completed') && balance > 0) {
-        alerts.push({
-          id: `disc-unpaid-${ord.id}`,
-          severity: 'critical',
-          type: ord.paidAmount > 0 ? 'partial_balance' : 'served_unpaid',
-          orderId: ord.id,
-          orderNumber: ord.orderNumber,
-          title: ord.paidAmount > 0 ? 'Served Order with Partial Payment Balance' : 'Order Marked Served but Unpaid',
-          detail: `${ord.tableNumber || ord.customerName} · Paid ${formatMoney(ord.paidAmount || 0)} of ${formatMoney(ord.total)}`,
-          amountImpact: balance,
-        });
-      }
-
-      ord.items.forEach((it, idx) => {
-        if (it.status === 'rejected') {
-          alerts.push({
-            id: `disc-rej-${ord.id}-${idx}`,
-            severity: 'warning',
-            type: 'rejected_item',
-            orderId: ord.id,
-            orderNumber: ord.orderNumber,
-            title: `Kitchen Rejected Item: ${it.name}`,
-            detail: `Rejected by ${it.rejectedBy || 'Kitchen'} · Reason: ${it.rejectionReason || 'Not specified'}`,
-            amountImpact: it.price * it.quantity,
-          });
-        }
-      });
-
-      const ageMins = Math.floor((now - new Date(ord.createdAt).getTime()) / 60000);
-      if (
-        (ord.status === 'sent_to_kitchen' || ord.status === 'accepted' || ord.status === 'preparing') &&
-        ageMins > 25
-      ) {
-        alerts.push({
-          id: `disc-age-${ord.id}`,
-          severity: 'warning',
-          type: 'overdue_open',
-          orderId: ord.id,
-          orderNumber: ord.orderNumber,
-          title: `Kitchen Ticket Open > 25 mins (${ageMins}m)`,
-          detail: `${ord.kotNumber || ord.orderNumber} (${ord.tableNumber || ord.customerName}) still in ${ord.status.replace('_', ' ')}`,
-          amountImpact: ord.total,
-        });
-      }
-    });
-
-    approvalRequests
-      .filter((r) => r.status === 'pending')
-      .forEach((req) => {
-        alerts.push({
-          id: `disc-apr-${req.id}`,
-          severity: 'warning',
-          type: 'unapproved_adjustment',
-          orderId: req.orderId,
-          orderNumber: req.orderNumber,
-          title: `Pending Manager Approval: ${req.actionType.replace('_', ' ')}`,
-          detail: `${req.requestedBy}: ${req.details}`,
-          amountImpact: req.amountImpact,
-        });
-      });
-
-    return alerts;
-  }, [orders, approvalRequests]);
+  const discrepancies = useMemo<DiscrepancyAlert[]>(
+    () => computeDiscrepanciesPure(orders, approvalRequests, formatMoney),
+    [orders, approvalRequests, currency, currentTenant.currencyRate]
+  );
 
   // Table Management
   const updateTableStatus = (tableId: string, status: Table['status'], waiterId?: string) => {
     setTables((prev) =>
       prev.map((t) => (t.id === tableId ? { ...t, status, assignedWaiterId: waiterId ?? t.assignedWaiterId } : t))
+    );
+    enqueueApiSync(
+      () =>
+        apiClient.orders.updateTable(activeBranchId, tableId, {
+          status,
+          ...(waiterId !== undefined ? { assignedWaiterId: waiterId } : {}),
+        }),
+      'updateTableStatus'
     );
   };
 
@@ -2561,15 +2272,21 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       id: `tbl-${Date.now()}`,
     };
     setTables((prev) => [...prev, newTable]);
+    enqueueApiSync(() => apiClient.orders.addTable(activeBranchId, newTable), 'addTable');
     return newTable;
   };
 
   const updateTable = (updatedTable: Table) => {
     setTables((prev) => prev.map((t) => (t.id === updatedTable.id ? updatedTable : t)));
+    enqueueApiSync(
+      () => apiClient.orders.updateTable(activeBranchId, updatedTable.id, updatedTable),
+      'updateTable'
+    );
   };
 
   const deleteTable = (tableId: string) => {
     setTables((prev) => prev.filter((t) => t.id !== tableId));
+    enqueueApiSync(() => apiClient.orders.deleteTable(activeBranchId, tableId), 'deleteTable');
   };
 
   const releaseTable = (tableId: string) => {
@@ -2580,6 +2297,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : t
       )
     );
+    enqueueApiSync(() => apiClient.orders.releaseTable(activeBranchId, tableId), 'releaseTable');
   };
 
   // Menu Management
@@ -2589,21 +2307,28 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       id: `menu-${Date.now()}`,
     };
     setMenuItems((prev) => [newItem, ...prev]);
+    enqueueApiSync(() => apiClient.menu.add(activeBranchId, newItem), 'addMenuItem');
     return newItem;
   };
 
   const updateMenuItem = (updatedItem: MenuItem) => {
     setMenuItems((prev) => prev.map((i) => (i.id === updatedItem.id ? updatedItem : i)));
+    enqueueApiSync(
+      () => apiClient.menu.update(activeBranchId, updatedItem.id, updatedItem),
+      'updateMenuItem'
+    );
   };
 
   const deleteMenuItem = (itemId: string) => {
     setMenuItems((prev) => prev.filter((i) => i.id !== itemId));
+    enqueueApiSync(() => apiClient.menu.delete(activeBranchId, itemId), 'deleteMenuItem');
   };
 
   const toggleMenuItemAvailability = (itemId: string) => {
     setMenuItems((prev) =>
       prev.map((i) => (i.id === itemId ? { ...i, isAvailable: !i.isAvailable } : i))
     );
+    enqueueApiSync(() => apiClient.menu.toggleAvailability(activeBranchId, itemId), 'toggleMenuItemAvailability');
   };
 
   // Inventory Management & Stock Intake
@@ -2625,9 +2350,13 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return ing;
       })
     );
+    enqueueApiSync(
+      () => apiClient.inventory.updateStock(activeBranchId, ingredientId, deltaUnits),
+      'updateStock'
+    );
   };
 
-  const recordStockIntake = (
+  const applyRecordStockIntakeLocal = (
     ingredientId: string,
     quantityUnits: number,
     cost: number,
@@ -2636,7 +2365,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     expiryDate?: string
   ) => {
     const ing = ingredients.find((i) => i.id === ingredientId);
-    if (!ing || quantityUnits <= 0) return;
+    if (!ing || quantityUnits <= 0) return false;
 
     const todayStr = new Date().toISOString().split('T')[0];
     const incomingUnitCost = quantityUnits > 0 && cost > 0 ? cost / quantityUnits : ing.costPerPurchaseUnit / ing.conversionRatio;
@@ -2708,13 +2437,38 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setStockMovements((prev) => [movement, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: 'Goods Received & Recipe Costs Synced',
       message: `+${quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} (${lotNumber}) received. Unit cost recalculated for live BOM recipes.`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'View Store Inventory',
     });
+
+    return true;
+  };
+
+  const recordStockIntake = (
+    ingredientId: string,
+    quantityUnits: number,
+    cost: number,
+    supplier: string,
+    invoiceRef: string,
+    expiryDate?: string
+  ) => {
+    const ok = applyRecordStockIntakeLocal(ingredientId, quantityUnits, cost, supplier, invoiceRef, expiryDate);
+    if (!ok) return;
+    enqueueApiSync(
+      () =>
+        apiClient.inventory.recordIntake(activeBranchId, ingredientId, {
+          quantityUnits,
+          cost,
+          supplier,
+          invoiceRef,
+          expiryDate,
+        }),
+      'recordStockIntake'
+    );
   };
 
   const recordWastage = (
@@ -2769,13 +2523,23 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setStockMovements((prev) => [movement, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: 'Wastage Recorded',
       message: `${quantityUnits.toLocaleString()} ${ing.consumptionUnit} ${ing.name} logged as waste (${reason}) from ${location === 'kitchen' ? 'Kitchen' : 'Main Store'}.`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'View Spoilage Log',
     });
+
+    enqueueApiSync(
+      () =>
+        apiClient.inventory.recordWastage(activeBranchId, ingredientId, {
+          quantityUnits,
+          reason,
+          location,
+        }),
+      'recordWastage'
+    );
   };
 
   // Method 3: Direct Stock Consumption Without BOM (e.g. deep-fryer oil, cleaning/prep consumables, un-recipied items)
@@ -2834,7 +2598,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setStockMovements((prev) => [movement, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: 'Direct Stock Consumption Logged',
       message: `${params.quantityUnits.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} consumed directly (${formatMoney(costImpact)}).`,
       type: 'stock',
@@ -2842,11 +2606,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       actionLabel: 'View Movement Ledger',
     });
 
+    enqueueApiSync(
+      () =>
+        apiClient.inventory.recordDirectConsumption(activeBranchId, params.ingredientId, {
+          quantityUnits: params.quantityUnits,
+          location: params.location,
+          reason: params.reason,
+          recordedBy: params.recordedBy,
+        }),
+      'recordDirectConsumption'
+    );
+
     return true;
   };
 
   // Stock Transfer between Main Store and Kitchen Floor
-  const transferStock = (params: {
+  const applyTransferStockLocal = (params: {
     ingredientId: string;
     quantityUnits: number;
     fromLocation: 'main_store' | 'kitchen';
@@ -2855,9 +2630,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     shift?: string;
     recordedBy?: string;
     requireKitchenConfirmation?: boolean;
-  }): boolean => {
+  }): { ok: boolean; movement?: StockMovement } => {
     const ing = ingredients.find((i) => i.id === params.ingredientId);
-    if (!ing) return false;
+    if (!ing) return { ok: false };
 
     const available =
       params.fromLocation === 'main_store'
@@ -2865,11 +2640,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         : (ing.kitchenStockUnits ?? 0);
 
     if (params.quantityUnits <= 0 || params.quantityUnits > available) {
-      return false;
+      return { ok: false };
     }
 
     const isToKitchen = params.toLocation === 'kitchen' && params.fromLocation === 'main_store';
-    // If transferring from Main Store to Kitchen, if requireKitchenConfirmation is set or true, treat as in_transit
     const needsConfirmation = isToKitchen && (params.requireKitchenConfirmation ?? false);
 
     setIngredients((prev) =>
@@ -2880,7 +2654,6 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
           if (isToKitchen) {
             sStock -= params.quantityUnits;
-            // Only add to kitchen stock if confirmation is not required
             if (!needsConfirmation) {
               kStock += params.quantityUnits;
             }
@@ -2928,7 +2701,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setStockMovements((prev) => [movement, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: needsConfirmation
         ? 'Requisition Dispatched (In Transit)'
         : isToKitchen
@@ -2942,6 +2715,25 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       actionLabel: needsConfirmation ? 'Confirm Kitchen Receipt' : 'View Stock Balances',
     });
 
+    return { ok: true, movement };
+  };
+
+  const transferStock = (params: {
+    ingredientId: string;
+    quantityUnits: number;
+    fromLocation: 'main_store' | 'kitchen';
+    toLocation: 'main_store' | 'kitchen';
+    reason: string;
+    shift?: string;
+    recordedBy?: string;
+    requireKitchenConfirmation?: boolean;
+  }): boolean => {
+    const res = applyTransferStockLocal(params);
+    if (!res.ok || !res.movement) return false;
+    enqueueApiSync(
+      () => apiClient.inventory.transferStock(activeBranchId, { ...params, id: res.movement!.id }),
+      'transferStock'
+    );
     return true;
   };
 
@@ -2984,13 +2776,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       )
     );
 
-    addNotification({
+    addNotificationLocal({
       title: 'Kitchen Confirmed Stock Receipt',
       message: `${receivedBy} verified and accepted ${transferQty.toLocaleString()} ${ing.consumptionUnit} of ${ing.name} onto Kitchen cooking line.`,
       type: 'transfer',
       actionRole: 'manager',
       actionLabel: 'View Stock',
     });
+
+    enqueueApiSync(
+      () => apiClient.inventory.confirmTransfer(activeBranchId, movementId, receivedBy),
+      'confirmStockTransferReceipt'
+    );
 
     return true;
   };
@@ -3029,6 +2826,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       )
     );
 
+    enqueueApiSync(
+      () => apiClient.inventory.rejectTransfer(activeBranchId, movementId, reason),
+      'rejectStockTransfer'
+    );
+
     return true;
   };
 
@@ -3038,42 +2840,42 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const newMovements: StockMovement[] = [];
     let itemsReturnedCount = 0;
 
-    setIngredients((prev) => {
-      return prev.map((ing) => {
-        const kQty = ing.kitchenStockUnits ?? 0;
-        if (kQty > 0) {
-          itemsReturnedCount++;
-          const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
-          newMovements.push({
-            id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-            ingredientId: ing.id,
-            ingredientName: ing.name,
-            type: 'stock_transfer',
-            quantityDelta: -kQty,
-            unit: ing.consumptionUnit,
-            costImpact: Math.round(unitCost * kQty),
-            date: today,
-            reference: `TRF-CLOSE-${Math.floor(1000 + Math.random() * 9000)}`,
-            reason: 'Daily Shift Close: All kitchen prep stock returned to Main Storage Room',
-            recordedBy: staffName || 'David Kasambala (Manager)',
-            sourceLocation: 'kitchen',
-            destinationLocation: 'main_store',
-          });
+    const updatedIngredients = ingredients.map((ing) => {
+      const kQty = ing.kitchenStockUnits ?? 0;
+      if (kQty > 0) {
+        itemsReturnedCount++;
+        const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+        newMovements.push({
+          id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          ingredientId: ing.id,
+          ingredientName: ing.name,
+          type: 'stock_transfer',
+          quantityDelta: -kQty,
+          unit: ing.consumptionUnit,
+          costImpact: Math.round(unitCost * kQty),
+          date: today,
+          reference: `TRF-CLOSE-${Math.floor(1000 + Math.random() * 9000)}`,
+          reason: 'Daily Shift Close: All kitchen prep stock returned to Main Storage Room',
+          recordedBy: staffName || 'David Kasambala (Manager)',
+          sourceLocation: 'kitchen',
+          destinationLocation: 'main_store',
+        });
 
-          return {
-            ...ing,
-            storeStockUnits: (ing.storeStockUnits ?? 0) + kQty,
-            kitchenStockUnits: 0,
-            currentStockUnits: (ing.storeStockUnits ?? 0) + kQty,
-          };
-        }
-        return ing;
-      });
+        return {
+          ...ing,
+          storeStockUnits: (ing.storeStockUnits ?? 0) + kQty,
+          kitchenStockUnits: 0,
+          currentStockUnits: (ing.storeStockUnits ?? 0) + kQty,
+        };
+      }
+      return ing;
     });
+
+    setIngredients(updatedIngredients);
 
     if (newMovements.length > 0) {
       setStockMovements((prev) => [...newMovements, ...prev]);
-      addNotification({
+      addNotificationLocal({
         title: 'Daily Shift Close Completed',
         message: `All ${itemsReturnedCount} kitchen ingredients reconciled and returned to Main Store for safe overnight storage.`,
         type: 'transfer',
@@ -3081,6 +2883,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         actionLabel: 'View Final Stock',
       });
     }
+
+    enqueueApiSync(
+      () => apiClient.inventory.returnAllKitchenStock(activeBranchId, staffName),
+      'returnAllKitchenStockToStore'
+    );
   };
 
   const addNewIngredient = (ingData: Omit<Ingredient, 'id'>) => {
@@ -3116,7 +2923,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setStockMovements((prev) => [movement, ...prev]);
     }
 
-    addNotification({
+    addNotificationLocal({
       title: 'New Raw Ingredient Added',
       message: `${newIng.name} catalogued with ${newIng.currentStockUnits.toLocaleString()} ${newIng.consumptionUnit} initial stock.`,
       type: 'stock',
@@ -3124,13 +2931,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       actionLabel: 'View Stock',
     });
 
+    enqueueApiSync(() => apiClient.inventory.addIngredient(activeBranchId, newIng), 'addNewIngredient');
+
     return newIng;
   };
 
   const saveRecipe = (recipe: Recipe, auditLog?: Omit<BomAuditLog, 'id' | 'timestamp'>) => {
     setRecipes((prev) => {
       const index = prev.findIndex((r) => r.id === recipe.id || (recipe.menuItemId && r.menuItemId === recipe.menuItemId));
-      let updatedRecipe = { ...recipe };
+      const updatedRecipe = { ...recipe };
 
       if (index >= 0) {
         const existing = prev[index];
@@ -3182,13 +2991,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setBomAuditLogs((prev) => [newLog, ...prev]);
     }
 
-    addNotification({
+    addNotificationLocal({
       title: 'BOM Recipe Approved & Saved',
       message: `Bill of Materials for "${recipe.name || 'Menu Dish'}" saved (v${recipe.version || 1}) with ${recipe.ingredients.length} ingredients linked.`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'View Recipe BOM',
     });
+
+    enqueueApiSync(
+      () => apiClient.inventory.saveRecipe(activeBranchId, recipe, auditLog),
+      'saveRecipe'
+    );
   };
 
   const deleteRecipe = (recipeId: string) => {
@@ -3196,6 +3010,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setMenuItems((prev) =>
       prev.map((item) => (item.recipeId === recipeId ? { ...item, recipeId: undefined } : item))
     );
+    enqueueApiSync(() => apiClient.inventory.deleteRecipe(activeBranchId, recipeId), 'deleteRecipe');
   };
 
   // ATOMIC VALIDATION: Check Kitchen Stock & Prepared Sub-Recipe Batches for Production
@@ -3203,139 +3018,19 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     recipeId: string,
     batches: number = 1,
     actualInputs?: Record<string, number>
-  ) => {
-    const recipe = recipes.find((r) => r.id === recipeId);
-    if (!recipe) {
-      return { canCook: false, missingItems: [], totalCost: 0, targetYieldPlates: 0 };
-    }
-
-    const multiplier = Math.max(0.1, batches);
-    const targetYieldPlates = Math.round((recipe.batchYieldPlates || 1) * multiplier);
-    let totalCost = 0;
-
-    const missingItems: MissingStockItem[] = recipe.ingredients.map((ri) => {
-      const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
-
-      // Sub-Recipe Input Line (resolves against prepared SubRecipeStockBatch, never double-deducting raw!)
-      if (ri.isSubRecipe && ri.subRecipeId) {
-        const subRec = recipes.find((r) => r.id === ri.subRecipeId);
-        const subName = subRec?.name || 'Prepared Sub-Recipe';
-        const subUnit = ri.subRecipeUnit || subRec?.yieldUnit || 'portions';
-        const baseSubReq =
-          (ri.subRecipeQuantity ?? ri.batchQuantity ?? (ri.quantity * (recipe.batchYieldPlates || 1))) *
-          multiplier;
-        const standardReq = Math.round(baseSubReq / yieldFactor);
-        const requiredQty =
-          actualInputs && actualInputs[ri.subRecipeId] !== undefined
-            ? Math.max(0, Math.round(actualInputs[ri.subRecipeId]))
-            : standardReq;
-
-        const availableSubBatches = subRecipeBatches.filter(
-          (sb) =>
-            sb.subRecipeId === ri.subRecipeId &&
-            sb.remainingQty > 0 &&
-            sb.status !== 'reversed' &&
-            sb.status !== 'expired'
-        );
-        const availableKitchenQty = Math.round(
-          availableSubBatches.reduce((sum, sb) => sum + sb.remainingQty, 0)
-        );
-        const subUnitCost =
-          availableSubBatches.length > 0
-            ? availableSubBatches[0].costPerUnit
-            : computeRecipeUnitCost(ri.subRecipeId).unitCost;
-
-        totalCost += Math.round(requiredQty * subUnitCost);
-
-        let status: 'not_transferred' | 'insufficient' | 'ok' = 'ok';
-        let shortageQty = 0;
-        if (availableKitchenQty <= 0) {
-          status = 'not_transferred';
-          shortageQty = requiredQty;
-        } else if (availableKitchenQty < requiredQty) {
-          status = 'insufficient';
-          shortageQty = requiredQty - availableKitchenQty;
-        }
-
-        return {
-          ingredientId: ri.subRecipeId,
-          ingredientName: `${subName} (Prepared Sub-Recipe)`,
-          requiredQty,
-          availableKitchenQty,
-          storeAvailableQty: 0,
-          inTransitQty: 0,
-          unit: subUnit,
-          status,
-          shortageQty,
-          isSubRecipe: true,
-          subRecipeId: ri.subRecipeId,
-        };
-      }
-
-      // Raw Ingredient Input Line
-      const ing = ingredients.find((i) => i.id === ri.ingredientId);
-      const ingredientName = ing ? ing.name : 'Unknown Ingredient';
-      const unit = ing ? ing.consumptionUnit : 'units';
-      const unitCost = ing ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
-
-      const rawRequired = (ri.batchQuantity ?? (ri.quantity * (recipe.batchYieldPlates || 1))) * multiplier;
-      const standardReq = Math.round(rawRequired / yieldFactor);
-      const requiredQty =
-        actualInputs && actualInputs[ri.ingredientId] !== undefined
-          ? Math.max(0, Math.round(actualInputs[ri.ingredientId]))
-          : standardReq;
-
-      const availableKitchenQty = ing?.kitchenStockUnits ?? 0;
-      const storeAvailableQty = ing?.storeStockUnits ?? 0;
-      const inTransitQty = stockMovements
-        .filter((m) => m.ingredientId === ri.ingredientId && m.transferStatus === 'in_transit')
-        .reduce((sum, m) => sum + Math.abs(m.quantityDelta), 0);
-
-      const subIng = ri.substituteIngredientId
-        ? ingredients.find((i) => i.id === ri.substituteIngredientId)
-        : undefined;
-
-      totalCost += Math.round(requiredQty * unitCost);
-
-      let status: 'not_transferred' | 'insufficient' | 'ok' = 'ok';
-      let shortageQty = 0;
-
-      if (availableKitchenQty <= 0) {
-        status = 'not_transferred';
-        shortageQty = requiredQty;
-      } else if (availableKitchenQty < requiredQty) {
-        status = 'insufficient';
-        shortageQty = requiredQty - availableKitchenQty;
-      }
-
-      return {
-        ingredientId: ri.ingredientId,
-        ingredientName,
-        requiredQty,
-        availableKitchenQty,
-        storeAvailableQty,
-        inTransitQty,
-        unit,
-        status,
-        shortageQty,
-        substituteIngredientId: subIng?.id,
-        substituteIngredientName: subIng?.name,
-        substituteKitchenQty: subIng?.kitchenStockUnits ?? 0,
-      };
-    });
-
-    const canCook = missingItems.every((item) => item.status === 'ok');
-
-    return {
-      canCook,
-      missingItems,
-      totalCost,
-      targetYieldPlates,
-    };
-  };
+  ) =>
+    validateBatchKitchenStockPure(
+      recipeId,
+      batches,
+      recipes,
+      ingredients,
+      stockMovements,
+      subRecipeBatches,
+      actualInputs
+    );
 
   // COOK BATCH PRODUCTION: Supports Finished Batches, Sub-Recipes, and Method 2 Semi-Standardized Input Overrides
-  const cookBatchProduction = (params: {
+  const applyCookBatchProductionLocal = (params: {
     recipeId: string;
     batches: number;
     actualPlatesProduced?: number;
@@ -3381,7 +3076,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       };
       setBlockedCookingAttempts((prev) => [blockedAttempt, ...prev]);
 
-      addNotification({
+      addNotificationLocal({
         title: 'Batch Cooking Blocked',
         message: `Attempt to cook ${recipe.name} blocked: missing raw stock or sub-recipe batch in Kitchen.`,
         type: 'kitchen',
@@ -3429,117 +3124,112 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     });
 
-    // 1. Deduct Sub-Recipe Inputs (FEFO)
+    // 1. Deduct Sub-Recipe Inputs (FEFO) cleanly outside state updater
+    let nextSubBatches = subRecipeBatches.map((b) => ({ ...b }));
     if (subRequirements.length > 0) {
-      setSubRecipeBatches((prev) => {
-        const copy = prev.map((b) => ({ ...b }));
-        subRequirements.forEach((req) => {
-          let rem = req.requiredQty;
-          const candidates = copy
-            .filter(
-              (b) =>
-                b.subRecipeId === req.subRecipeId &&
-                b.remainingQty > 0 &&
-                b.status !== 'reversed' &&
-                b.status !== 'expired'
-            )
-            .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
+      subRequirements.forEach((req) => {
+        let rem = req.requiredQty;
+        const candidates = nextSubBatches
+          .filter(
+            (b) =>
+              b.subRecipeId === req.subRecipeId &&
+              b.remainingQty > 0 &&
+              b.status !== 'reversed' &&
+              b.status !== 'expired'
+          )
+          .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
 
-          let subLineCost = 0;
-          for (const sb of candidates) {
-            if (rem <= 0) break;
-            const take = Math.min(sb.remainingQty, rem);
-            sb.remainingQty = Math.round((sb.remainingQty - take) * 100) / 100;
-            sb.status =
-              sb.remainingQty <= 0
-                ? 'consumed'
-                : sb.remainingQty <= sb.producedQty * 0.2
-                ? 'low'
-                : 'available';
-            subLineCost += Math.round(take * sb.costPerUnit);
-            rem -= take;
-          }
+        let subLineCost = 0;
+        for (const sb of candidates) {
+          if (rem <= 0) break;
+          const take = Math.min(sb.remainingQty, rem);
+          sb.remainingQty = Math.round((sb.remainingQty - take) * 100) / 100;
+          sb.status =
+            sb.remainingQty <= 0
+              ? 'consumed'
+              : sb.remainingQty <= sb.producedQty * 0.2
+              ? 'low'
+              : 'available';
+          subLineCost += Math.round(take * sb.costPerUnit);
+          rem -= take;
+        }
 
-          consumedDetails.push({
-            ingredientId: req.ingredientId,
-            ingredientName: req.ingredientName,
-            quantity: req.requiredQty,
-            unit: req.unit,
-            cost: subLineCost,
-            isSubRecipe: true,
-            subRecipeId: req.subRecipeId,
-          });
-
-          newMovements.push({
-            id: `sm-prod-sub-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-            ingredientId: req.ingredientId,
-            ingredientName: req.ingredientName,
-            type: 'production_issue',
-            quantityDelta: -req.requiredQty,
-            unit: req.unit,
-            costImpact: subLineCost,
-            date: today,
-            reference: batchNumber,
-            batchNumber,
-            recipeId: recipe.id,
-            reason: `Issued prepared sub-recipe into ${batchNumber} (${recipe.name})`,
-            recordedBy: params.chefName || 'Executive Chef Juma',
-            sourceLocation: 'kitchen',
-          });
+        consumedDetails.push({
+          ingredientId: req.ingredientId,
+          ingredientName: req.ingredientName,
+          quantity: req.requiredQty,
+          unit: req.unit,
+          cost: subLineCost,
+          isSubRecipe: true,
+          subRecipeId: req.subRecipeId,
         });
-        return copy;
+
+        newMovements.push({
+          id: `sm-prod-sub-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+          ingredientId: req.ingredientId,
+          ingredientName: req.ingredientName,
+          type: 'production_issue',
+          quantityDelta: -req.requiredQty,
+          unit: req.unit,
+          costImpact: subLineCost,
+          date: today,
+          reference: batchNumber,
+          batchNumber,
+          recipeId: recipe.id,
+          reason: `Issued prepared sub-recipe into ${batchNumber} (${recipe.name})`,
+          recordedBy: params.chefName || 'Executive Chef Juma',
+          sourceLocation: 'kitchen',
+        });
       });
     }
 
     // 2. Deduct Raw Ingredients from Kitchen Stock + FEFO/FIFO lots
     if (rawRequirements.length > 0) {
-      setIngredients((prev) => {
-        const copy = [...prev];
-        rawRequirements.forEach((req) => {
-          const idx = copy.findIndex((ing) => ing.id === req.ingredientId);
-          if (idx >= 0) {
-            const ing = copy[idx];
-            const kStock = Math.max(0, (ing.kitchenStockUnits ?? 0) - req.requiredQty);
-            const sStock = ing.storeStockUnits ?? 0;
-            const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
-            const lineCost = Math.round(unitCost * req.requiredQty);
+      const nextIngredients = [...ingredients];
+      rawRequirements.forEach((req) => {
+        const idx = nextIngredients.findIndex((ing) => ing.id === req.ingredientId);
+        if (idx >= 0) {
+          const ing = nextIngredients[idx];
+          const kStock = Math.max(0, (ing.kitchenStockUnits ?? 0) - req.requiredQty);
+          const sStock = ing.storeStockUnits ?? 0;
+          const unitCost = ing.costPerPurchaseUnit / ing.conversionRatio;
+          const lineCost = Math.round(unitCost * req.requiredQty);
 
-            consumeStockLots(ing.id, req.requiredQty, 'kitchen');
+          consumeStockLots(ing.id, req.requiredQty, 'kitchen');
 
-            consumedDetails.push({
-              ingredientId: ing.id,
-              ingredientName: ing.name,
-              quantity: req.requiredQty,
-              unit: ing.consumptionUnit,
-              cost: lineCost,
-            });
+          consumedDetails.push({
+            ingredientId: ing.id,
+            ingredientName: ing.name,
+            quantity: req.requiredQty,
+            unit: ing.consumptionUnit,
+            cost: lineCost,
+          });
 
-            copy[idx] = {
-              ...ing,
-              kitchenStockUnits: kStock,
-              currentStockUnits: kStock + sStock,
-            };
+          nextIngredients[idx] = {
+            ...ing,
+            kitchenStockUnits: kStock,
+            currentStockUnits: kStock + sStock,
+          };
 
-            newMovements.push({
-              id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-              ingredientId: ing.id,
-              ingredientName: ing.name,
-              type: 'production_issue',
-              quantityDelta: -req.requiredQty,
-              unit: ing.consumptionUnit,
-              costImpact: lineCost,
-              date: today,
-              reference: batchNumber,
-              batchNumber,
-              recipeId: recipe.id,
-              reason: `Batch production ${batchNumber} (${actualOutputQty.toLocaleString()} ${recipe.yieldUnit || 'plates'}) of ${recipe.name || 'Dish'}`,
-              recordedBy: params.chefName || 'Executive Chef Juma',
-              sourceLocation: 'kitchen',
-            });
-          }
-        });
-        return copy;
+          newMovements.push({
+            id: `sm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            ingredientId: ing.id,
+            ingredientName: ing.name,
+            type: 'production_issue',
+            quantityDelta: -req.requiredQty,
+            unit: ing.consumptionUnit,
+            costImpact: lineCost,
+            date: today,
+            reference: batchNumber,
+            batchNumber,
+            recipeId: recipe.id,
+            reason: `Batch production ${batchNumber} (${actualOutputQty.toLocaleString()} ${recipe.yieldUnit || 'plates'}) of ${recipe.name || 'Dish'}`,
+            recordedBy: params.chefName || 'Executive Chef Juma',
+            sourceLocation: 'kitchen',
+          });
+        }
       });
+      setIngredients(nextIngredients);
     }
 
     // 3. Output Stage: Sub-Recipe Stock Batch OR Finished Prepared Dish Pool
@@ -3561,7 +3251,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         preparedBy: params.chefName || 'Executive Chef Juma',
         status: 'available',
       };
-      setSubRecipeBatches((prev) => [newSubBatch, ...prev]);
+      nextSubBatches = [newSubBatch, ...nextSubBatches];
 
       newMovements.push({
         id: `sm-out-${Date.now()}`,
@@ -3610,6 +3300,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       });
     }
 
+    if (subRequirements.length > 0 || recipe.isSubRecipe) {
+      setSubRecipeBatches(nextSubBatches);
+    }
+
     if (newMovements.length > 0) {
       setStockMovements((prev) => [...newMovements, ...prev]);
     }
@@ -3645,7 +3339,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setProductionLogs((prev) => [newProdLog, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: recipe.isSubRecipe ? 'Sub-Recipe Batch Prepared' : 'Batch Production Complete',
       message: `${batchNumber}: Produced ${actualOutputQty.toLocaleString()} ${recipe.yieldUnit || 'plates'} of ${recipe.name}. Raw & sub-recipe stock updated.`,
       type: 'kitchen',
@@ -3654,6 +3348,28 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     });
 
     return { success: true, log: newProdLog };
+  };
+
+  const cookBatchProduction = (params: {
+    recipeId: string;
+    batches: number;
+    actualPlatesProduced?: number;
+    actualInputs?: Record<string, number>;
+    chefName?: string;
+    managerOverride?: boolean;
+    overrideReason?: string;
+  }): { success: boolean; error?: string; log?: ProductionLog } => {
+    const res = applyCookBatchProductionLocal(params);
+    enqueueApiSync(
+      () =>
+        apiClient.inventory.cookBatchProduction(activeBranchId, {
+          ...params,
+          id: res.log?.id,
+          batchNumber: res.log?.batchNumber,
+        }),
+      'cookBatchProduction'
+    );
+    return res;
   };
 
   // Controlled Production Reversal (preserves complete audit trail, never deletes records)
@@ -3774,13 +3490,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       details: `Controlled reversal of ${log.batchNumber || log.dishName} (${Math.round(recoverableRatio * 100)}% unused output restored). Reason: ${reason}`,
     });
 
-    addNotification({
+    addNotificationLocal({
       title: 'Production Batch Reversed',
       message: `${log.batchNumber || log.dishName} reversed by ${actor}. Audit trail preserved.`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'View Movement Ledger',
     });
+
+    enqueueApiSync(
+      () => apiClient.inventory.reverseProductionBatch(activeBranchId, productionLogId, reason, actor),
+      'reverseProductionBatch'
+    );
 
     return { success: true };
   };
@@ -3796,7 +3517,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const transferQty = Math.min(item.shortageQty, availableInStore);
 
       if (transferQty > 0) {
-        transferStock({
+        const res = applyTransferStockLocal({
           ingredientId: item.ingredientId,
           quantityUnits: transferQty,
           fromLocation: 'main_store',
@@ -3805,18 +3526,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           shift,
           recordedBy: 'Kitchen Requisition Engine',
         });
-        transfersDone++;
+        if (res.ok) transfersDone++;
       }
     });
 
     if (transfersDone > 0) {
-      addNotification({
+      addNotificationLocal({
         title: 'Requisition Issued to Kitchen',
         message: `Transferred missing ingredients (${transfersDone} items) from Main Store to Kitchen Floor.`,
         type: 'transfer',
         actionRole: 'kitchen',
         actionLabel: 'Cook Batch',
       });
+      enqueueApiSync(
+        () => apiClient.inventory.requisitionMissing(activeBranchId, missingItems, shift),
+        'createRequisitionForMissing'
+      );
       return true;
     }
     return false;
@@ -3834,198 +3559,8 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       modifierNames?: string[];
       substituteOverrides?: Record<string, string>;
     }>
-  ): ScaledRequirementsResult => {
-    const rawAccumulator = new Map<
-      string,
-      { requiredQty: number; substituteOverrideId?: string; defaultSubstituteId?: string }
-    >();
-    const subAccumulator = new Map<string, { requiredQty: number; unit: string }>();
-
-    items.forEach((item) => {
-      const portions = Math.max(0, item.portions || 0);
-      if (portions <= 0) return;
-
-      const recipe =
-        (item.recipeId ? recipes.find((r) => r.id === item.recipeId) : undefined) ||
-        (item.menuItemId ? recipes.find((r) => r.menuItemId === item.menuItemId) : undefined);
-
-      // Direct-stock menu item fallback (e.g. Chilled Soda Bottle)
-      if (!recipe) {
-        if (item.menuItemId === 'menu-soda-bottle') {
-          const cur = rawAccumulator.get('ing-soda') || { requiredQty: 0 };
-          rawAccumulator.set('ing-soda', { ...cur, requiredQty: cur.requiredQty + portions });
-        }
-        return;
-      }
-
-      const batchYield = Math.max(1, recipe.batchYieldPlates || 1);
-      const variant = item.portionName
-        ? recipe.variants?.find((v) => v.name.toLowerCase() === item.portionName?.toLowerCase())
-        : undefined;
-      const portionMultiplier = variant?.portionMultiplier ?? 1;
-
-      recipe.ingredients.forEach((ri) => {
-        const yieldFactor = Math.max(0.1, (ri.yieldPercentage || 100) / 100);
-
-        if (ri.isSubRecipe && ri.subRecipeId) {
-          const perUnit =
-            ri.subRecipeQuantity && batchYield > 0
-              ? ri.subRecipeQuantity / batchYield
-              : ri.quantity;
-          const totalSubQty = (perUnit * portionMultiplier / yieldFactor) * portions;
-          const sr = recipes.find((r) => r.id === ri.subRecipeId);
-          const cur = subAccumulator.get(ri.subRecipeId) || {
-            requiredQty: 0,
-            unit: ri.subRecipeUnit || sr?.yieldUnit || 'portions',
-          };
-          subAccumulator.set(ri.subRecipeId, {
-            ...cur,
-            requiredQty: cur.requiredQty + totalSubQty,
-          });
-          return;
-        }
-
-        const override = variant?.ingredientOverrides?.find((ov) => ov.ingredientId === ri.ingredientId);
-        const perUnit = override
-          ? override.quantity
-          : (ri.batchQuantity !== undefined ? ri.batchQuantity / batchYield : ri.quantity) * portionMultiplier;
-        const totalRaw = (perUnit / yieldFactor) * portions;
-        const chosenId = item.substituteOverrides?.[ri.ingredientId] || ri.ingredientId;
-        const cur = rawAccumulator.get(chosenId) || {
-          requiredQty: 0,
-          defaultSubstituteId: ri.substituteIngredientId,
-          substituteOverrideId: item.substituteOverrides?.[ri.ingredientId],
-        };
-        rawAccumulator.set(chosenId, {
-          ...cur,
-          requiredQty: cur.requiredQty + totalRaw,
-        });
-      });
-
-      // Apply modifier BOM deltas
-      const modLowers = (item.modifierNames || []).map((m) => m.toLowerCase());
-      (recipe.modifierRules || []).forEach((rule) => {
-        const ruleLower = rule.modifierName.toLowerCase();
-        if (!modLowers.some((m) => m.includes(ruleLower) || ruleLower.includes(m))) return;
-        const targetIng = ingredients.find((i) => i.id === rule.ingredientId);
-        const deltaInBase =
-          targetIng && rule.unit
-            ? convertQuantity(rule.quantityDelta, rule.unit, targetIng.consumptionUnit)
-            : rule.quantityDelta;
-        const cur = rawAccumulator.get(rule.ingredientId) || { requiredQty: 0 };
-        if (rule.action === 'add') {
-          rawAccumulator.set(rule.ingredientId, {
-            ...cur,
-            requiredQty: cur.requiredQty + deltaInBase * portions,
-          });
-        } else if (rule.action === 'remove') {
-          rawAccumulator.set(rule.ingredientId, {
-            ...cur,
-            requiredQty: Math.max(0, cur.requiredQty - deltaInBase * portions),
-          });
-        }
-      });
-    });
-
-    const rows: ScaledRequirementRow[] = [];
-
-    subAccumulator.forEach((entry, subRecipeId) => {
-      const subRec = recipes.find((r) => r.id === subRecipeId);
-      const activeBatches = subRecipeBatches.filter(
-        (sb) => sb.subRecipeId === subRecipeId && sb.remainingQty > 0 && sb.status !== 'reversed' && sb.status !== 'expired'
-      );
-      const availPool = Math.round(activeBatches.reduce((s, b) => s + b.remainingQty, 0) * 100) / 100;
-      const unitCost =
-        activeBatches.length > 0 ? activeBatches[0].costPerUnit : computeRecipeUnitCost(subRecipeId).unitCost;
-      const requiredQty = Math.round(entry.requiredQty * 100) / 100;
-      const shortage = Math.max(0, Math.round((requiredQty - availPool) * 100) / 100);
-
-      rows.push({
-        key: `sub:${subRecipeId}`,
-        ingredientId: subRecipeId,
-        ingredientName: `${subRec?.name || subRecipeId} (Sub-Recipe Pool)`,
-        isSubRecipe: true,
-        subRecipeId,
-        requiredQty,
-        unit: entry.unit,
-        availableKitchenQty: availPool,
-        availableStoreQty: 0,
-        reservedQty: 0,
-        totalAvailableQty: availPool,
-        netUnreservedTotalQty: availPool,
-        kitchenShortageQty: shortage,
-        globalShortageQty: shortage,
-        status: shortage <= 0 ? 'ok' : 'shortage',
-        unitCost,
-        estimatedCost: Math.round(requiredQty * unitCost),
-      });
-    });
-
-    rawAccumulator.forEach((entry, ingId) => {
-      const ing = ingredients.find((i) => i.id === ingId);
-      if (!ing) return;
-      const requiredQty = Math.round(entry.requiredQty);
-      const availKitchen = ing.kitchenStockUnits ?? 0;
-      const availStore = ing.storeStockUnits ?? 0;
-      const reservedQty = ing.reservedStockUnits ?? 0;
-      const totalAvail = availKitchen + availStore;
-      const netUnreserved = Math.max(0, totalAvail - reservedQty);
-      const kitchenShortage = Math.max(0, requiredQty - availKitchen);
-      const globalShortage = Math.max(0, requiredQty - netUnreserved);
-      const unitCost = ing.conversionRatio > 0 ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
-      const subIng = entry.defaultSubstituteId
-        ? ingredients.find((i) => i.id === entry.defaultSubstituteId)
-        : undefined;
-
-      rows.push({
-        key: `raw:${ingId}`,
-        ingredientId: ingId,
-        ingredientName: ing.name,
-        isSubRecipe: false,
-        requiredQty,
-        unit: ing.consumptionUnit,
-        availableKitchenQty: availKitchen,
-        availableStoreQty: availStore,
-        reservedQty,
-        totalAvailableQty: totalAvail,
-        netUnreservedTotalQty: netUnreserved,
-        kitchenShortageQty: kitchenShortage,
-        globalShortageQty: globalShortage,
-        status:
-          kitchenShortage <= 0 && globalShortage <= 0
-            ? 'ok'
-            : globalShortage <= 0
-            ? 'kitchen_short_store_ok'
-            : 'shortage',
-        unitCost,
-        estimatedCost: Math.round(requiredQty * unitCost),
-        substituteIngredientId: subIng?.id,
-        substituteIngredientName: subIng?.name,
-        substituteAvailableQty: subIng ? subIng.currentStockUnits : undefined,
-      });
-    });
-
-    const totalPortions = items.reduce((s, it) => s + Math.max(0, it.portions || 0), 0);
-    let maxProducible = totalPortions > 0 ? Infinity : 0;
-    if (totalPortions > 0) {
-      rows.forEach((r) => {
-        if (r.requiredQty > 0) {
-          const ratio = r.netUnreservedTotalQty / r.requiredQty;
-          const cap = Math.floor(totalPortions * ratio);
-          if (cap < maxProducible) maxProducible = cap;
-        }
-      });
-    }
-    if (!Number.isFinite(maxProducible)) maxProducible = totalPortions;
-
-    return {
-      rows,
-      canProduceFromKitchen: rows.every((r) => r.kitchenShortageQty <= 0),
-      canProduceWithStore: rows.every((r) => r.globalShortageQty <= 0),
-      totalEstimatedCost: rows.reduce((s, r) => s + r.estimatedCost, 0),
-      maxProduciblePortions: Math.max(0, maxProducible),
-    };
-  };
+  ): ScaledRequirementsResult =>
+    calculateScaledRequirementsPure(items, recipes, menuItems, ingredients, subRecipeBatches);
 
   const updateRecipeStatus = (
     recipeId: string,
@@ -4073,9 +3608,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       action: 'RECIPE_STATUS_CHANGED',
       details: `Recipe ${recipeId} transitioned to "${status}". ${note || ''}`,
     });
+
+    enqueueApiSync(
+      () => apiClient.inventory.updateRecipeStatus(activeBranchId, recipeId, status, actor, note),
+      'updateRecipeStatus'
+    );
   };
 
-  const createProductionOrder = (params: {
+  const applyCreateProductionOrderLocal = (params: {
     recipeId: string;
     targetPortions: number;
     sourceType?: ProductionOrder['sourceType'];
@@ -4100,7 +3640,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const today = new Date().toISOString().split('T')[0];
     const nowStr = `${today} ${new Date().toTimeString().substring(0, 5)}`;
     const newOrder: ProductionOrder = {
-      id: `po-kit-${Date.now()}`,
+      id: `po-kit-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
       orderNumber: `PRD-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
       sourceType: params.sourceType || 'manager_plan',
       cateringOrderId: params.cateringOrderId,
@@ -4137,7 +3677,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setProductionOrders((prev) => [newOrder, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: `Production Order ${newOrder.orderNumber}`,
       message: `Scheduled ${newOrder.targetPortions} ${newOrder.yieldUnit} of ${newOrder.recipeName} (${newOrder.station.replace('_', ' ')}).`,
       type: 'kitchen',
@@ -4145,6 +3685,26 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       actionLabel: 'Open Production Orders',
     });
 
+    return newOrder;
+  };
+
+  const createProductionOrder = (params: {
+    recipeId: string;
+    targetPortions: number;
+    sourceType?: ProductionOrder['sourceType'];
+    productionModel?: ProductionModel;
+    assignedTo?: string;
+    scheduledFor?: string;
+    cateringOrderId?: string;
+    cateringOrderNumber?: string;
+    substituteOverrides?: Record<string, string>;
+  }): ProductionOrder | null => {
+    const newOrder = applyCreateProductionOrderLocal(params);
+    if (!newOrder) return null;
+    enqueueApiSync(
+      () => apiClient.inventory.createProductionOrder(activeBranchId, { ...params, id: newOrder.id }),
+      'createProductionOrder'
+    );
     return newOrder;
   };
 
@@ -4189,11 +3749,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             : po
         )
       );
+      enqueueApiSync(
+        () => apiClient.inventory.advanceProductionOrderStage(activeBranchId, orderId, nextStage, options),
+        'advanceProductionOrderStage'
+      );
       return { success: true };
     }
 
     if (nextStage === 'ingredients_issued') {
-      // Auto-transfer from Main Store to Kitchen if Kitchen lacks stock
       const scaled = calculateScaledRequirements([
         { recipeId: order.recipeId, portions: order.targetPortions },
       ]);
@@ -4208,7 +3771,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         .forEach((r) => {
           const transferAmt = Math.min(r.kitchenShortageQty, r.availableStoreQty);
           if (transferAmt > 0) {
-            transferStock({
+            applyTransferStockLocal({
               ingredientId: r.ingredientId,
               quantityUnits: transferAmt,
               fromLocation: 'main_store',
@@ -4233,12 +3796,20 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             : po
         )
       );
+      enqueueApiSync(
+        () => apiClient.inventory.advanceProductionOrderStage(activeBranchId, orderId, nextStage, options),
+        'advanceProductionOrderStage'
+      );
       return { success: true };
     }
 
     if (nextStage === 'in_production') {
       setProductionOrders((prev) =>
         prev.map((po) => (po.id === orderId ? { ...po, status: 'in_production' } : po))
+      );
+      enqueueApiSync(
+        () => apiClient.inventory.advanceProductionOrderStage(activeBranchId, orderId, nextStage, options),
+        'advanceProductionOrderStage'
       );
       return { success: true };
     }
@@ -4250,7 +3821,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const actualPortions = options?.actualPortions ?? order.targetPortions;
       const wastagePortions = options?.wastagePortions ?? 0;
 
-      const cookRes = cookBatchProduction({
+      const cookRes = applyCookBatchProductionLocal({
         recipeId: recipe.id,
         batches,
         actualPlatesProduced: actualPortions,
@@ -4292,19 +3863,53 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       );
 
       if (wastagePortions > 0 && recipe.menuItemId) {
-        handleLeftoverPreparedPlates(
-          recipe.menuItemId,
-          Math.min(wastagePortions, actualPortions),
-          'log_as_waste',
-          options?.wastageReason || `Production loss on ${order.orderNumber}`
+        setPreparedDishStocks((prev) =>
+          prev.map((p) =>
+            p.menuItemId === recipe.menuItemId
+              ? {
+                  ...p,
+                  preparedPlatesAvailable: Math.max(0, p.preparedPlatesAvailable - Math.min(wastagePortions, actualPortions)),
+                  status: p.preparedPlatesAvailable - Math.min(wastagePortions, actualPortions) === 0 ? 'out_of_stock' : p.status,
+                }
+              : p
+          )
         );
+        const wasteImpact = Math.round(
+          Math.min(wastagePortions, actualPortions) * (cookRes.log?.costPerPlate || computeRecipeUnitCost(recipe.id).perPlateCost)
+        );
+        setStockMovements((prev) => [
+          {
+            id: `sm-${Date.now()}-leftover`,
+            ingredientId: recipe.ingredients[0]?.ingredientId || 'ing-rice',
+            ingredientName: `${order.recipeName} (Prepared Batch Food)`,
+            type: 'wastage_spoilage',
+            quantityDelta: -Math.min(wastagePortions, actualPortions),
+            unit: 'plates',
+            costImpact: wasteImpact,
+            date: today,
+            reference: `WST-LEFTOVER-${Math.min(wastagePortions, actualPortions)}P`,
+            reason: options?.wastageReason || `Production loss on ${order.orderNumber}`,
+            recordedBy: 'Executive Chef Juma',
+            sourceLocation: 'kitchen',
+          },
+          ...prev,
+        ]);
       }
+
+      enqueueApiSync(
+        () => apiClient.inventory.advanceProductionOrderStage(activeBranchId, orderId, nextStage, options),
+        'advanceProductionOrderStage'
+      );
 
       return { success: true };
     }
 
     setProductionOrders((prev) =>
       prev.map((po) => (po.id === orderId ? { ...po, status: nextStage } : po))
+    );
+    enqueueApiSync(
+      () => apiClient.inventory.advanceProductionOrderStage(activeBranchId, orderId, nextStage, options),
+      'advanceProductionOrderStage'
     );
     return { success: true };
   };
@@ -4316,6 +3921,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           ? { ...po, status: 'cancelled', exceptionApprovedBy: actor, exceptionReason: reason }
           : po
       )
+    );
+    enqueueApiSync(
+      () => apiClient.inventory.cancelProductionOrder(activeBranchId, orderId, reason, actor),
+      'cancelProductionOrder'
     );
   };
 
@@ -4346,13 +3955,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
     setPurchaseRequests((prev) => [pr, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: `Purchase Requisition ${pr.requestNumber}`,
       message: `Requested ${pr.requestedQty.toLocaleString()} ${pr.unit} of ${pr.ingredientName} (${formatMoney(pr.estimatedCost)}).`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'Review Purchase Request',
     });
+
+    enqueueApiSync(
+      () => apiClient.inventory.createPurchaseRequest(activeBranchId, { ...params, id: pr.id }),
+      'resolveShortageViaPurchaseRequest'
+    );
 
     return pr;
   };
@@ -4363,7 +3977,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       prev.map((p) => (p.id === requestId ? { ...p, status } : p))
     );
     if (status === 'received' && target) {
-      recordStockIntake(
+      applyRecordStockIntakeLocal(
         target.ingredientId,
         target.requestedQty,
         target.estimatedCost,
@@ -4371,6 +3985,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         target.requestNumber
       );
     }
+    enqueueApiSync(
+      () => apiClient.inventory.updatePurchaseRequestStatus(activeBranchId, requestId, status),
+      'updatePurchaseRequestStatus'
+    );
   };
 
   const resolveShortageViaBranchTransfer = (params: {
@@ -4395,13 +4013,17 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       createdAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
     };
     setBranchTransfers((prev) => [bt, ...prev]);
-    addNotification({
+    addNotificationLocal({
       title: `Inter-Branch Transfer ${bt.transferNumber}`,
       message: `${bt.quantity.toLocaleString()} ${bt.unit} of ${bt.ingredientName} dispatched from ${bt.fromBranch}.`,
       type: 'transfer',
       actionRole: 'manager',
       actionLabel: 'Receive Transfer',
     });
+    enqueueApiSync(
+      () => apiClient.inventory.createBranchTransferRequest(activeBranchId, { ...params, id: bt.id }),
+      'resolveShortageViaBranchTransfer'
+    );
     return bt;
   };
 
@@ -4414,7 +4036,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const ing = ingredients.find((i) => i.id === bt.ingredientId);
     if (ing) {
       const unitCost = ing.conversionRatio > 0 ? ing.costPerPurchaseUnit / ing.conversionRatio : 0;
-      recordStockIntake(
+      applyRecordStockIntakeLocal(
         ing.id,
         bt.quantity,
         Math.round(bt.quantity * unitCost),
@@ -4422,6 +4044,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         bt.transferNumber
       );
     }
+    enqueueApiSync(
+      () => apiClient.inventory.receiveBranchTransfer(activeBranchId, transferId),
+      'receiveBranchTransfer'
+    );
   };
 
   const createCateringOrder = (params: {
@@ -4488,13 +4114,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     setCateringOrders((prev) => [newCat, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: `Catering Order ${newCat.orderNumber}`,
       message: `${newCat.eventName} (${builtItems.reduce((s, i) => s + i.quantity, 0)} items) scheduled for ${newCat.eventDate}.`,
       type: 'order',
       actionRole: 'manager',
       actionLabel: 'Plan Kitchen Production',
     });
+
+    enqueueApiSync(
+      () => apiClient.inventory.createCateringOrder(activeBranchId, { ...params, id: newCat.id }),
+      'createCateringOrder'
+    );
 
     return newCat;
   };
@@ -4552,6 +4183,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       )
     );
 
+    enqueueApiSync(
+      () => apiClient.inventory.reserveCateringIngredients(activeBranchId, cateringOrderId),
+      'reserveCateringIngredients'
+    );
+
     return {
       success: true,
       message: `Reserved ${rawReservations.length} consolidated ingredients for ${order.orderNumber}.`,
@@ -4564,7 +4200,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const created: ProductionOrder[] = [];
     order.items.forEach((it) => {
       if (!it.recipeId) return;
-      const po = createProductionOrder({
+      const po = applyCreateProductionOrderLocal({
         recipeId: it.recipeId,
         targetPortions: it.quantity,
         sourceType: 'catering',
@@ -4589,6 +4225,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             : c
         )
       );
+      enqueueApiSync(
+        () =>
+          apiClient.inventory.generateCateringProductionPlan(
+            activeBranchId,
+            cateringOrderId,
+            created.map((p) => p.id)
+          ),
+        'generateCateringProductionPlan'
+      );
     }
     return created;
   };
@@ -4598,6 +4243,28 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     fulfilledByMenuId: Record<string, number>,
     nextStatus?: CateringOrderStatus
   ) => {
+    const targetOrder = cateringOrders.find((c) => c.id === cateringOrderId);
+    let releaseReserved = false;
+    let reservedList: NonNullable<CateringOrder['reservedIngredients']> = [];
+
+    if (targetOrder) {
+      const previewItems = targetOrder.items.map((it) => ({
+        ...it,
+        fulfilledQuantity:
+          fulfilledByMenuId[it.menuItemId] !== undefined
+            ? Math.min(it.quantity, Math.max(0, fulfilledByMenuId[it.menuItemId]))
+            : it.fulfilledQuantity,
+      }));
+      const allDone = previewItems.every((it) => it.fulfilledQuantity >= it.quantity);
+      const someDone = previewItems.some((it) => it.fulfilledQuantity > 0);
+      const derivedStatus: CateringOrderStatus =
+        nextStatus || (allDone ? 'completed' : someDone ? 'partial_fulfilled' : targetOrder.status);
+      if (derivedStatus === 'completed' && targetOrder.reservedIngredients && targetOrder.reservedIngredients.length > 0) {
+        releaseReserved = true;
+        reservedList = targetOrder.reservedIngredients;
+      }
+    }
+
     setCateringOrders((prev) =>
       prev.map((c) => {
         if (c.id !== cateringOrderId) return c;
@@ -4613,20 +4280,6 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         const derivedStatus: CateringOrderStatus =
           nextStatus || (allDone ? 'completed' : someDone ? 'partial_fulfilled' : c.status);
 
-        // Release reserved stock once completed
-        if (derivedStatus === 'completed' && c.reservedIngredients && c.reservedIngredients.length > 0) {
-          setIngredients((prevIng) =>
-            prevIng.map((ing) => {
-              const resMatch = c.reservedIngredients?.find((r) => r.ingredientId === ing.id);
-              if (!resMatch) return ing;
-              return {
-                ...ing,
-                reservedStockUnits: Math.max(0, (ing.reservedStockUnits ?? 0) - resMatch.qty),
-              };
-            })
-          );
-        }
-
         return {
           ...c,
           items: updatedItems,
@@ -4634,6 +4287,30 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           updatedAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
         };
       })
+    );
+
+    if (releaseReserved) {
+      setIngredients((prevIng) =>
+        prevIng.map((ing) => {
+          const resMatch = reservedList.find((r) => r.ingredientId === ing.id);
+          if (!resMatch) return ing;
+          return {
+            ...ing,
+            reservedStockUnits: Math.max(0, (ing.reservedStockUnits ?? 0) - resMatch.qty),
+          };
+        })
+      );
+    }
+
+    enqueueApiSync(
+      () =>
+        apiClient.inventory.recordCateringFulfillment(
+          activeBranchId,
+          cateringOrderId,
+          fulfilledByMenuId,
+          nextStatus
+        ),
+      'recordCateringFulfillment'
     );
   };
 
@@ -4694,6 +4371,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         };
       })
     );
+    enqueueApiSync(
+      () => apiClient.inventory.amendCateringOrder(activeBranchId, cateringOrderId, items, note),
+      'amendCateringOrder'
+    );
   };
 
   const generateCateringInvoice = (cateringOrderId: string): string => {
@@ -4710,6 +4391,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : c
       )
     );
+    enqueueApiSync(
+      () => apiClient.inventory.generateCateringInvoice(activeBranchId, cateringOrderId),
+      'generateCateringInvoice'
+    );
     return invNum;
   };
 
@@ -4720,6 +4405,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       timestamp: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
     };
     setBlockedCookingAttempts((prev) => [newAttempt, ...prev]);
+    enqueueApiSync(
+      () => apiClient.inventory.logBlockedAttempt(activeBranchId, attempt),
+      'logBlockedCookingAttempt'
+    );
   };
 
   const handleLeftoverPreparedPlates = (
@@ -4771,7 +4460,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       };
       setStockMovements((prev) => [wasteMovement, ...prev]);
 
-      addNotification({
+      addNotificationLocal({
         title: 'Leftovers Logged as Waste',
         message: `${platesCount} unsold plates of ${dish.dishName} logged as waste (${formatMoney(totalImpact)} impact).`,
         type: 'stock',
@@ -4779,7 +4468,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         actionLabel: 'View Spoilage',
       });
     } else {
-      addNotification({
+      addNotificationLocal({
         title: 'Leftovers Returned to Store',
         message: `${platesCount} plates of ${dish.dishName} chilled and returned to cold room buffer storage.`,
         type: 'transfer',
@@ -4787,6 +4476,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         actionLabel: 'View Prepared Plates',
       });
     }
+
+    enqueueApiSync(
+      () =>
+        apiClient.inventory.handleLeftoverPreparedPlates(
+          activeBranchId,
+          menuItemId,
+          platesCount,
+          action,
+          reason
+        ),
+      'handleLeftoverPreparedPlates'
+    );
 
     return true;
   };
@@ -4850,6 +4551,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         };
       });
     });
+
+    enqueueApiSync(
+      () => apiClient.inventory.recomputeDailyVariance(activeBranchId),
+      'recomputeDailyVariance'
+    );
   };
 
   const updateDailyReconciliationCount = (ingredientId: string, actualCount: number, notes?: string) => {
@@ -4879,12 +4585,38 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return item;
       })
     );
+
+    enqueueApiSync(
+      () => apiClient.inventory.updateDailyReconciliationCount(activeBranchId, ingredientId, actualCount, notes),
+      'updateDailyReconciliationCount'
+    );
   };
 
   const commitDailyReconciliation = (staffName: string = 'David Kasambala (Manager)') => {
     let totalVariance = 0;
     const newMovements: StockMovement[] = [];
     const today = new Date().toISOString().split('T')[0];
+
+    const updatedRecs: DailyReconciliationItem[] = dailyReconciliations.map((item) => {
+      totalVariance += item.varianceCost;
+      if (item.varianceQty !== 0) {
+        newMovements.push({
+          id: `sm-${Date.now()}-${item.ingredientId}`,
+          ingredientId: item.ingredientId,
+          ingredientName: item.ingredientName,
+          type: 'reconciliation_adjustment',
+          quantityDelta: item.varianceQty,
+          unit: item.unit,
+          costImpact: item.varianceCost,
+          date: today,
+          reference: `RECON-${today}`,
+          reason: `Physical closing variance (${item.varianceType.replace(/_/g, ' ')}): ${item.notes || 'End-of-day stock count'}`,
+          recordedBy: staffName,
+          sourceLocation: 'kitchen',
+        });
+      }
+      return { ...item, status: 'reconciled' };
+    });
 
     // Sync kitchen physical stock to actual counted stock (never alters approved recipes!)
     const countedMap = new Map(dailyReconciliations.map((d) => [d.ingredientId, d.actualCountedStock]));
@@ -4901,40 +4633,24 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       })
     );
 
-    setDailyReconciliations((prev) =>
-      prev.map((item) => {
-        totalVariance += item.varianceCost;
-        if (item.varianceQty !== 0) {
-          newMovements.push({
-            id: `sm-${Date.now()}-${item.ingredientId}`,
-            ingredientId: item.ingredientId,
-            ingredientName: item.ingredientName,
-            type: 'reconciliation_adjustment',
-            quantityDelta: item.varianceQty,
-            unit: item.unit,
-            costImpact: item.varianceCost,
-            date: today,
-            reference: `RECON-${today}`,
-            reason: `Physical closing variance (${item.varianceType.replace(/_/g, ' ')}): ${item.notes || 'End-of-day stock count'}`,
-            recordedBy: staffName,
-            sourceLocation: 'kitchen',
-          });
-        }
-        return { ...item, status: 'reconciled' };
-      })
-    );
+    setDailyReconciliations(updatedRecs);
 
     if (newMovements.length > 0) {
       setStockMovements((prev) => [...newMovements, ...prev]);
     }
 
-    addNotification({
+    addNotificationLocal({
       title: 'Daily Stock Reconciliation Committed',
       message: `Physical closing counts synced by ${staffName}. Variance impact: ${formatMoney(totalVariance)}. Approved recipes unchanged.`,
       type: 'stock',
       actionRole: 'manager',
       actionLabel: 'View Audit Ledger',
     });
+
+    enqueueApiSync(
+      () => apiClient.inventory.commitDailyReconciliation(activeBranchId, staffName),
+      'commitDailyReconciliation'
+    );
 
     return { success: true, totalVarianceCost: totalVariance };
   };
@@ -4950,6 +4666,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (cleanAmount <= 0) return;
     const isAuto = options?.autoApprove !== false;
     const emp = employees.find((e) => e.id === employeeId);
+    const advId = `adv-${Date.now()}`;
     setEmployees((prev) =>
       prev.map((e) =>
         e.id === employeeId
@@ -4958,7 +4675,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               advances: [
                 ...e.advances,
                 {
-                  id: `adv-${Date.now()}`,
+                  id: advId,
                   amount: cleanAmount,
                   date: new Date().toISOString().split('T')[0],
                   approved: isAuto,
@@ -4978,6 +4695,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       action: isAuto ? 'SALARY_ADVANCE_APPROVED' : 'SALARY_ADVANCE_REQUESTED',
       details: `${emp?.name || employeeId}: ${formatMoney(cleanAmount)} (${reason.trim()})`,
     });
+    enqueueApiSync(
+      () =>
+        apiClient.hr.addAdvanceRequest(activeBranchId, employeeId, cleanAmount, reason, {
+          ...options,
+          id: advId,
+        }),
+      'addAdvanceRequest'
+    );
   };
 
   const approveAdvance = (employeeId: string, advanceId: string, approvedBy: string = 'Manager') => {
@@ -5005,6 +4730,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         details: `Approved ${formatMoney(adv.amount)} advance for ${emp.name}`,
       });
     }
+    enqueueApiSync(
+      () => apiClient.hr.approveAdvance(activeBranchId, employeeId, advanceId, approvedBy),
+      'approveAdvance'
+    );
   };
 
   const rejectAdvance = (employeeId: string, advanceId: string, reason?: string) => {
@@ -5037,6 +4766,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         details: `Rejected ${formatMoney(adv.amount)} advance for ${emp.name}${reason ? ` (${reason})` : ''}`,
       });
     }
+    enqueueApiSync(
+      () => apiClient.hr.rejectAdvance(activeBranchId, employeeId, advanceId, reason),
+      'rejectAdvance'
+    );
   };
 
   const markAdvanceRepaid = (employeeId: string, advanceId: string) => {
@@ -5064,6 +4797,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         details: `${emp.name} repaid ${formatMoney(adv.amount)} advance in cash`,
       });
     }
+    enqueueApiSync(
+      () => apiClient.hr.markAdvanceRepaid(activeBranchId, employeeId, advanceId),
+      'markAdvanceRepaid'
+    );
   };
 
   const updateAdvance = (employeeId: string, advanceId: string, amount: number, reason: string) => {
@@ -5081,6 +4818,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : e
       )
     );
+    enqueueApiSync(
+      () => apiClient.hr.updateAdvance(activeBranchId, employeeId, advanceId, cleanAmount, reason),
+      'updateAdvance'
+    );
   };
 
   const addEmployee = (emp: Omit<Employee, 'id' | 'employeeNumber' | 'advances'>): Employee => {
@@ -5094,14 +4835,16 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
     setEmployees((prev) => [...prev, newEmp]);
 
+    let newWaiterId: string | undefined;
     if (emp.role === 'waiter') {
       const codeBase = emp.name
         .trim()
         .split(/\s+/)[0]
         .toUpperCase()
         .replace(/[^A-Z0-9]/g, '') || 'STAFF';
+      newWaiterId = `waiter-${Date.now()}`;
       const newWaiter: Waiter = {
-        id: `waiter-${Date.now()}`,
+        id: newWaiterId,
         name: emp.name,
         phone: emp.phone,
         email: emp.email || `${codeBase.toLowerCase()}@savannagrill.com`,
@@ -5118,6 +4861,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       action: 'EMPLOYEE_ONBOARDED',
       details: `Added ${newEmp.name} (${newEmp.employeeNumber} · ${newEmp.position}) at ${formatMoney(newEmp.baseSalary)}`,
     });
+    enqueueApiSync(
+      () => apiClient.hr.addEmployee(activeBranchId, { ...emp, id: newEmp.id, waiterId: newWaiterId }),
+      'addEmployee'
+    );
     return newEmp;
   };
 
@@ -5140,6 +4887,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         action: 'EMPLOYEE_UPDATED',
         details: `Updated staff profile for ${updates.name || target.name}`,
       });
+      enqueueApiSync(
+        () => apiClient.hr.updateEmployee(activeBranchId, employeeId, updates),
+        'updateEmployee'
+      );
     }
   };
 
@@ -5147,6 +4898,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setWaiters((prev) =>
       prev.map((w) => (w.id === waiterId ? { ...w, active: !w.active } : w))
     );
+    enqueueApiSync(() => apiClient.hr.toggleWaiterActive(activeBranchId, waiterId), 'toggleWaiterActive');
   };
 
   const assignOrderWaiter = (orderId: string, waiterId: string) => {
@@ -5167,79 +4919,22 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         details: `Assigned waiter ${waiter.name} to order`,
       });
     }
+    enqueueApiSync(() => apiClient.orders.assignWaiter(activeBranchId, orderId, waiterId), 'assignOrderWaiter');
   };
 
   // Tanzania TRA PAYE + 10% Employee NSSF calculation helper
-  const computeTraPaye = (taxablePay: number): number => {
-    if (taxablePay <= 270000) return 0;
-    if (taxablePay <= 520000) return Math.round((taxablePay - 270000) * 0.08);
-    if (taxablePay <= 760000) return Math.round(20000 + (taxablePay - 520000) * 0.2);
-    if (taxablePay <= 1000000) return Math.round(68000 + (taxablePay - 760000) * 0.25);
-    return Math.round(128000 + (taxablePay - 1000000) * 0.3);
-  };
-
-  const calculateEmployeePayroll = (employeeId: string, period: string = '2026-11') => {
-    const emp = employees.find((e) => e.id === employeeId);
-    const paymentRecord = payrollPayments.find(
-      (p) => p.employeeId === employeeId && p.period === period
+  const calculateEmployeePayroll = (employeeId: string, period: string = '2026-11') =>
+    calculateEmployeePayrollPure(
+      employeeId,
+      period,
+      employees,
+      waiters,
+      orders,
+      defaultCommissionMode,
+      defaultCommissionValue,
+      settledCommissionByWaiter,
+      payrollPayments
     );
-    if (!emp) {
-      return {
-        basicSalary: 0,
-        allowances: 0,
-        commission: 0,
-        grossPay: 0,
-        nssfDeduction: 0,
-        payeTax: 0,
-        approvedAdvances: 0,
-        netPayable: 0,
-        isPaidForPeriod: false,
-      };
-    }
-
-    if (paymentRecord) {
-      return {
-        basicSalary: paymentRecord.basicSalary,
-        allowances: paymentRecord.allowances,
-        commission: paymentRecord.commission,
-        grossPay: paymentRecord.grossPay,
-        nssfDeduction: paymentRecord.nssfDeduction,
-        payeTax: paymentRecord.payeTax,
-        approvedAdvances: paymentRecord.advanceDeducted,
-        netPayable: paymentRecord.netPaid,
-        isPaidForPeriod: true,
-        paymentRecord,
-      };
-    }
-
-    const waiterMatch = waiters.find((w) => w.name === emp.name);
-    const commission = waiterMatch ? calculateWaiterStats(waiterMatch.id).earnedCommission : 0;
-    const basicSalary = emp.baseSalary;
-    const allowances = emp.allowances || 0;
-    const grossPay = basicSalary + allowances + commission;
-    const nssfDeduction = Math.round(grossPay * 0.1); // 10% NSSF employee share
-    const taxablePay = Math.max(0, grossPay - nssfDeduction);
-    const payeTax = computeTraPaye(taxablePay);
-    const approvedAdvances = emp.advances
-      .filter((a) => {
-        const st = a.status || (a.approved ? 'approved' : 'pending');
-        return st === 'approved';
-      })
-      .reduce((sum, a) => sum + a.amount, 0);
-    const netPayable = Math.max(0, grossPay - nssfDeduction - payeTax - approvedAdvances);
-
-    return {
-      basicSalary,
-      allowances,
-      commission,
-      grossPay,
-      nssfDeduction,
-      payeTax,
-      approvedAdvances,
-      netPayable,
-      isPaidForPeriod: false,
-    };
-  };
 
   const recordPayrollPayment = (params: {
     period: string;
@@ -5304,7 +4999,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       );
 
       const totalNet = createdRecords.reduce((s, r) => s + r.netPaid, 0);
-      addNotification({
+      addNotificationLocal({
         title: `Payroll Settled (${params.period})`,
         message: `${createdRecords.length} staff payslips paid (${formatMoney(totalNet)}) via ${params.method.replace('_', ' ').toUpperCase()}.`,
         type: 'payroll',
@@ -5317,6 +5012,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         action: 'PAYROLL_DISBURSED',
         details: `Settled ${createdRecords.length} payslips for ${params.period} totaling ${formatMoney(totalNet)} via ${params.method}`,
       });
+      enqueueApiSync(
+        () => apiClient.hr.recordPayrollPayment(activeBranchId, params),
+        'recordPayrollPayment'
+      );
     }
 
     return createdRecords;
@@ -5332,7 +5031,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (mode === 'percent') {
       setWaiters((prev) => prev.map((w) => ({ ...w, commissionRate: cleanValue / 100 })));
     }
-    addNotification({
+    addNotificationLocal({
       title: 'Waiter Commission Rule Updated',
       message:
         mode === 'percent'
@@ -5342,33 +5041,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       actionRole: 'manager',
       actionLabel: 'View Rules',
     });
+    enqueueApiSync(
+      () =>
+        apiClient.orders.updateSettings(activeBranchId, {
+          defaultCommissionMode: mode,
+          defaultCommissionValue: cleanValue,
+        }),
+      'setDefaultCommissionPolicy'
+    );
   };
 
-  const getOrderCommission = (order: Order, waiterId?: string) => {
-    const waiter = waiterId ? waiters.find((w) => w.id === waiterId) : undefined;
-    const mode: CommissionMode = order.commissionMode ?? defaultCommissionMode;
-    const fallbackVal =
-      mode === 'percent' && waiter
-        ? Math.round((waiter.commissionRate || 0.05) * 10000) / 100
-        : defaultCommissionValue;
-    const value = order.commissionValue !== undefined ? order.commissionValue : fallbackVal;
-    const netSales = Math.max(0, order.subtotal - (order.discount || 0));
-    const computed =
-      order.commissionAmount !== undefined && order.commissionMode !== undefined
-        ? order.commissionAmount
-        : mode === 'percent'
-        ? Math.round(netSales * (Math.max(0, Math.min(100, value)) / 100))
-        : Math.max(0, Math.round(value));
-    const isPaidEligible = order.paymentStatus === 'paid' && order.status !== 'cancelled';
-
-    return {
-      mode,
-      value,
-      amount: computed,
-      isPaidEligible,
-      configuredBy: order.commissionConfiguredBy || 'Auto Rule',
-    };
-  };
+  const getOrderCommission = (order: Order, waiterId?: string) =>
+    getOrderCommissionPure(order, waiters, defaultCommissionMode, defaultCommissionValue, waiterId);
 
   const updateOrderCommission = (
     orderId: string,
@@ -5401,6 +5085,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           updatedAt: new Date().toISOString(),
         };
       })
+    );
+    enqueueApiSync(
+      () =>
+        apiClient.orders.updateCommission(
+          activeBranchId,
+          orderId,
+          mode,
+          cleanValue,
+          configuredBy,
+          waiterId
+        ),
+      'updateOrderCommission'
     );
   };
 
@@ -5436,7 +5132,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
     setCommissionPayouts((prev) => [payout, ...prev]);
 
-    addNotification({
+    addNotificationLocal({
       title: `Commission Settled (${waiter.name})`,
       message: `Paid ${formatMoney(settleAmt)} via ${method.replace('_', ' ').toUpperCase()} (Ref: ${ref}).`,
       type: 'payroll',
@@ -5449,131 +5145,34 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       action: 'COMMISSION_SETTLED',
       details: `Settled ${formatMoney(settleAmt)} waiter commission to ${waiter.name} via ${method} (${ref})`,
     });
+    enqueueApiSync(
+      () =>
+        apiClient.hr.settleWaiterCommission(activeBranchId, waiterId, amount, {
+          method,
+          reference: ref,
+          settledBy,
+        }),
+      'settleWaiterCommission'
+    );
   };
 
-  const calculateWaiterStats = (waiterId: string) => {
-    const myOrders = orders.filter(
-      (o) => o.referralWaiterId === waiterId || o.servingWaiterId === waiterId
+  const calculateWaiterStats = (waiterId: string) =>
+    calculateWaiterStatsPure(
+      waiterId,
+      orders,
+      waiters,
+      defaultCommissionMode,
+      defaultCommissionValue,
+      settledCommissionByWaiter
     );
-
-    // Waiter commission is strictly earned ONLY on PAID, non-cancelled orders
-    const paidOrders = myOrders.filter(
-      (o) => o.paymentStatus === 'paid' && o.status !== 'cancelled'
-    );
-    const unpaidOrders = myOrders.filter(
-      (o) => o.paymentStatus !== 'paid' && o.status !== 'cancelled'
-    );
-
-    const todaySales = paidOrders.reduce(
-      (sum, o) => sum + Math.max(0, o.subtotal - (o.discount || 0)),
-      0
-    );
-
-    const pendingOrdersCount = myOrders.filter(
-      (o) => o.status !== 'completed' && o.status !== 'cancelled'
-    ).length;
-
-    const completedOrdersCount = paidOrders.length;
-    const earnedCommission = paidOrders.reduce(
-      (sum, o) => sum + getOrderCommission(o, waiterId).amount,
-      0
-    );
-    const unpaidProjectedCommission = unpaidOrders.reduce(
-      (sum, o) => sum + getOrderCommission(o, waiterId).amount,
-      0
-    );
-    const paidCommission = settledCommissionByWaiter[waiterId] || 0;
-    const pendingCommission = Math.max(0, earnedCommission - paidCommission);
-
-    return {
-      myOrders,
-      todaySales,
-      pendingOrdersCount,
-      completedOrdersCount,
-      unpaidOrdersCount: unpaidOrders.length,
-      unpaidProjectedCommission,
-      earnedCommission,
-      pendingCommission,
-      paidCommission,
-    };
-  };
 
   const dismissSoundAlert = () => setSoundAlertTriggered(false);
 
   // ============== MAIN HQ MULTI-BRANCH OVERVIEW & CONTROL (TENANT-ISOLATED) ==============
-  const branchMetricsSummaries: BranchMetricsSummary[] = useMemo(() => {
-    return tenants.map((branch) => {
-      const store = branchStores[branch.id];
-      if (!store) {
-        return {
-          branch,
-          todaySales: 0,
-          collectedSales: 0,
-          outstandingAmount: 0,
-          activeOrdersCount: 0,
-          kitchenPendingCount: 0,
-          completedOrdersCount: 0,
-          tablesTotal: 0,
-          tablesOccupied: 0,
-          ingredientsCount: 0,
-          lowStockCount: 0,
-          inventoryValuation: 0,
-          employeesCount: 0,
-          pendingApprovalsCount: 0,
-          openPurchaseRequestsCount: 0,
-          unreadEmailsCount: 0,
-        };
-      }
-      const validOrders = store.orders.filter(
-        (o) => o.status !== 'draft' && o.status !== 'cancelled' && o.status !== 'rejected'
-      );
-      const todaySales = validOrders.reduce((s, o) => s + o.total, 0);
-      const collectedSales = validOrders.reduce((s, o) => s + (o.paidAmount || 0), 0);
-      const outstandingAmount = validOrders.reduce(
-        (s, o) => s + Math.max(0, o.total - (o.paidAmount || 0)),
-        0
-      );
-      const kitchenPendingCount = store.orders.filter((o) =>
-        ['sent_to_kitchen', 'accepted', 'preparing'].includes(o.status)
-      ).length;
-      const completedOrdersCount = store.orders.filter(
-        (o) => o.status === 'completed' || o.paymentStatus === 'paid'
-      ).length;
-      const tablesOccupied = store.tables.filter((t) => t.status !== 'available').length;
-      const lowStockCount = store.ingredients.filter(
-        (i) => i.currentStockUnits <= i.minimumThreshold
-      ).length;
-      const inventoryValuation = store.ingredients.reduce(
-        (s, i) =>
-          s + (i.conversionRatio > 0 ? (i.currentStockUnits / i.conversionRatio) * i.costPerPurchaseUnit : 0),
-        0
-      );
-      const pendingApprovalsCount = store.approvalRequests.filter((a) => a.status === 'pending').length;
-      const openPurchaseRequestsCount = store.purchaseRequests.filter(
-        (p) => p.status !== 'received'
-      ).length;
-      const unreadEmailsCount = store.emails.filter((e) => e.folder === 'inbox' && !e.read).length;
-
-      return {
-        branch,
-        todaySales,
-        collectedSales,
-        outstandingAmount,
-        activeOrdersCount: validOrders.length,
-        kitchenPendingCount,
-        completedOrdersCount,
-        tablesTotal: store.tables.length,
-        tablesOccupied,
-        ingredientsCount: store.ingredients.length,
-        lowStockCount,
-        inventoryValuation: Math.round(inventoryValuation),
-        employeesCount: store.employees.length,
-        pendingApprovalsCount,
-        openPurchaseRequestsCount,
-        unreadEmailsCount,
-      };
-    });
-  }, [tenants, branchStores]);
+  const branchMetricsSummaries: BranchMetricsSummary[] = useMemo(
+    () => tenants.map((branch) => computeBranchMetricsSummaryPure(branch, branchStores[branch.id])),
+    [tenants, branchStores]
+  );
 
   const hqAllOrders = useMemo(() => {
     return tenants
@@ -5710,6 +5309,17 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         ...prev,
       ],
       branchId
+    );
+    enqueueApiSync(
+      () =>
+        apiClient.hq.reviewApproval(
+          currentOrganization.id,
+          branchId,
+          requestId,
+          approve,
+          managerName
+        ),
+      'hqReviewApproval'
     );
   };
 
@@ -5878,6 +5488,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       toBranch.id
     );
 
+    enqueueApiSync(
+      () => apiClient.hq.dispatchBranchTransfer(currentOrganization.id, { ...params, actor }),
+      'hqDispatchBranchTransfer'
+    );
     return {
       success: true,
       message: `Dispatched ${params.quantityUnits.toLocaleString()} ${srcIng.consumptionUnit} of ${srcIng.name} from ${fromBranch.branchCode} to ${toBranch.branchCode}.`,
@@ -5915,6 +5529,16 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         branchId
       );
     }
+    enqueueApiSync(
+      () =>
+        apiClient.hq.updatePurchaseRequestStatus(
+          currentOrganization.id,
+          branchId,
+          requestId,
+          nextStatus
+        ),
+      'hqUpdatePurchaseRequestStatus'
+    );
   };
 
   const currentBranchQuota = useMemo(() => {
@@ -5980,6 +5604,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     );
     setAllBranches((prev) => [...prev, newBranch]);
     setBranchStores((prev) => ({ ...prev, [branchId]: starterStore }));
+    enqueueApiSync(
+      () =>
+        apiClient.hq.createBranch(currentOrganization.id, {
+          ...params,
+          id: branchId,
+          sourceBranchId: params.cloneCatalogFromCurrent !== false ? activeBranchId : undefined,
+        }),
+      'addBranchToCurrentOrg'
+    );
     return newBranch;
   };
 
@@ -5991,9 +5624,13 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           : b
       )
     );
+    enqueueApiSync(
+      () => apiClient.hq.toggleBranchStatus(currentOrganization.id, branchId),
+      'toggleBranchStatus'
+    );
   };
 
-  const createSaasTenant = (params: {
+  const applyCreateSaasTenantLocal = (params: {
     orgName: string;
     ownerName: string;
     ownerEmail: string;
@@ -6102,6 +5739,34 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return { org: newOrg, branch: hqBranch, account: newOwnerAccount };
   };
 
+  const createSaasTenant = (params: {
+    orgName: string;
+    ownerName: string;
+    ownerEmail: string;
+    branchName: string;
+    branchCode: string;
+    operatingModel: RestaurantTenant['operatingModel'];
+    phone: string;
+    address: string;
+    plan?: SaasPlanId;
+    status?: SaasTenantStatus;
+    password?: string;
+    switchToNew?: boolean;
+  }) => {
+    const created = applyCreateSaasTenantLocal(params);
+    enqueueApiSync(
+      () =>
+        apiClient.provider.createTenant({
+          ...params,
+          orgId: created.org.id,
+          branchId: created.branch.id,
+          accountId: created.account.id,
+        }),
+      'createSaasTenant'
+    );
+    return created;
+  };
+
   // ============== SAAS PROVIDER CONTROL, AUTH & LANDING ACTIONS ==============
   const recordProviderAudit = (action: string, target: string, details: string) => {
     const actor = authenticatedAccount || {
@@ -6122,55 +5787,28 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     ]);
   };
 
-  const providerTenantSummaries = useMemo(() => {
-    return organizations.map((org) => {
-      const orgBranches = allBranches.filter((b) => b.organizationId === org.id);
-      const activeBranchesCount = orgBranches.filter((b) => b.status === 'active').length;
-      let liveOrdersCount = 0;
-      let liveGmvTzs = 0;
-      orgBranches.forEach((b) => {
-        const st = branchStores[b.id];
-        if (!st) return;
-        const valid = st.orders.filter(
-          (o) => o.status !== 'draft' && o.status !== 'cancelled' && o.status !== 'rejected'
-        );
-        liveOrdersCount += valid.length;
-        liveGmvTzs += valid.reduce((sum, o) => sum + o.total, 0);
-      });
-      const accountsCount = saasAccounts.filter((a) => a.organizationId === org.id).length;
-      return {
-        org,
-        branchesCount: orgBranches.length,
-        activeBranchesCount,
-        liveOrdersCount,
-        liveGmvTzs,
-        accountsCount,
-      };
-    });
-  }, [organizations, allBranches, branchStores, saasAccounts]);
+  const providerTenantSummaries = useMemo(
+    () =>
+      computeProviderTenantSummariesPure(
+        organizations,
+        allBranches,
+        branchStores,
+        saasAccounts
+      ),
+    [organizations, allBranches, branchStores, saasAccounts]
+  );
 
-  const providerStats = useMemo(() => {
-    const totalTenants = organizations.length;
-    const activeTenants = organizations.filter((o) => o.status === 'active').length;
-    const trialTenants = organizations.filter((o) => o.status === 'trial').length;
-    const suspendedTenants = organizations.filter((o) => o.status === 'suspended').length;
-    const monthlyRecurringRevenueTzs = organizations
-      .filter((o) => o.status !== 'suspended')
-      .reduce((sum, o) => sum + o.monthlyFeeTzs, 0);
-    const platformGmvTzs = providerTenantSummaries.reduce((sum, t) => sum + t.liveGmvTzs, 0);
-    return {
-      totalTenants,
-      activeTenants,
-      trialTenants,
-      suspendedTenants,
-      totalBranches: allBranches.length,
-      activeAccountsCount: saasAccounts.filter((a) => a.status === 'active').length,
-      pendingAccountsCount: saasAccounts.filter((a) => a.status === 'pending').length,
-      monthlyRecurringRevenueTzs,
-      platformGmvTzs,
-      openLeadsCount: leadInquiries.filter((l) => l.status !== 'converted').length,
-    };
-  }, [organizations, allBranches.length, saasAccounts, providerTenantSummaries, leadInquiries]);
+  const providerStats = useMemo(
+    () =>
+      computeProviderStatsPure(
+        organizations,
+        allBranches,
+        saasAccounts,
+        leadInquiries,
+        providerTenantSummaries
+      ),
+    [organizations, allBranches, saasAccounts, providerTenantSummaries, leadInquiries]
+  );
 
   const loginWithCredentials = (
     email: string,
@@ -6202,6 +5840,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setAuthenticatedAccount(updated);
       setImpersonatingOrgId(null);
       setPlatformSurface('provider');
+      enqueueApiSync(() => apiClient.auth.login(cleanEmail, password), 'loginWithCredentials');
       return { success: true, account: updated };
     }
 
@@ -6244,6 +5883,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
     setWorkspaceRevision((r) => r + 1);
     setPlatformSurface('erp');
+    enqueueApiSync(() => apiClient.auth.login(cleanEmail, password), 'loginWithCredentials');
     return { success: true, account: updated };
   };
 
@@ -6267,7 +5907,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       return { success: false, error: 'An account with this email already exists. Please sign in instead.' };
     }
 
-    const created = createSaasTenant({
+    const created = applyCreateSaasTenantLocal({
       orgName: params.orgName,
       ownerName: params.ownerName,
       ownerEmail: cleanEmail,
@@ -6299,6 +5939,17 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       ...prev,
     ]);
     setPlatformSurface('erp');
+    enqueueApiSync(
+      () =>
+        apiClient.auth.register({
+          ...params,
+          ownerEmail: cleanEmail,
+          orgId: created.org.id,
+          branchId: created.branch.id,
+          accountId: created.account.id,
+        }),
+      'registerTenantAccount'
+    );
     return { success: true };
   };
 
@@ -6308,6 +5959,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       const prov = saasAccounts.find((a) => a.role === 'provider_admin') || saasAccounts[0];
       setAuthenticatedAccount(prov);
       setPlatformSurface('provider');
+      enqueueApiSync(() => apiClient.auth.quickLaunch(preset), 'quickLaunchWorkspace');
       return;
     }
     if (preset === 'kona_hq') {
@@ -6317,6 +5969,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setViewScopeState('hq_overview');
       setActiveRole('owner');
       setPlatformSurface('erp');
+      enqueueApiSync(() => apiClient.auth.quickLaunch(preset), 'quickLaunchWorkspace');
       return;
     }
     const savAcc = saasAccounts.find((a) => a.organizationId === 'org-savanna' && a.role === 'tenant_owner') || saasAccounts[1];
@@ -6330,12 +5983,14 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setActiveRole('owner');
     }
     setPlatformSurface('erp');
+    enqueueApiSync(() => apiClient.auth.quickLaunch(preset), 'quickLaunchWorkspace');
   };
 
   const logoutAccount = () => {
     setAuthenticatedAccount(null);
     setImpersonatingOrgId(null);
     setPlatformSurface('login');
+    enqueueApiSync(() => apiClient.auth.logout(), 'logoutAccount');
   };
 
   const providerUpdateTenantStatus = (orgId: string, status: SaasTenantStatus) => {
@@ -6343,6 +5998,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (!target) return;
     setOrganizations((prev) => prev.map((o) => (o.id === orgId ? { ...o, status } : o)));
     recordProviderAudit('TENANT_STATUS_CHANGED', target.name, `Set subscription status to ${status.toUpperCase()}.`);
+    enqueueApiSync(() => apiClient.provider.updateTenantStatus(orgId, status), 'providerUpdateTenantStatus');
   };
 
   const providerUpdateTenantPlan = (orgId: string, plan: SaasPlanId) => {
@@ -6366,6 +6022,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       target.name,
       `Switched package to ${planDef.name} (quota: ${planDef.maxBranches} branches, fee: TZS ${planDef.monthlyFeeTzs.toLocaleString()}/mo).`
     );
+    enqueueApiSync(() => apiClient.provider.updateTenantPlan(orgId, plan), 'providerUpdateTenantPlan');
   };
 
   const providerCreatePlan = (params: {
@@ -6416,6 +6073,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       newPlan.name,
       `Published ${newPlan.name} (TZS ${newPlan.monthlyFeeTzs.toLocaleString()}/mo · ${newPlan.maxBranches} branches · ${newPlan.isPublic ? 'Visible on Landing' : 'Private'}).`
     );
+    enqueueApiSync(() => apiClient.provider.createPlan(params), 'providerCreatePlan');
     return { success: true, plan: newPlan };
   };
 
@@ -6452,6 +6110,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       updatedPlan.name,
       `Updated fee TZS ${updatedPlan.monthlyFeeTzs.toLocaleString()}/mo, branch quota ${updatedPlan.maxBranches}, seats ${updatedPlan.maxStaffSeats}, landing visibility: ${updatedPlan.isPublic ? 'PUBLIC' : 'HIDDEN'}.`
     );
+    enqueueApiSync(() => apiClient.provider.updatePlan(planId, patch), 'providerUpdatePlan');
   };
 
   const providerTogglePlanVisibility = (planId: string) => {
@@ -6464,6 +6123,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       target.name,
       `${nextPublic ? 'Published' : 'Hidden'} package on Public Landing Page & Self-Registration.`
     );
+    enqueueApiSync(() => apiClient.provider.togglePlanVisibility(planId), 'providerTogglePlanVisibility');
   };
 
   const providerTogglePlanStatus = (planId: string) => {
@@ -6478,6 +6138,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       )
     );
     recordProviderAudit('PACKAGE_STATUS_CHANGED', target.name, `Set package lifecycle status to ${nextStatus.toUpperCase()}.`);
+    enqueueApiSync(() => apiClient.provider.togglePlanStatus(planId), 'providerTogglePlanStatus');
   };
 
   const providerMarkBillingPaid = (orgId: string) => {
@@ -6492,6 +6153,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       )
     );
     recordProviderAudit('BILLING_VERIFIED', target.name, `Marked monthly subscription invoice settled (next cycle ${nextMonth}).`);
+    enqueueApiSync(() => apiClient.provider.markBillingPaid(orgId), 'providerMarkBillingPaid');
   };
 
   const providerInspectTenant = (orgId: string) => {
@@ -6503,6 +6165,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setImpersonatingOrgId(orgId);
     setPlatformSurface('erp');
     recordProviderAudit('TENANT_IMPERSONATION_STARTED', target.name, 'System Provider entered tenant Main HQ for live inspection.');
+    enqueueApiSync(() => apiClient.provider.inspectTenant(orgId), 'providerInspectTenant');
   };
 
   const providerExitInspection = () => {
@@ -6541,6 +6204,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
     setSaasAccounts((prev) => [newAcc, ...prev]);
     recordProviderAudit('ACCOUNT_CREATED', cleanEmail, `Created ${params.role} account for ${params.name.trim()}.`);
+    enqueueApiSync(
+      () => apiClient.provider.createAccount({ ...params, id: newAcc.id }),
+      'providerCreateAccount'
+    );
     return { success: true };
   };
 
@@ -6549,6 +6216,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (!acc) return;
     setSaasAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, status } : a)));
     recordProviderAudit('ACCOUNT_STATUS_CHANGED', acc.email, `Set user account status to ${status.toUpperCase()}.`);
+    enqueueApiSync(
+      () => apiClient.provider.updateAccountStatus(accountId, status),
+      'providerUpdateAccountStatus'
+    );
   };
 
   const providerUpdateAccountRole = (accountId: string, role: SaasAccountRole) => {
@@ -6562,6 +6233,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       )
     );
     recordProviderAudit('ACCOUNT_ROLE_CHANGED', acc.email, `Changed platform role to ${role}.`);
+    enqueueApiSync(
+      () => apiClient.provider.updateAccountRole(accountId, role),
+      'providerUpdateAccountRole'
+    );
   };
 
   const providerResetAccountPassword = (accountId: string, newPassword: string) => {
@@ -6569,6 +6244,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (!acc || newPassword.length < 4) return;
     setSaasAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, password: newPassword } : a)));
     recordProviderAudit('ACCOUNT_PASSWORD_RESET', acc.email, 'System Provider issued new account password.');
+    enqueueApiSync(
+      () => apiClient.provider.resetAccountPassword(accountId, newPassword),
+      'providerResetAccountPassword'
+    );
   };
 
   const submitLeadInquiry = (params: {
@@ -6593,6 +6272,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
     };
     setLeadInquiries((prev) => [newLead, ...prev]);
+    enqueueApiSync(
+      () => apiClient.public.submitLead({ ...params, id: newLead.id }),
+      'submitLeadInquiry'
+    );
     return newLead;
   };
 
@@ -6602,7 +6285,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       return { success: false, message: 'Lead already converted or not found.' };
     }
     const codePrefix = lead.companyName.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'TEN';
-    const created = createSaasTenant({
+    const created = applyCreateSaasTenantLocal({
       orgName: lead.companyName,
       ownerName: lead.contactName,
       ownerEmail: lead.email,
@@ -6620,6 +6303,15 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       'LEAD_CONVERTED_TO_TENANT',
       created.org.name,
       `Provisioned active ${created.org.plan} tenant and owner credentials for ${lead.email}.`
+    );
+    enqueueApiSync(
+      () =>
+        apiClient.provider.convertLeadToTenant(leadId, {
+          orgId: created.org.id,
+          branchId: created.branch.id,
+          accountId: created.account.id,
+        }),
+      'providerConvertLeadToTenant'
     );
     return {
       success: true,
@@ -6722,6 +6414,18 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     });
 
+    enqueueApiSync(
+      () =>
+        apiClient.hq.sendEmail(currentOrganization.id, {
+          ...params,
+          id: sentMsg.id,
+          senderBranchId: senderBranch.id,
+          fromName: activeOperator.name,
+          fromEmail: activeOperator.email,
+          isHq: viewScope === 'hq_overview',
+        }),
+      'sendEmail'
+    );
     return sentMsg;
   };
 
@@ -6731,6 +6435,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       (prev) => prev.map((e) => (e.id === emailId ? { ...e, read } : e)),
       branchId
     );
+    enqueueApiSync(
+      () => apiClient.hq.markEmailRead(currentOrganization.id, branchId, emailId, read),
+      'markEmailRead'
+    );
   };
 
   const toggleEmailStar = (emailId: string, branchId: string) => {
@@ -6739,6 +6447,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       (prev) => prev.map((e) => (e.id === emailId ? { ...e, starred: !e.starred } : e)),
       branchId
     );
+    enqueueApiSync(
+      () => apiClient.hq.toggleEmailStar(currentOrganization.id, branchId, emailId),
+      'toggleEmailStar'
+    );
   };
 
   const deleteEmail = (emailId: string, branchId: string) => {
@@ -6746,6 +6458,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       'emails',
       (prev) => prev.filter((e) => e.id !== emailId),
       branchId
+    );
+    enqueueApiSync(
+      () => apiClient.hq.deleteEmail(currentOrganization.id, branchId, emailId),
+      'deleteEmail'
     );
   };
 
