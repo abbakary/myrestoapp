@@ -64,6 +64,7 @@ export const Header: React.FC = () => {
   const [isSwitcherOpen, setIsSwitcherOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isMailOpen, setIsMailOpen] = useState(false);
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [showAddBranchForm, setShowAddBranchForm] = useState(false);
   const [branchLimitNotice, setBranchLimitNotice] = useState<string | null>(null);
   const [showAddTenantForm, setShowAddTenantForm] = useState(false);
@@ -92,6 +93,7 @@ export const Header: React.FC = () => {
   const switcherRef = useRef<HTMLDivElement>(null);
   const notifDropdownRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLDivElement>(null);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
 
   // Close popovers when clicking outside
   useEffect(() => {
@@ -107,6 +109,9 @@ export const Header: React.FC = () => {
       }
       if (searchRef.current && !searchRef.current.contains(target)) {
         setIsSearchFocused(false);
+      }
+      if (accountMenuRef.current && !accountMenuRef.current.contains(target)) {
+        setIsAccountMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -274,23 +279,21 @@ export const Header: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setIsSwitcherOpen((prev) => !prev)}
-                className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-xl border transition-colors cursor-pointer ${
+                className={`flex items-center gap-2.5 px-3 py-1.5 text-xs font-bold rounded-xl border transition-colors cursor-pointer whitespace-nowrap ${
                   viewScope === 'hq_overview'
                     ? 'bg-neutral-900 text-white border-neutral-900 hover:bg-neutral-800'
                     : 'bg-neutral-100 text-neutral-800 border-neutral-200/80 hover:bg-neutral-200/70'
                 }`}
                 aria-expanded={isSwitcherOpen}
               >
-                <span className="text-base">
+                <span className="text-base leading-none">
                   {viewScope === 'hq_overview' ? currentOrganization.logo : currentTenant.logo}
                 </span>
                 <div className="text-left leading-tight">
-                  <div className="max-w-[140px] sm:max-w-[200px] truncate flex items-center gap-1.5">
-                    <span>
-                      {viewScope === 'hq_overview'
-                        ? `${currentOrganization.name} · Main HQ`
-                        : currentTenant.name}
-                    </span>
+                  <div className="max-w-[170px] sm:max-w-[230px] truncate">
+                    {viewScope === 'hq_overview'
+                      ? `${currentOrganization.name} · HQ`
+                      : currentTenant.name}
                   </div>
                   <div
                     className={`text-[10px] font-mono ${
@@ -298,12 +301,12 @@ export const Header: React.FC = () => {
                     }`}
                   >
                     {viewScope === 'hq_overview'
-                      ? `All ${tenants.length} Branches Overview`
+                      ? `All ${tenants.length} Branches`
                       : `${currentOrganization.slug} · ${currentTenant.branchCode}`}
                   </div>
                 </div>
                 <ChevronDown
-                  className={`w-3.5 h-3.5 ${
+                  className={`w-4 h-4 shrink-0 ${
                     viewScope === 'hq_overview' ? 'text-neutral-300' : 'text-neutral-400'
                   }`}
                 />
@@ -599,18 +602,17 @@ export const Header: React.FC = () => {
               )}
             </div>
 
-            <div className="hidden sm:block text-xs text-neutral-300">/</div>
+            <div className="hidden xl:block text-xs text-neutral-300">/</div>
 
-            <div className="hidden sm:block min-w-0">
+            <div className="hidden xl:block min-w-0">
               <div className="text-xs font-bold text-neutral-900 leading-none truncate">
                 {currentInfo.title}
               </div>
-              <div className="text-[11px] text-neutral-400 mt-0.5 truncate">{currentInfo.subtitle}</div>
             </div>
           </div>
 
           {/* Center: Working Branch-Scoped Search */}
-          <div className="flex-1 max-w-md hidden md:block relative" ref={searchRef}>
+          <div className="flex-1 max-w-lg hidden md:block relative" ref={searchRef}>
             <div className="relative">
               <input
                 type="text"
@@ -896,57 +898,101 @@ export const Header: React.FC = () => {
               )}
             </button>
 
-            {/* Dynamic Operator & Mailbox Profile Chip (opens Email Workspace on click) */}
-            <button
-              type="button"
-              onClick={() => setIsMailOpen(true)}
-              className="flex items-center gap-2.5 pl-2 border-l border-neutral-200 hover:bg-neutral-50 rounded-r-xl py-1 pr-2 transition-colors cursor-pointer text-left"
-              title={`${activeOperator.name} · ${activeOperator.email} (Click to open Mail Center)`}
-            >
-              <div className="w-8 h-8 rounded-full bg-neutral-900 text-white text-xs font-bold flex items-center justify-center shrink-0">
-                {activeOperator.initials}
-              </div>
-              <div className="hidden lg:block text-left">
-                <div className="text-xs font-bold text-neutral-900 leading-tight">
-                  {activeOperator.name}
-                </div>
-                <div className="text-[10px] text-neutral-500 font-mono">{activeOperator.email}</div>
-              </div>
-            </button>
-
-            {/* Platform Surface Controls (Provider Console, Public Site, Sign Out) */}
-            {authenticatedAccount?.role === 'provider_admin' && (
+            {/* Clean Account & Workspace Menu (Consolidates Profile, Mailbox, Public Site, Provider & Sign Out) */}
+            <div className="relative pl-2 border-l border-neutral-200" ref={accountMenuRef}>
               <button
                 type="button"
-                onClick={providerExitInspection}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer"
-                title="Return to System Provider Accounts Control"
+                onClick={() => setIsAccountMenuOpen((prev) => !prev)}
+                className="flex items-center gap-2 hover:bg-neutral-50 rounded-xl py-1 px-2 transition-colors cursor-pointer text-left whitespace-nowrap"
+                aria-expanded={isAccountMenuOpen}
+                title={`${activeOperator.name} · ${activeOperator.email}`}
               >
-                <ShieldCheck className="w-3.5 h-3.5 text-orange-400" />
-                <span className="hidden xl:inline">Provider</span>
+                <div className="w-8 h-8 rounded-full bg-neutral-900 text-white text-xs font-bold flex items-center justify-center shrink-0">
+                  {activeOperator.initials}
+                </div>
+                <div className="hidden lg:block text-left">
+                  <div className="text-xs font-bold text-neutral-900 leading-tight max-w-[130px] truncate">
+                    {activeOperator.name}
+                  </div>
+                  <div className="text-[10px] text-neutral-500 leading-tight">
+                    {activeOperator.roleLabel}
+                  </div>
+                </div>
+                <ChevronDown className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
               </button>
-            )}
 
-            <button
-              type="button"
-              onClick={() => setPlatformSurface('landing')}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-neutral-200 bg-white hover:bg-neutral-50 text-xs font-semibold text-neutral-700 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
-              title="Open Public SaaS Website"
-            >
-              <Globe className="w-3.5 h-3.5 text-neutral-500" />
-              <span className="hidden xl:inline">Site</span>
-            </button>
+              {isAccountMenuOpen && (
+                <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-neutral-200 p-2 z-50 space-y-1">
+                  <div className="px-3 py-2 border-b border-neutral-100">
+                    <div className="text-xs font-bold text-neutral-900 truncate">
+                      {activeOperator.name}
+                    </div>
+                    <div className="text-[10px] text-neutral-500 font-mono truncate">
+                      {activeOperator.email}
+                    </div>
+                  </div>
 
-            <button
-              type="button"
-              onClick={logoutAccount}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-neutral-200 bg-white hover:bg-neutral-100 text-xs font-semibold text-neutral-700 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
-              title="Sign Out & Switch Account"
-              aria-label="Sign Out"
-            >
-              <LogOut className="w-3.5 h-3.5 text-neutral-600" />
-              <span className="hidden xl:inline">Sign Out</span>
-            </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAccountMenuOpen(false);
+                      setIsMailOpen(true);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl hover:bg-neutral-50 text-xs font-semibold text-neutral-800 flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Mail className="w-4 h-4 text-neutral-500" />
+                      <span>Email Workspace</span>
+                    </span>
+                    {unreadEmailCount > 0 && (
+                      <span className="text-[10px] font-mono font-bold text-emerald-700">
+                        {unreadEmailCount} unread
+                      </span>
+                    )}
+                  </button>
+
+                  {authenticatedAccount?.role === 'provider_admin' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAccountMenuOpen(false);
+                        providerExitInspection();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl hover:bg-neutral-50 text-xs font-semibold text-neutral-800 flex items-center gap-2 cursor-pointer"
+                    >
+                      <ShieldCheck className="w-4 h-4 text-orange-500" />
+                      <span>Provider Console</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAccountMenuOpen(false);
+                      setPlatformSurface('landing');
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl hover:bg-neutral-50 text-xs font-semibold text-neutral-800 flex items-center gap-2 cursor-pointer"
+                  >
+                    <Globe className="w-4 h-4 text-neutral-500" />
+                    <span>Public Website</span>
+                  </button>
+
+                  <div className="pt-1 border-t border-neutral-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAccountMenuOpen(false);
+                        logoutAccount();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl hover:bg-rose-50 text-xs font-semibold text-rose-700 flex items-center gap-2 cursor-pointer"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>

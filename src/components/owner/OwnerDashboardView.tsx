@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Download,
   Calendar,
@@ -36,6 +36,10 @@ import {
   RefreshCw,
   Power,
   Package,
+  Crown,
+  Briefcase,
+  UserCheck,
+  Check,
 } from 'lucide-react';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { Order, Role, RestaurantTenant } from '../../types/restaurant';
@@ -103,6 +107,8 @@ export const OwnerDashboardView: React.FC = () => {
 
   // User type / persona view selector
   const [activePersona, setActivePersona] = useState<PersonaView>('boss');
+  const [isRoleSwitcherOpen, setIsRoleSwitcherOpen] = useState(false);
+  const roleSwitcherRef = useRef<HTMLDivElement>(null);
 
   // Filter dimensions
   const [activeDimension, setActiveDimension] = useState<ReportDimension>('accountability_eod');
@@ -111,6 +117,75 @@ export const OwnerDashboardView: React.FC = () => {
   const [dateRangePreset, setDateRangePreset] = useState<string>('this_month');
   const [selectedShift, setSelectedShift] = useState<string>('all_day');
   const [selectedEmployeeFilter, setSelectedEmployeeFilter] = useState<string>('all_employees');
+
+  useEffect(() => {
+    const handleOutside = (e: MouseEvent) => {
+      if (roleSwitcherRef.current && !roleSwitcherRef.current.contains(e.target as Node)) {
+        setIsRoleSwitcherOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsRoleSwitcherOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, []);
+
+  const personaMeta: Record<
+    PersonaView,
+    {
+      label: string;
+      shortLabel: string;
+      headerTitle: string;
+      description: string;
+      defaultDimension: ReportDimension;
+      icon: React.ComponentType<{ className?: string }>;
+    }
+  > = {
+    boss: {
+      label: 'Boss / Owner',
+      shortLabel: 'Boss / Owner',
+      headerTitle: viewScope === 'hq_overview' ? 'Main HQ Sales Summary' : 'Executive Sales Summary',
+      description: 'Enterprise P&L, HQ command & all branch analytics',
+      defaultDimension: 'accountability_eod',
+      icon: Crown,
+    },
+    manager: {
+      label: 'Store Manager',
+      shortLabel: 'Store Manager',
+      headerTitle: 'Store Manager Operations',
+      description: 'BOM costing, kitchen margins, stock & approvals',
+      defaultDimension: 'by_category',
+      icon: Briefcase,
+    },
+    cashier: {
+      label: 'Cashier',
+      shortLabel: 'Cashier',
+      headerTitle: 'Cashier Register Audit',
+      description: 'Drawer float, tender split & active shift bills',
+      defaultDimension: 'cashier_shift',
+      icon: CreditCard,
+    },
+    waiter: {
+      label: 'Waiter / Sales',
+      shortLabel: 'Waiter / Sales',
+      headerTitle: 'Waiter Sales & Commissions',
+      description: 'Waiter-attributed orders, unpaid bills & commission',
+      defaultDimension: 'by_salesperson',
+      icon: UserCheck,
+    },
+  };
+
+  const handleSelectPersona = (nextPersona: PersonaView) => {
+    setActivePersona(nextPersona);
+    setSelectedEmployeeFilter('all_employees');
+    setActiveDimension(personaMeta[nextPersona].defaultDimension);
+    setIsRoleSwitcherOpen(false);
+  };
 
   // HQ Branch creation & Inter-branch transfer local states
   const [showHqAddBranch, setShowHqAddBranch] = useState(false);
@@ -203,9 +278,45 @@ export const OwnerDashboardView: React.FC = () => {
     return Math.round(amountTzs).toLocaleString();
   };
 
-  // Determine active waiter when Waiter Persona is selected (never hardcoded)
+  // Role-scoped options for the Staff / Person dropdown filter
+  const rolePersonOptions = useMemo(() => {
+    if (activePersona === 'waiter') {
+      return waiters.map((w) => ({
+        id: w.id,
+        label: `${w.name} (${w.referralCode})`,
+        name: w.name,
+      }));
+    }
+    if (activePersona === 'cashier') {
+      const cashiers = employees.filter((e) =>
+        ['cashier', 'reception', 'accountant'].includes(e.role)
+      );
+      const list = cashiers.length > 0 ? cashiers : employees;
+      return list.map((e) => ({
+        id: e.id,
+        label: `${e.name} (${e.role})`,
+        name: e.name,
+      }));
+    }
+    if (activePersona === 'manager') {
+      return employees.map((e) => ({
+        id: e.id,
+        label: `${e.name} (${e.role})`,
+        name: e.name,
+      }));
+    }
+    return employees.map((e) => ({
+      id: e.id,
+      label: `${e.name} (${e.role})`,
+      name: e.name,
+    }));
+  }, [activePersona, employees, waiters]);
+
+  // Determine active waiter when Waiter Persona is selected (undefined = All Waiters)
   const selectedPersonaWaiter = useMemo(() => {
     if (selectedEmployeeFilter !== 'all_employees') {
+      const directWaiter = waiters.find((w) => w.id === selectedEmployeeFilter);
+      if (directWaiter) return directWaiter;
       const emp = employees.find((e) => e.id === selectedEmployeeFilter);
       if (emp) {
         const byMatch = waiters.find(
@@ -214,7 +325,7 @@ export const OwnerDashboardView: React.FC = () => {
         if (byMatch) return byMatch;
       }
     }
-    return waiters[0];
+    return undefined;
   }, [waiters, employees, selectedEmployeeFilter]);
 
   // Base orders scoped by Branch vs Main HQ
@@ -223,10 +334,10 @@ export const OwnerDashboardView: React.FC = () => {
     [viewScope, hqAllOrders, orders]
   );
 
-  // Apply Date Range, Shift, Employee, and Persona filters strictly to live tenant orders
+  // Apply Date Range, Shift, Role Perspective, and Staff/Waiter filters strictly to live tenant orders
   const filteredOrders = useMemo(() => {
     const selectedEmp =
-      selectedEmployeeFilter !== 'all_employees'
+      activePersona !== 'waiter' && selectedEmployeeFilter !== 'all_employees'
         ? employees.find((e) => e.id === selectedEmployeeFilter)
         : undefined;
     const matchedEmpWaiter = selectedEmp
@@ -251,23 +362,72 @@ export const OwnerDashboardView: React.FC = () => {
         if (selectedShift === 'dinner' && hour < 15) return false;
       }
 
-      if (selectedEmp) {
-        const waiterMatch =
-          matchedEmpWaiter &&
-          (o.servingWaiterId === matchedEmpWaiter.id || o.referralWaiterId === matchedEmpWaiter.id);
-        const actorMatch = o.statusHistory?.some((h) =>
-          h.actor.toLowerCase().includes(selectedEmp.name.toLowerCase())
-        );
-        if (!waiterMatch && !actorMatch) return false;
-      }
-
+      // Role-level filtering
       if (activePersona === 'waiter') {
-        if (!selectedPersonaWaiter) return false;
-        if (
-          o.servingWaiterId !== selectedPersonaWaiter.id &&
-          o.referralWaiterId !== selectedPersonaWaiter.id
-        ) {
+        if (selectedPersonaWaiter) {
+          if (
+            o.servingWaiterId !== selectedPersonaWaiter.id &&
+            o.referralWaiterId !== selectedPersonaWaiter.id
+          ) {
+            return false;
+          }
+        } else {
+          // All Waiters view: include orders attributed to any waiter
+          if (!o.servingWaiterId && !o.referralWaiterId) {
+            return false;
+          }
+        }
+      } else if (activePersona === 'cashier') {
+        // Counter / payment-settlement orders (exclude unsubmitted drafts)
+        if (o.status === 'draft') {
           return false;
+        }
+        if (selectedEmp) {
+          const empNameLower = selectedEmp.name.toLowerCase();
+          const paymentMatch = o.payments?.some((tx) =>
+            tx.receivedBy.toLowerCase().includes(empNameLower)
+          );
+          const actorMatch = o.statusHistory?.some((h) =>
+            h.actor.toLowerCase().includes(empNameLower)
+          );
+          if (!paymentMatch && !actorMatch) return false;
+        }
+      } else if (activePersona === 'manager') {
+        // Store Manager focuses on submitted kitchen/service orders (exclude unsubmitted drafts)
+        if (o.status === 'draft') {
+          return false;
+        }
+        if (selectedEmp && selectedEmp.role !== 'manager') {
+          const empNameLower = selectedEmp.name.toLowerCase();
+          const waiterMatch =
+            matchedEmpWaiter &&
+            (o.servingWaiterId === matchedEmpWaiter.id || o.referralWaiterId === matchedEmpWaiter.id);
+          const paymentMatch = o.payments?.some((tx) =>
+            tx.receivedBy.toLowerCase().includes(empNameLower)
+          );
+          const actorMatch = o.statusHistory?.some((h) =>
+            h.actor.toLowerCase().includes(empNameLower)
+          );
+          if (!waiterMatch && !paymentMatch && !actorMatch) return false;
+        } else if (selectedEmp && selectedEmp.role === 'manager') {
+          // Branch manager oversees all orders in their branch
+          if (o.tenantId !== currentTenant.id) return false;
+        }
+      } else if (selectedEmp) {
+        if (selectedEmp.role === 'manager') {
+          if (o.tenantId !== currentTenant.id) return false;
+        } else {
+          const empNameLower = selectedEmp.name.toLowerCase();
+          const waiterMatch =
+            matchedEmpWaiter &&
+            (o.servingWaiterId === matchedEmpWaiter.id || o.referralWaiterId === matchedEmpWaiter.id);
+          const paymentMatch = o.payments?.some((tx) =>
+            tx.receivedBy.toLowerCase().includes(empNameLower)
+          );
+          const actorMatch = o.statusHistory?.some((h) =>
+            h.actor.toLowerCase().includes(empNameLower)
+          );
+          if (!waiterMatch && !paymentMatch && !actorMatch) return false;
         }
       }
 
@@ -282,6 +442,7 @@ export const OwnerDashboardView: React.FC = () => {
     waiters,
     activePersona,
     selectedPersonaWaiter,
+    currentTenant.id,
   ]);
 
   const validFilteredOrders = useMemo(
@@ -338,11 +499,20 @@ export const OwnerDashboardView: React.FC = () => {
     const grossProfit = netSales - cogs - refunds;
     const marginPct = netSales > 0 ? Number(((grossProfit / netSales) * 100).toFixed(1)) : 0;
     const waiterCommission =
-      activePersona === 'waiter' && selectedPersonaWaiter
+      activePersona === 'waiter'
         ? validFilteredOrders
             .filter((o) => o.paymentStatus === 'paid')
-            .reduce((s, o) => s + getOrderCommission(o, selectedPersonaWaiter.id).amount, 0)
+            .reduce((s, o) => {
+              const targetWaiterId =
+                selectedPersonaWaiter?.id || o.servingWaiterId || o.referralWaiterId;
+              return s + (targetWaiterId ? getOrderCommission(o, targetWaiterId).amount : 0);
+            }, 0)
         : 0;
+    const collectedTotal = validFilteredOrders.reduce((s, o) => s + (o.paidAmount || 0), 0);
+    const outstandingTotal = validFilteredOrders.reduce(
+      (s, o) => s + Math.max(0, o.total - (o.paidAmount || 0)),
+      0
+    );
 
     return {
       grossSales,
@@ -353,6 +523,8 @@ export const OwnerDashboardView: React.FC = () => {
       grossProfit,
       marginPct,
       waiterCommission,
+      collectedTotal,
+      outstandingTotal,
       receiptsCount: validFilteredOrders.length,
     };
   }, [
@@ -661,18 +833,28 @@ export const OwnerDashboardView: React.FC = () => {
     return Array.from({ length: 7 }, (_, i) => dailyData[Math.round(i * step)].shortLabel);
   }, [dailyData]);
 
-  // Live Today Operations & EOD Financial Reconciliation (computed directly from live orders & payments)
+  // Live Today Operations & EOD Financial Reconciliation (computed directly from filteredOrders)
   const liveOps = useMemo(() => {
-    const activeNonDraft = orders.filter((o) => o.status !== 'draft' && o.status !== 'cancelled' && o.status !== 'rejected');
-    const drafts = orders.filter((o) => o.status === 'draft');
-    const cancelled = orders.filter((o) => o.status === 'cancelled' || o.status === 'rejected');
-    const outstandingOrders = activeNonDraft.filter((o) => Math.max(0, o.total - (o.paidAmount || 0)) > 0);
+    const activeNonDraft = filteredOrders.filter(
+      (o) => o.status !== 'draft' && o.status !== 'cancelled' && o.status !== 'rejected'
+    );
+    const drafts = filteredOrders.filter((o) => o.status === 'draft');
+    const cancelled = filteredOrders.filter((o) => o.status === 'cancelled' || o.status === 'rejected');
+    const outstandingOrders = activeNonDraft.filter(
+      (o) => Math.max(0, o.total - (o.paidAmount || 0)) > 0
+    );
     const totalSales = activeNonDraft.reduce((s, o) => s + o.total, 0);
     const totalCollected = activeNonDraft.reduce((s, o) => s + (o.paidAmount || 0), 0);
-    const outstandingAmount = outstandingOrders.reduce((s, o) => s + Math.max(0, o.total - (o.paidAmount || 0)), 0);
+    const outstandingAmount = outstandingOrders.reduce(
+      (s, o) => s + Math.max(0, o.total - (o.paidAmount || 0)),
+      0
+    );
     const draftAmount = drafts.reduce((s, o) => s + o.total, 0);
     const cancelledAmount = cancelled.reduce((s, o) => s + (o.originalAmount || o.total), 0);
-    const customItemsCount = orders.reduce((s, o) => s + o.items.filter((i) => i.isCustomItem).length, 0);
+    const customItemsCount = filteredOrders.reduce(
+      (s, o) => s + o.items.filter((i) => i.isCustomItem).length,
+      0
+    );
 
     // Breakdown by tender method from Transaction records (fallback to paymentMethod when payments[] absent)
     let cashCollected = 0;
@@ -683,7 +865,7 @@ export const OwnerDashboardView: React.FC = () => {
     let discountsTotal = 0;
     let rejectedItemsValue = 0;
 
-    orders.forEach((ord) => {
+    filteredOrders.forEach((ord) => {
       discountsTotal += ord.discount || 0;
       ord.items.forEach((it) => {
         if (it.status === 'rejected') {
@@ -712,14 +894,32 @@ export const OwnerDashboardView: React.FC = () => {
       }
     });
 
-    const perWaiter = waiters.map((w) => {
-      const wOrders = orders.filter((o) => o.servingWaiterId === w.id || o.referralWaiterId === w.id);
+    const visibleWaiters =
+      activePersona === 'waiter' && selectedPersonaWaiter
+        ? waiters.filter((w) => w.id === selectedPersonaWaiter.id)
+        : waiters;
+
+    const perWaiter = visibleWaiters.map((w) => {
+      const wOrders = filteredOrders.filter(
+        (o) => o.servingWaiterId === w.id || o.referralWaiterId === w.id
+      );
       const wDrafts = wOrders.filter((o) => o.status === 'draft');
-      const wInKitchen = wOrders.filter((o) => ['sent_to_kitchen', 'accepted', 'preparing', 'ready'].includes(o.status));
-      const wServedUnpaid = wOrders.filter((o) => o.status === 'served' && o.paymentStatus !== 'paid');
-      const wPaid = wOrders.filter((o) => o.paymentStatus === 'paid' && o.status !== 'cancelled');
-      const wCancelled = wOrders.filter((o) => o.status === 'cancelled' || o.status === 'rejected');
-      const wCustomCount = wOrders.reduce((s, o) => s + o.items.filter((i) => i.isCustomItem).length, 0);
+      const wInKitchen = wOrders.filter((o) =>
+        ['sent_to_kitchen', 'accepted', 'preparing', 'ready'].includes(o.status)
+      );
+      const wServedUnpaid = wOrders.filter(
+        (o) => o.status === 'served' && o.paymentStatus !== 'paid'
+      );
+      const wPaid = wOrders.filter(
+        (o) => o.paymentStatus === 'paid' && o.status !== 'cancelled'
+      );
+      const wCancelled = wOrders.filter(
+        (o) => o.status === 'cancelled' || o.status === 'rejected'
+      );
+      const wCustomCount = wOrders.reduce(
+        (s, o) => s + o.items.filter((i) => i.isCustomItem).length,
+        0
+      );
       const wDiscounts = wOrders.reduce((s, o) => s + (o.discount || 0), 0);
       const wCollected = wOrders
         .filter((o) => o.status !== 'cancelled' && o.status !== 'draft')
@@ -765,7 +965,7 @@ export const OwnerDashboardView: React.FC = () => {
       rejectedItemsValue,
       perWaiter,
     };
-  }, [orders, waiters, getOrderCommission]);
+  }, [filteredOrders, waiters, activePersona, selectedPersonaWaiter, getOrderCommission]);
 
   // Export CSV handler
   const handleExportCsv = () => {
@@ -825,189 +1025,213 @@ export const OwnerDashboardView: React.FC = () => {
     document.body.removeChild(link);
   };
 
+  const ActivePersonaIcon = personaMeta[activePersona].icon;
+
   return (
     <div className="min-h-screen bg-neutral-100/80 text-neutral-900 font-sans pb-12">
-      {/* ================= TOP VIBRANT GREEN HEADER BAR matching image_04d4b5da.png ================= */}
-      <div className="bg-[#43A047] text-white px-4 sm:px-6 h-14 flex items-center justify-between shadow-xs sticky top-0 z-20">
-        <div className="flex items-center gap-3">
+      {/* ================= CLEAN GREEN SECTION HEADER WITH SINGLE ROLE SWITCH BUTTON ================= */}
+      <div className="bg-[#43A047] text-white px-4 sm:px-6 h-15 flex items-center justify-between gap-4 shadow-xs sticky top-0 z-20">
+        <div className="flex items-center gap-3 min-w-0">
           <button
+            type="button"
             onClick={() => setActiveRole('cashier')}
-            className="p-1.5 hover:bg-white/20 rounded-lg transition-colors cursor-pointer"
+            className="p-2 hover:bg-white/20 rounded-xl transition-colors cursor-pointer shrink-0"
             title="Switch back to Cashier POS"
+            aria-label="Back to Cashier POS"
           >
-            <RotateCcw className="w-5 h-5 text-white" />
+            <RotateCcw className="w-4 h-4 text-white" />
           </button>
-          <div>
-            <h1 className="text-base sm:text-xl font-bold tracking-tight text-white drop-shadow-xs flex items-center gap-2">
-              <span>{viewScope === 'hq_overview' ? 'Main HQ Command & Sales Summary' : 'Sales summary'}</span>
-              <span className="hidden md:inline text-xs font-normal text-white/85">
-                · {currentOrganization.name} · {viewScope === 'hq_overview' ? `All ${tenants.length} Branches` : `${currentTenant.name} (${currentTenant.branchCode})`}
-              </span>
+          <div className="min-w-0 flex items-baseline gap-2.5 flex-wrap">
+            <h1 className="text-base sm:text-lg font-bold tracking-tight text-white whitespace-nowrap">
+              {personaMeta[activePersona].headerTitle}
             </h1>
+            <span className="hidden md:inline text-xs font-medium text-white/85 truncate">
+              {currentOrganization.name} ·{' '}
+              {viewScope === 'hq_overview'
+                ? `All ${tenants.length} Branches`
+                : `${currentTenant.name} (${currentTenant.branchCode})`}
+            </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-2.5 shrink-0">
           {viewScope === 'branch' && (
             <button
               type="button"
               onClick={switchToHqOverview}
-              className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs font-bold transition-colors cursor-pointer"
+              className="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 text-white text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer"
             >
-              <Building2 className="w-3.5 h-3.5" />
-              <span>Main HQ Overview</span>
+              <Building2 className="w-4 h-4" />
+              <span>Main HQ</span>
             </button>
           )}
-          {/* Persona / User Type Selector Pills as requested: "based on user types each must see their respective report" */}
-          <div className="hidden sm:flex items-center bg-black/20 p-1 rounded-xl text-xs font-semibold">
-            {[
-              { id: 'boss', label: '👑 Boss / Owner' },
-              { id: 'manager', label: '👔 Store Manager' },
-              { id: 'cashier', label: '💳 Cashier' },
-              { id: 'waiter', label: '📱 Waiter / Sales' },
-            ].map((p) => (
-              <button
-                key={p.id}
-                onClick={() => setActivePersona(p.id as PersonaView)}
-                className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                  activePersona === p.id
-                    ? 'bg-white text-neutral-900 font-bold shadow-xs'
-                    : 'text-white/80 hover:text-white'
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
 
-          {/* Currency Switcher */}
-          <button
-            onClick={toggleCurrency}
-            className="px-2.5 py-1 text-xs font-mono font-bold rounded-lg bg-white/20 hover:bg-white/30 text-white transition-colors"
-            title="Toggle Currency between USD and TZS"
-          >
-            {currency}
-          </button>
+          {/* Single Clean Role Switch Button */}
+          <div className="relative" ref={roleSwitcherRef}>
+            <button
+              type="button"
+              onClick={() => setIsRoleSwitcherOpen((prev) => !prev)}
+              aria-expanded={isRoleSwitcherOpen}
+              aria-haspopup="menu"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white text-neutral-900 hover:bg-neutral-100 text-xs font-bold shadow-xs whitespace-nowrap transition-colors cursor-pointer"
+            >
+              <ActivePersonaIcon className="w-4 h-4 text-[#2E7D32] shrink-0" />
+              <span>{personaMeta[activePersona].shortLabel}</span>
+              <ChevronDown
+                className={`w-4 h-4 text-neutral-500 transition-transform duration-150 ${
+                  isRoleSwitcherOpen ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            {isRoleSwitcherOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 top-full mt-2 w-72 bg-white text-neutral-900 rounded-2xl shadow-2xl border border-neutral-200 p-2 z-50 space-y-1"
+              >
+                <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-neutral-400">
+                  Switch Dashboard Role
+                </div>
+                {(Object.keys(personaMeta) as PersonaView[]).map((roleKey) => {
+                  const meta = personaMeta[roleKey];
+                  const Icon = meta.icon;
+                  const selected = activePersona === roleKey;
+                  return (
+                    <button
+                      key={roleKey}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      onClick={() => handleSelectPersona(roleKey)}
+                      className={`w-full text-left px-3 py-2.5 rounded-xl flex items-start justify-between gap-2.5 transition-colors cursor-pointer ${
+                        selected
+                          ? 'bg-emerald-50 text-emerald-950 border border-emerald-200'
+                          : 'hover:bg-neutral-50 text-neutral-800 border border-transparent'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <div
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                            selected
+                              ? 'bg-[#43A047] text-white'
+                              : 'bg-neutral-100 text-neutral-600'
+                          }`}
+                        >
+                          <Icon className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold leading-tight">{meta.label}</div>
+                          <div className="text-[11px] text-neutral-500 mt-0.5 leading-snug">
+                            {meta.description}
+                          </div>
+                        </div>
+                      </div>
+                      {selected && <Check className="w-4 h-4 text-[#43A047] shrink-0 mt-1" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Mobile Persona Switcher Bar */}
-      <div className="sm:hidden px-4 py-2 bg-white border-b border-neutral-200 flex gap-1 overflow-x-auto text-xs">
-        {[
-          { id: 'boss', label: '👑 Boss' },
-          { id: 'manager', label: '👔 Manager' },
-          { id: 'cashier', label: '💳 Cashier' },
-          { id: 'waiter', label: '📱 Waiter' },
-        ].map((p) => (
-          <button
-            key={p.id}
-            onClick={() => setActivePersona(p.id as PersonaView)}
-            className={`px-3 py-1 rounded-lg font-bold shrink-0 ${
-              activePersona === p.id
-                ? 'bg-[#43A047] text-white'
-                : 'bg-neutral-100 text-neutral-700'
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ================= FILTER & PERSPECTIVE TOOLBAR matching image_04d4b5da.png ================= */}
-      <div className="bg-white border-b border-neutral-200/90 px-4 sm:px-6 py-2.5 shadow-2xs">
+      {/* ================= ROLE-AWARE FILTER TOOLBAR ================= */}
+      <div className="bg-white border-b border-neutral-200/90 px-4 sm:px-6 py-3 shadow-2xs">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          {/* Filter Pills Left */}
-          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 text-xs text-neutral-700">
+          {/* Functional Filters Left */}
+          <div className="flex flex-wrap items-center gap-2.5 text-xs text-neutral-700">
             {/* Live Date Range Selector */}
-            <div className="flex items-center bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-lg px-2.5 py-1.5 font-medium transition-colors">
-              <Calendar className="w-3.5 h-3.5 text-neutral-500 mr-1.5" />
+            <div className="flex items-center bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-xl px-3 py-1.5 font-medium transition-colors">
+              <Calendar className="w-4 h-4 text-neutral-500 mr-2 shrink-0" />
               <button
                 type="button"
                 onClick={() => cycleDatePreset(-1)}
-                className="hover:text-neutral-950 font-mono text-[11px] px-1 cursor-pointer"
+                className="hover:text-neutral-950 font-mono text-xs px-1 cursor-pointer"
                 aria-label="Previous date range"
               >
                 &lt;
               </button>
-              <span className="font-semibold text-neutral-900 px-1 font-mono text-[11px] sm:text-xs">
+              <span className="font-semibold text-neutral-900 px-1.5 font-mono text-xs whitespace-nowrap">
                 {dateRangeInfo.label}
               </span>
               <button
                 type="button"
                 onClick={() => cycleDatePreset(1)}
-                className="hover:text-neutral-950 font-mono text-[11px] px-1 cursor-pointer"
+                className="hover:text-neutral-950 font-mono text-xs px-1 cursor-pointer"
                 aria-label="Next date range"
               >
                 &gt;
               </button>
             </div>
 
-            {/* Shift Filter: All day ▾ */}
-            <div className="relative">
-              <select
-                value={selectedShift}
-                onChange={(e) => setSelectedShift(e.target.value)}
-                className="bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-neutral-800 outline-hidden cursor-pointer"
-              >
-                <option value="all_day">All day</option>
-                <option value="morning">Morning Shift (08:00 - 15:00)</option>
-                <option value="dinner">Dinner Shift (15:00 - 23:30)</option>
-              </select>
-            </div>
+            {/* Shift Filter */}
+            <select
+              value={selectedShift}
+              onChange={(e) => setSelectedShift(e.target.value)}
+              aria-label="Shift filter"
+              className="bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-xl px-3 py-2 text-xs font-semibold text-neutral-800 outline-hidden cursor-pointer"
+            >
+              <option value="all_day">All day</option>
+              <option value="morning">Morning Shift (08:00 - 15:00)</option>
+              <option value="dinner">Dinner Shift (15:00 - 23:30)</option>
+            </select>
 
-            {/* Store / Branch Scope Filter (Strictly Isolated to Current Tenant) */}
-            <div className="relative">
-              <select
-                value={viewScope === 'hq_overview' ? 'all_stores' : currentTenant.id}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === 'all_stores') {
-                    switchToHqOverview();
-                  } else {
-                    setCurrentTenantId(val);
-                  }
-                }}
-                aria-label="Branch scope filter"
-                className="bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-neutral-800 outline-hidden cursor-pointer"
-              >
-                <option value="all_stores">
-                  Main HQ — All {tenants.length} Branches ({currentOrganization.name})
+            {/* Branch Scope Filter */}
+            <select
+              value={viewScope === 'hq_overview' ? 'all_stores' : currentTenant.id}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedEmployeeFilter('all_employees');
+                if (val === 'all_stores') {
+                  switchToHqOverview();
+                } else {
+                  setCurrentTenantId(val);
+                }
+              }}
+              aria-label="Branch scope filter"
+              className="bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-xl px-3 py-2 text-xs font-semibold text-neutral-800 outline-hidden cursor-pointer"
+            >
+              <option value="all_stores">
+                Main HQ — All {tenants.length} Branches ({currentOrganization.name})
+              </option>
+              {tenants.map((branch) => (
+                <option key={branch.id} value={branch.id}>
+                  {branch.name} ({branch.branchCode})
                 </option>
-                {tenants.map((branch) => (
-                  <option key={branch.id} value={branch.id}>
-                    {branch.name} ({branch.branchCode})
-                  </option>
-                ))}
-              </select>
-            </div>
+              ))}
+            </select>
 
-            {/* Employee Filter: Dynamically populated for current branch */}
-            <div className="relative">
-              <select
-                value={selectedEmployeeFilter}
-                onChange={(e) => setSelectedEmployeeFilter(e.target.value)}
-                aria-label="Employee filter"
-                className="bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-neutral-800 outline-hidden cursor-pointer"
-              >
-                <option value="all_employees">All employees ({employees.length})</option>
-                {employees.map((emp) => (
-                  <option key={emp.id} value={emp.id}>
-                    {emp.name} ({emp.role})
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* Role-Aware Staff / Waiter Filter */}
+            <select
+              value={selectedEmployeeFilter}
+              onChange={(e) => setSelectedEmployeeFilter(e.target.value)}
+              aria-label="Role staff filter"
+              className="bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-xl px-3 py-2 text-xs font-semibold text-neutral-800 outline-hidden cursor-pointer"
+            >
+              <option value="all_employees">
+                {activePersona === 'waiter' && `All Waiters (${rolePersonOptions.length})`}
+                {activePersona === 'cashier' && `All Cashiers (${rolePersonOptions.length})`}
+                {activePersona === 'manager' && `All Operations Staff (${rolePersonOptions.length})`}
+                {activePersona === 'boss' && `All Employees (${rolePersonOptions.length})`}
+              </option>
+              {rolePersonOptions.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.label}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {/* Optional Tax Config + Quick Info Badge */}
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-neutral-200 bg-neutral-50 text-xs">
+          {/* Order Tax Config (Right) */}
+          {activePersona !== 'waiter' && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-neutral-200 bg-neutral-50 text-xs shrink-0">
               <Percent className="w-3.5 h-3.5 text-neutral-500" />
               <span className="font-semibold text-neutral-700">Order Tax:</span>
               <button
                 type="button"
                 onClick={() => setTaxEnabled(!taxEnabled)}
-                className={`px-2 py-0.5 rounded font-bold text-[11px] transition-colors cursor-pointer ${
+                className={`px-2.5 py-0.5 rounded-lg font-bold text-xs transition-colors cursor-pointer ${
                   taxEnabled
                     ? 'bg-[#43A047] text-white'
                     : 'bg-neutral-200 text-neutral-700 hover:bg-neutral-300'
@@ -1019,7 +1243,7 @@ export const OwnerDashboardView: React.FC = () => {
                 <select
                   value={taxRatePct}
                   onChange={(e) => setTaxRatePct(Number(e.target.value))}
-                  className="bg-white border border-neutral-200 rounded px-1.5 py-0.5 text-[11px] font-mono font-bold text-neutral-800 outline-hidden cursor-pointer"
+                  className="bg-white border border-neutral-200 rounded-lg px-2 py-0.5 text-xs font-mono font-bold text-neutral-800 outline-hidden cursor-pointer"
                   aria-label="VAT Rate Percentage"
                 >
                   <option value={10}>10%</option>
@@ -1028,28 +1252,13 @@ export const OwnerDashboardView: React.FC = () => {
                 </select>
               )}
             </div>
-
-            <div className="text-xs font-medium text-neutral-500 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span>
-                {activePersona === 'boss' && 'Role: Executive Owner & Boss (Enterprise View)'}
-                {activePersona === 'manager' && 'Role: Store Manager (Shift & Kitchen Costing)'}
-                {activePersona === 'cashier' && 'Role: Cashier Terminal 01 (Register Audit)'}
-                {activePersona === 'waiter' &&
-                  `Role: ${selectedPersonaWaiter ? selectedPersonaWaiter.name : 'No Waiter Assigned'} (${
-                    defaultCommissionMode === 'percent'
-                      ? `${defaultCommissionValue}% Commission`
-                      : `${formatMoney(defaultCommissionValue)} / Paid Order`
-                  })`}
-              </span>
-            </div>
-          </div>
+          )}
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* ================= MAIN HQ MULTI-BRANCH OVERVIEW & CONTROL OR BRANCH BANNER ================= */}
-        {viewScope === 'hq_overview' ? (
+        {/* ================= ROLE-ADAPTED TOP COMMAND / SUMMARY SECTION ================= */}
+        {activePersona === 'boss' && viewScope === 'hq_overview' ? (
           (() => {
             const hqTotals = branchMetricsSummaries.reduce(
               (acc, b) => ({
@@ -1677,7 +1886,7 @@ export const OwnerDashboardView: React.FC = () => {
               </section>
             );
           })()
-        ) : (
+        ) : activePersona === 'boss' ? (
           <div className="bg-white rounded-2xl border border-neutral-200 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
               <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded bg-neutral-900 text-white">
@@ -1703,12 +1912,117 @@ export const OwnerDashboardView: React.FC = () => {
               <span>Main HQ — All Branches Overview</span>
             </button>
           </div>
+        ) : activePersona === 'manager' ? (
+          <div className="bg-white rounded-2xl border border-neutral-200 px-5 py-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Briefcase className="w-4 h-4 text-[#43A047]" />
+                <span className="text-sm font-extrabold text-neutral-900">
+                  Store Manager Operations &amp; Kitchen BOM Costing
+                </span>
+                <span className="text-xs text-neutral-500">
+                  · {viewScope === 'hq_overview' ? `All ${tenants.length} Branches` : currentTenant.name}
+                </span>
+              </div>
+              <p className="text-xs text-neutral-500">
+                Showing submitted kitchen &amp; service orders, food COGS margin, pending approvals ({approvalRequests.filter((r) => r.status === 'pending').length}), and active production batches ({productionLogs.filter((l) => l.status !== 'reversed').length}).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveRole('manager')}
+              className="px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <Package className="w-4 h-4" />
+              <span>Open Inventory &amp; BOM</span>
+            </button>
+          </div>
+        ) : activePersona === 'cashier' ? (
+          <div className="bg-white rounded-2xl border border-neutral-200 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-[#43A047]" />
+                <span className="text-sm font-extrabold text-neutral-900">
+                  Cashier Register &amp; Settlement Audit
+                </span>
+                <span className="text-xs text-neutral-500">
+                  · {viewScope === 'hq_overview' ? `All ${tenants.length} Branches` : `${currentTenant.name} (${currentTenant.branchCode})`}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveRole('cashier')}
+                className="px-3.5 py-2 rounded-xl bg-[#43A047] hover:bg-[#388E3C] text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <Banknote className="w-4 h-4" />
+                <span>Open Cashier POS</span>
+              </button>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200">
+                <div className="text-neutral-500">Cash Tender Collected</div>
+                <div className="font-mono font-extrabold text-sm text-neutral-900 mt-1 tabular-nums">
+                  {formatMoney(liveOps.cashCollected)}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200">
+                <div className="text-neutral-500">M-Pesa &amp; Airtel</div>
+                <div className="font-mono font-extrabold text-sm text-blue-700 mt-1 tabular-nums">
+                  {formatMoney(liveOps.mpesaCollected + liveOps.airtelCollected)}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200">
+                <div className="text-neutral-500">Card Settlements</div>
+                <div className="font-mono font-extrabold text-sm text-neutral-900 mt-1 tabular-nums">
+                  {formatMoney(liveOps.cardCollected)}
+                </div>
+              </div>
+              <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                <div className="text-emerald-800 font-semibold">Expected Cash in Drawer</div>
+                <div className="font-mono font-extrabold text-sm text-emerald-900 mt-1 tabular-nums">
+                  {formatMoney(cashierShift.openingCash + liveOps.cashCollected - liveOps.refundsTotal)}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-white rounded-2xl border border-neutral-200 px-5 py-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <UserCheck className="w-4 h-4 text-[#43A047]" />
+                <span className="text-sm font-extrabold text-neutral-900">
+                  {selectedPersonaWaiter
+                    ? `${selectedPersonaWaiter.name} (${selectedPersonaWaiter.referralCode}) — Waiter Ledger`
+                    : 'All Waiters — Attributed Sales & Commissions'}
+                </span>
+              </div>
+              <p className="text-xs text-neutral-500">
+                Commission rate:{' '}
+                <strong className="text-neutral-800">
+                  {defaultCommissionMode === 'percent'
+                    ? `${defaultCommissionValue}% of paid net sales`
+                    : `${formatMoney(defaultCommissionValue)} per paid order`}
+                </strong>{' '}
+                · Filtered to waiter-attributed orders across selected dates &amp; shift.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveRole('waiter')}
+              className="px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <QrCode className="w-4 h-4" />
+              <span>Open Waiter Portal</span>
+            </button>
+          </div>
         )}
 
-        {/* ================= LIVE TODAY OPERATIONS & ACCOUNTABILITY OVERVIEW ================= */}
+        {/* ================= LIVE TODAY OPERATIONS & ACCOUNTABILITY OVERVIEW (FILTERED) ================= */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <div className="bg-white rounded-xl p-3.5 border border-neutral-200">
-            <div className="text-[11px] text-neutral-500 font-medium">Today Live Sales</div>
+            <div className="text-[11px] text-neutral-500 font-medium">
+              {activePersona === 'waiter' ? 'Waiter Live Sales' : 'Filtered Live Sales'}
+            </div>
             <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-1 tabular-nums">
               {formatMoney(liveOps.totalSales)}
             </div>
@@ -1740,7 +2054,11 @@ export const OwnerDashboardView: React.FC = () => {
             <div className="text-base sm:text-lg font-extrabold font-mono text-amber-950 mt-1 tabular-nums">
               {liveOps.draftsCount} ({formatMoney(liveOps.draftAmount)})
             </div>
-            <div className="text-[11px] text-amber-800 mt-0.5">Visible to Owner</div>
+            <div className="text-[11px] text-amber-800 mt-0.5">
+              {activePersona === 'cashier' || activePersona === 'manager'
+                ? 'Excluded in counter view'
+                : 'Visible in scope'}
+            </div>
           </div>
 
           <div className="bg-white rounded-xl p-3.5 border border-neutral-200">
@@ -1849,17 +2167,21 @@ export const OwnerDashboardView: React.FC = () => {
             </div>
           </div>
 
-          {/* Net sales Card */}
+          {/* Net sales / Collected Card */}
           <div className="bg-white rounded-xl p-4 border border-neutral-200/90 shadow-2xs hover:shadow-xs transition-shadow">
-            <div className="text-xs text-neutral-500 font-medium">Net sales</div>
+            <div className="text-xs text-neutral-500 font-medium">
+              {activePersona === 'cashier' ? 'Total Collected' : 'Net sales'}
+            </div>
             <div className="text-lg sm:text-2xl font-bold font-mono text-neutral-900 mt-1 tabular-nums">
-              {formatVal(baseKpi.netSales)}
+              {formatVal(activePersona === 'cashier' ? baseKpi.collectedTotal : baseKpi.netSales)}
             </div>
             <div className="flex items-center gap-1 text-[11px] text-neutral-500 font-medium mt-1">
-              {baseKpi.netSales > 0 ? (
+              {(activePersona === 'cashier' ? baseKpi.collectedTotal : baseKpi.netSales) > 0 ? (
                 <>
                   <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
-                  <span className="text-emerald-700">Live tenant net total</span>
+                  <span className="text-emerald-700">
+                    {activePersona === 'cashier' ? 'Settled payments' : 'Filtered net total'}
+                  </span>
                 </>
               ) : (
                 <span>Awaiting first order</span>
@@ -1867,13 +2189,29 @@ export const OwnerDashboardView: React.FC = () => {
             </div>
           </div>
 
-          {/* Gross profit Card */}
+          {/* Gross profit / Earned Commission / Outstanding Card */}
           <div className="bg-white rounded-xl p-4 border border-neutral-200/90 shadow-2xs hover:shadow-xs transition-shadow col-span-2 md:col-span-1">
             <div className="text-xs text-neutral-500 font-medium">
-              {activePersona === 'waiter' ? 'Earned Commission' : 'Gross profit'}
+              {activePersona === 'waiter'
+                ? 'Earned Commission'
+                : activePersona === 'cashier'
+                ? 'Outstanding Due'
+                : 'Gross profit'}
             </div>
-            <div className="text-lg sm:text-2xl font-bold font-mono text-[#43A047] mt-1 tabular-nums">
-              {formatVal(activePersona === 'waiter' ? baseKpi.waiterCommission : baseKpi.grossProfit)}
+            <div
+              className={`text-lg sm:text-2xl font-bold font-mono mt-1 tabular-nums ${
+                activePersona === 'cashier' && baseKpi.outstandingTotal > 0
+                  ? 'text-rose-700'
+                  : 'text-[#43A047]'
+              }`}
+            >
+              {formatVal(
+                activePersona === 'waiter'
+                  ? baseKpi.waiterCommission
+                  : activePersona === 'cashier'
+                  ? baseKpi.outstandingTotal
+                  : baseKpi.grossProfit
+              )}
             </div>
             <div className="flex items-center gap-1 text-[11px] text-emerald-700 font-medium mt-1">
               <span>
@@ -1881,6 +2219,10 @@ export const OwnerDashboardView: React.FC = () => {
                   ? defaultCommissionMode === 'percent'
                     ? `${defaultCommissionValue}% paid net sales`
                     : `${formatMoney(defaultCommissionValue)} / paid order`
+                  : activePersona === 'cashier'
+                  ? baseKpi.outstandingTotal > 0
+                    ? 'Open counter balances'
+                    : 'All billed orders settled'
                   : `${baseKpi.marginPct}% food margin · COGS ${formatVal(baseKpi.cogs)}`}
               </span>
             </div>
@@ -2407,16 +2749,16 @@ export const OwnerDashboardView: React.FC = () => {
 
               <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white">
                 <div className="px-4 py-2.5 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between text-xs">
-                  <span className="font-bold text-neutral-900">Active Shift Orders & Service Coupons</span>
-                  <span className="font-mono text-[11px] text-neutral-500">{orders.length} tickets</span>
+                  <span className="font-bold text-neutral-900">Active Shift Orders &amp; Service Coupons</span>
+                  <span className="font-mono text-[11px] text-neutral-500">{validFilteredOrders.length} tickets</span>
                 </div>
                 <div className="divide-y divide-neutral-100 text-xs">
-                  {orders.length === 0 ? (
+                  {validFilteredOrders.length === 0 ? (
                     <div className="px-4 py-6 text-center text-neutral-500">
-                      No shift tickets recorded yet.
+                      No shift tickets match the active filter.
                     </div>
                   ) : (
-                    orders.slice(0, 8).map((o) => (
+                    validFilteredOrders.slice(0, 12).map((o) => (
                       <div key={o.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2.5 min-w-0">
                           <span className="font-mono font-extrabold text-[11px] px-2 py-0.5 rounded bg-amber-50 border border-dashed border-amber-300 text-amber-900">

@@ -132,7 +132,7 @@ export const SidebarNav: React.FC = () => {
 
                   {/* Pending Badge on Kitchen icon */}
                   {item.role === 'kitchen' && pendingKitchenCount > 0 && !isActive && (
-                    <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-orange-600 text-white text-[9px] font-bold rounded-full flex items-center justify-center shadow-xs font-mono">
+                    <span className="absolute -top-0.5 -right-0.5 min-w-4.5 h-4.5 px-1 bg-orange-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-xs font-mono">
                       {pendingKitchenCount}
                     </span>
                   )}
