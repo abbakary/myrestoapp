@@ -18,7 +18,7 @@ import type {
 } from '../../src/types/restaurant.ts';
 import { computeDiscrepanciesPure } from '../../src/shared/analyticsEngine.ts';
 import { deductStockForOrderLinesPure } from '../../src/shared/costingEngine.ts';
-import { createId, formatTzs } from '../../src/shared/helpers.ts';
+import { createId, formatTzs, sanitizeCartItems } from '../../src/shared/helpers.ts';
 import { HttpError } from '../core/http.ts';
 import { storeRepo } from '../core/store.ts';
 
@@ -99,15 +99,16 @@ export const orderService = {
   ): Order {
     const tenant = storeRepo.getBranchOrThrow(branchId);
     const store = storeRepo.getBranchStoreOrThrow(branchId);
-    const sourceItems = params.customItems ?? store.cart;
+    const rawSourceItems = params.customItems ?? store.cart;
+    const sourceItems = sanitizeCartItems(rawSourceItems, store.menuItems);
     if (!sourceItems || sourceItems.length === 0) {
       throw new HttpError(422, 'Order must contain at least one item.', 'EMPTY_ORDER');
     }
 
     let subtotal = 0;
     const items = sourceItems.map((ci) => {
-      const unitPrice = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
-      const modifiersSum = (ci.selectedModifiers || []).reduce((acc, m) => acc + m.price, 0);
+      const unitPrice = (ci.menuItem?.price ?? 0) + (ci.selectedPortion?.priceDelta || 0);
+      const modifiersSum = (ci.selectedModifiers || []).reduce((acc, m) => acc + (m?.price ?? 0), 0);
       const extraCharge = Math.max(0, Math.round(ci.extraCharge || 0));
       const totalItemPrice = unitPrice + modifiersSum + extraCharge;
       subtotal += totalItemPrice * ci.quantity;
@@ -1188,7 +1189,7 @@ export const orderService = {
 
   updateCart(branchId: string, cart: BranchCartItem[]) {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
-    store.cart = cart;
+    store.cart = sanitizeCartItems(cart, store.menuItems);
     storeRepo.commit();
     return store.cart;
   },

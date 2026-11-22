@@ -107,8 +107,13 @@ export const CustomerPortalView: React.FC = () => {
   }, [waiters, activeReferralCode]);
 
   const availableItems = useMemo(
-    () => menuItems.filter((item) => item.isAvailable),
+    () => (menuItems || []).filter((item) => Boolean(item && item.isAvailable)),
     [menuItems]
+  );
+
+  const safeCart = useMemo(
+    () => (cart || []).filter((ci) => Boolean(ci && ci.menuItem)),
+    [cart]
   );
 
   const categories = useMemo(() => {
@@ -128,11 +133,14 @@ export const CustomerPortalView: React.FC = () => {
     });
   }, [availableItems, selectedCategory, searchQuery]);
 
-  const cartCount = cart.reduce((acc, it) => acc + it.quantity, 0);
-  const subtotal = cart.reduce((acc, ci) => {
-    const unitPrice = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
-    const modPrice = ci.selectedModifiers.reduce((mAcc, m) => mAcc + m.price, 0);
-    return acc + (unitPrice + modPrice) * ci.quantity;
+  const cartCount = safeCart.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0);
+  const subtotal = safeCart.reduce((acc, ci) => {
+    const unitPrice =
+      (ci.menuItem?.price ?? 0) +
+      (ci.selectedPortion?.priceDelta ?? 0) +
+      (ci.extraCharge ?? 0);
+    const modPrice = (ci.selectedModifiers || []).reduce((mAcc, m) => mAcc + (m?.price ?? 0), 0);
+    return acc + (unitPrice + modPrice) * (Number(ci.quantity) || 0);
   }, 0);
 
   const customerDiscount = appliedPromo ? Math.round((subtotal * appliedPromo.percent) / 100) : 0;
@@ -565,7 +573,7 @@ export const CustomerPortalView: React.FC = () => {
 
                       <div className="flex items-center justify-between gap-2 pt-2.5 mt-2 border-t border-neutral-100">
                         <span className="text-sm sm:text-base font-extrabold text-neutral-900 font-mono tabular-nums">
-                          {formatMoney(item.price)}
+                          {formatMoney(item.price ?? 0)}
                         </span>
 
                         <button
@@ -594,7 +602,7 @@ export const CustomerPortalView: React.FC = () => {
               </span>
             </div>
 
-            {cart.length === 0 ? (
+            {safeCart.length === 0 ? (
               <div className="bg-white rounded-2xl border border-neutral-200 p-10 text-center space-y-3">
                 <div className="w-12 h-12 rounded-2xl bg-neutral-100 text-neutral-500 flex items-center justify-center mx-auto">
                   <ShoppingBag className="w-6 h-6" />
@@ -613,39 +621,43 @@ export const CustomerPortalView: React.FC = () => {
             ) : (
               <>
                 <div className="bg-white rounded-2xl border border-neutral-200 divide-y divide-neutral-100 overflow-hidden">
-                  {cart.map((ci, index) => {
+                  {safeCart.map((ci, index) => {
+                    const cartIdx = cart.indexOf(ci);
+                    const targetIdx = cartIdx >= 0 ? cartIdx : index;
+                    const mods = ci.selectedModifiers || [];
                     const unitPrice =
-                      ci.menuItem.price +
-                      (ci.selectedPortion?.priceDelta || 0) +
-                      ci.selectedModifiers.reduce((acc, m) => acc + m.price, 0);
+                      (ci.menuItem?.price ?? 0) +
+                      (ci.selectedPortion?.priceDelta ?? 0) +
+                      (ci.extraCharge ?? 0) +
+                      mods.reduce((acc, m) => acc + (m?.price ?? 0), 0);
 
                     return (
-                      <div key={`${ci.menuItem.id}-${index}`} className="p-4 flex items-start gap-3">
+                      <div key={`${ci.menuItem?.id || 'item'}-${index}`} className="p-4 flex items-start gap-3">
                         <img
-                          src={ci.menuItem.image}
-                          alt={ci.menuItem.name}
+                          src={ci.menuItem?.image}
+                          alt={ci.menuItem?.name || 'Menu item'}
                           referrerPolicy="no-referrer"
                           className="w-16 h-16 rounded-xl object-cover bg-neutral-100 shrink-0"
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2">
                             <h3 className="text-sm font-bold text-neutral-900 truncate">
-                              {ci.menuItem.name}
+                              {ci.menuItem?.name || 'Menu item'}
                             </h3>
                             <button
-                              onClick={() => removeFromCart(index)}
+                              onClick={() => removeFromCart(targetIdx)}
                               className="min-h-[36px] min-w-[36px] -mt-1 -mr-1 flex items-center justify-center text-neutral-400 hover:text-red-600 rounded-lg"
-                              aria-label={`Remove ${ci.menuItem.name}`}
+                              aria-label={`Remove ${ci.menuItem?.name || 'item'}`}
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>
 
-                          {(ci.selectedPortion || ci.selectedModifiers.length > 0 || ci.customerNotes) && (
+                          {(ci.selectedPortion || mods.length > 0 || ci.customerNotes) && (
                             <p className="text-xs text-neutral-500 mt-0.5">
                               {[
                                 ci.selectedPortion?.name,
-                                ...ci.selectedModifiers.map((m) => `+${m.name}`),
+                                ...mods.map((m) => `+${m?.name || 'Extra'}`),
                                 ci.customerNotes,
                               ]
                                 .filter(Boolean)
@@ -655,12 +667,12 @@ export const CustomerPortalView: React.FC = () => {
 
                           <div className="flex items-center justify-between mt-3">
                             <span className="text-sm font-bold font-mono tabular-nums text-neutral-900">
-                              {formatMoney(unitPrice * ci.quantity)}
+                              {formatMoney(unitPrice * (Number(ci.quantity) || 0))}
                             </span>
 
                             <div className="flex items-center gap-2">
                               <button
-                                onClick={() => updateCartItemQty(index, -1)}
+                                onClick={() => updateCartItemQty(targetIdx, -1)}
                                 className="w-10 h-10 rounded-xl border border-neutral-200 flex items-center justify-center text-neutral-700 hover:bg-neutral-50 cursor-pointer"
                                 aria-label="Decrease quantity"
                               >
@@ -670,7 +682,7 @@ export const CustomerPortalView: React.FC = () => {
                                 {ci.quantity}
                               </span>
                               <button
-                                onClick={() => updateCartItemQty(index, 1)}
+                                onClick={() => updateCartItemQty(targetIdx, 1)}
                                 className="w-10 h-10 rounded-xl bg-neutral-900 text-white flex items-center justify-center hover:bg-neutral-800 cursor-pointer"
                                 aria-label="Increase quantity"
                               >
@@ -903,13 +915,13 @@ export const CustomerPortalView: React.FC = () => {
 
                     {/* Order Items */}
                     <div className="pt-3 border-t border-neutral-100 space-y-1.5 text-xs">
-                      {order.items.map((it, idx) => (
+                      {(order.items || []).map((it, idx) => (
                         <div key={idx} className="flex items-center justify-between text-neutral-700">
                           <span>
                             {it.quantity}x {it.name}
                           </span>
                           <span className="font-mono text-neutral-500 tabular-nums">
-                            {formatMoney(it.price * it.quantity)}
+                            {formatMoney((it?.price ?? 0) * (it?.quantity ?? 0))}
                           </span>
                         </div>
                       ))}
@@ -1103,7 +1115,7 @@ export const CustomerPortalView: React.FC = () => {
             <div className="flex items-center justify-between p-4 border-b border-neutral-100">
               <div className="min-w-0 pr-2">
                 <h3 className="font-bold text-base text-neutral-900 truncate">{selectedMenuItem.name}</h3>
-                <p className="text-xs text-neutral-500 font-mono">{formatMoney(selectedMenuItem.price)}</p>
+                <p className="text-xs text-neutral-500 font-mono">{formatMoney(selectedMenuItem.price ?? 0)}</p>
               </div>
               <button
                 onClick={() => setSelectedMenuItem(null)}
@@ -1124,7 +1136,7 @@ export const CustomerPortalView: React.FC = () => {
                 <div className="space-y-2">
                   <div className="text-xs font-bold text-neutral-700">Portion Size</div>
                   <div className="grid grid-cols-2 gap-2">
-                    {selectedMenuItem.portions.map((portion) => (
+                    {selectedMenuItem.portions.filter(Boolean).map((portion) => (
                       <button
                         key={portion.name}
                         type="button"
@@ -1137,7 +1149,7 @@ export const CustomerPortalView: React.FC = () => {
                       >
                         <div>{portion.name}</div>
                         <div className="text-[11px] text-neutral-500 font-mono">
-                          +{formatMoney(portion.priceDelta)}
+                          +{formatMoney(portion?.priceDelta ?? 0)}
                         </div>
                       </button>
                     ))}
@@ -1150,7 +1162,7 @@ export const CustomerPortalView: React.FC = () => {
                 <div className="space-y-2">
                   <div className="text-xs font-bold text-neutral-700">Add-ons & Extras</div>
                   <div className="space-y-2">
-                    {selectedMenuItem.modifiers.map((mod) => {
+                    {selectedMenuItem.modifiers.filter(Boolean).map((mod) => {
                       const isSelected = customModifiers.some((m) => m.id === mod.id);
                       return (
                         <button
@@ -1164,7 +1176,7 @@ export const CustomerPortalView: React.FC = () => {
                           }`}
                         >
                           <span className="text-xs font-semibold">{mod.name}</span>
-                          <span className="text-xs font-bold font-mono">+{formatMoney(mod.price)}</span>
+                          <span className="text-xs font-bold font-mono">+{formatMoney(mod?.price ?? 0)}</span>
                         </button>
                       );
                     })}
@@ -1216,9 +1228,9 @@ export const CustomerPortalView: React.FC = () => {
                 <div className="text-[11px] text-neutral-500">Item Total</div>
                 <div className="text-base font-extrabold font-mono text-neutral-900 tabular-nums">
                   {formatMoney(
-                    (selectedMenuItem.price +
-                      (customPortion?.priceDelta || 0) +
-                      customModifiers.reduce((acc, m) => acc + m.price, 0)) *
+                    ((selectedMenuItem?.price ?? 0) +
+                      (customPortion?.priceDelta ?? 0) +
+                      (customModifiers || []).reduce((acc, m) => acc + (m?.price ?? 0), 0)) *
                       customQuantity
                   )}
                 </div>

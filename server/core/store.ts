@@ -13,6 +13,7 @@ import {
 import type { BranchWorkspaceStore } from '../../src/data/saasSeeds.ts';
 import type { RestaurantTenant, SaasOrganization } from '../../src/types/restaurant.ts';
 import type { PlatformState } from '../../src/shared/types.ts';
+import { sanitizeBranchStore } from '../../src/shared/helpers.ts';
 import { HttpError } from './http.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -51,6 +52,12 @@ class StateRepository {
           parsed.branchStores &&
           typeof parsed.branchStores === 'object'
         ) {
+          const sanitizedStores = Object.fromEntries(
+            Object.entries(parsed.branchStores).map(([branchId, store]) => [
+              branchId,
+              sanitizeBranchStore(store),
+            ])
+          );
           return {
             organizations: parsed.organizations,
             saasPlans: parsed.saasPlans,
@@ -58,7 +65,7 @@ class StateRepository {
             saasAccounts: parsed.saasAccounts,
             providerAuditLogs: parsed.providerAuditLogs || [],
             leadInquiries: parsed.leadInquiries || [],
-            branchStores: parsed.branchStores,
+            branchStores: sanitizedStores,
           };
         }
       }

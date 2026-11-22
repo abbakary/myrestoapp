@@ -238,11 +238,11 @@ export const WaiterView: React.FC = () => {
     setExpandedCustomizeIdx(null);
     setShowCustomItemBuilder(false);
     setDraftItems(
-      draft.items.map((it) => {
-        const foundMenu = menuItems.find((m) => m.id === it.menuItemId);
+      (draft.items || []).filter(Boolean).map((it) => {
+        const foundMenu = (menuItems || []).find((m) => m && m.id === it.menuItemId);
         const basePrice = foundMenu
-          ? foundMenu.price
-          : Math.max(0, it.price - (it.extraCharge || 0));
+          ? (foundMenu.price ?? 0)
+          : Math.max(0, (it.price ?? 0) - (it.extraCharge ?? 0));
         const syntheticItem: MenuItem = foundMenu || {
           id: it.menuItemId,
           name: it.name,
@@ -256,18 +256,18 @@ export const WaiterView: React.FC = () => {
         };
         return {
           menuItem: syntheticItem,
-          quantity: it.quantity,
+          quantity: it.quantity || 1,
           selectedPortion: it.portion
-            ? foundMenu?.portions?.find((p) => p.name === it.portion) || {
+            ? foundMenu?.portions?.find((p) => p && p.name === it.portion) || {
                 name: it.portion,
                 priceDelta: 0,
               }
             : undefined,
-          selectedModifiers: it.selectedModifiers || [],
+          selectedModifiers: (it.selectedModifiers || []).filter(Boolean),
           customerNotes: it.customerNotes,
           customInstructions: it.customInstructions,
           extraCharge: it.extraCharge,
-          isCustomItem: it.isCustomItem || it.menuItemId.startsWith('custom-'),
+          isCustomItem: it.isCustomItem || Boolean(it.menuItemId?.startsWith('custom-')),
         };
       })
     );
@@ -396,8 +396,12 @@ export const WaiterView: React.FC = () => {
   };
 
   const draftSubtotal = draftItems.reduce((acc, ci) => {
-    const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0) + (ci.extraCharge || 0);
-    return acc + unit * ci.quantity;
+    const unit =
+      (ci?.menuItem?.price ?? 0) +
+      (ci?.selectedPortion?.priceDelta ?? 0) +
+      (ci?.extraCharge ?? 0) +
+      (ci?.selectedModifiers || []).reduce((mAcc, m) => mAcc + (m?.price ?? 0), 0);
+    return acc + unit * (Number(ci?.quantity) || 0);
   }, 0);
   const draftDeliveryFee = draftOrderType === 'delivery' ? currentTenant.deliveryFee : 0;
   const draftTax = taxEnabled ? Math.round(draftSubtotal * (taxRatePct / 100)) : 0;
@@ -493,8 +497,9 @@ export const WaiterView: React.FC = () => {
 
   const filteredMenuForOrder = useMemo(() => {
     const q = orderSearch.trim().toLowerCase();
-    return menuItems.filter(
+    return (menuItems || []).filter(
       (m) =>
+        Boolean(m) &&
         m.isAvailable &&
         (!q || m.name.toLowerCase().includes(q) || m.category.toLowerCase().includes(q))
     );
@@ -1082,7 +1087,7 @@ export const WaiterView: React.FC = () => {
                                       )}
                                     </div>
                                     <span className="font-mono tabular-nums text-neutral-700 font-semibold shrink-0">
-                                      {formatMoney((it.price + (it.extraCharge || 0)) * it.quantity)}
+                                      {formatMoney(((it?.price ?? 0) + (it?.extraCharge ?? 0)) * (it?.quantity ?? 0))}
                                     </span>
                                   </div>
                                   {(it.customInstructions || it.customerNotes || (it.extraCharge && it.extraCharge > 0)) && (
@@ -1725,10 +1730,14 @@ export const WaiterView: React.FC = () => {
                       <span className="text-[11px] font-normal text-neutral-500">Tap Customize to modify prep or extra price</span>
                     </div>
                     <div className="space-y-2.5">
-                      {draftItems.map((ci, idx) => {
-                        const unitPrice = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0) + (ci.extraCharge || 0);
+                      {draftItems.filter((ci) => Boolean(ci && ci.menuItem)).map((ci, idx) => {
+                        const unitPrice =
+                          (ci.menuItem?.price ?? 0) +
+                          (ci.selectedPortion?.priceDelta ?? 0) +
+                          (ci.extraCharge ?? 0) +
+                          (ci.selectedModifiers || []).reduce((mAcc, m) => mAcc + (m?.price ?? 0), 0);
                         const isExpanded = expandedCustomizeIdx === idx;
-                        const hasPhoto = !ci.isCustomItem && Boolean(ci.menuItem.image);
+                        const hasPhoto = !ci.isCustomItem && Boolean(ci.menuItem?.image);
                         return (
                           <div key={`${ci.menuItem.id}-${idx}`} className="bg-white border border-neutral-200 rounded-xl p-3 space-y-2.5">
                             <div className="flex items-start gap-3">
@@ -1904,7 +1913,7 @@ export const WaiterView: React.FC = () => {
                             {item.name}
                           </div>
                           <div className="text-[11px] text-neutral-700 font-mono font-semibold tabular-nums pt-0.5">
-                            {formatMoney(item.price)} · {item.category}
+                            {formatMoney(item.price ?? 0)} · {item.category}
                           </div>
                         </div>
 

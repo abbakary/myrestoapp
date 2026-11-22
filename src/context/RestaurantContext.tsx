@@ -72,6 +72,12 @@ import {
 } from '../data/saasSeeds';
 import { parseAppDeepLink, notifyFlutterHost } from '../utils/mobileEnvironment';
 import { apiClient, enqueueApiSync } from '../services/apiClient';
+import {
+  sanitizeBranchStore,
+  sanitizeCartItems,
+  sanitizeMenuItem,
+  sanitizeModifier,
+} from '../shared/helpers';
 import type { ScaledRequirementRow, ScaledRequirementsResult, CartItem } from '../shared/types';
 import {
   computeRecipeUnitCostPure,
@@ -256,7 +262,12 @@ interface RestaurantContextType {
     quantity?: number
   ) => void;
   updateCartItemQty: (index: number, delta: number) => void;
+  updateCartItem: (
+    index: number,
+    patch: { customerNotes?: string; customInstructions?: string; extraCharge?: number }
+  ) => void;
   removeFromCart: (index: number) => void;
+  replaceCart: (items: CartItem[]) => void;
   clearCart: () => void;
   submitOrder: (params: {
     type: OrderType;
@@ -670,12 +681,12 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const [branchStores, setBranchStores] = useState<Record<string, BranchWorkspaceStore>>(() => {
     const initial = createInitialBranchStores();
-    if (deepLink.portal === 'customer') {
-      Object.keys(initial).forEach((k) => {
-        initial[k] = { ...initial[k], cart: [] };
-      });
-    }
-    return initial;
+    const sanitized: Record<string, BranchWorkspaceStore> = {};
+    Object.keys(initial).forEach((k) => {
+      const clean = sanitizeBranchStore(initial[k]);
+      sanitized[k] = deepLink.portal === 'customer' ? { ...clean, cart: [] } : clean;
+    });
+    return sanitized;
   });
 
   const hasHydratedRef = useRef(false);
@@ -693,12 +704,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setSaasAccounts(state.saasAccounts);
         setProviderAuditLogs(state.providerAuditLogs);
         setLeadInquiries(state.leadInquiries);
-        const nextStores = { ...state.branchStores };
-        if (deepLink.portal === 'customer') {
-          Object.keys(nextStores).forEach((k) => {
-            nextStores[k] = { ...nextStores[k], cart: [] };
-          });
-        }
+        const nextStores: Record<string, BranchWorkspaceStore> = {};
+        Object.entries(state.branchStores || {}).forEach(([k, store]) => {
+          const clean = sanitizeBranchStore(store);
+          nextStores[k] = deepLink.portal === 'customer' ? { ...clean, cart: [] } : clean;
+        });
         setBranchStores(nextStores);
         if (deepLink.tenantId) {
           const matched = state.allBranches.find(
@@ -763,10 +773,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const activeBranchId = currentTenant.id;
 
   const activeStore: BranchWorkspaceStore = useMemo(() => {
-    return (
+    const rawStore =
       branchStores[activeBranchId] ||
-      createStarterBranchStore(currentTenant, currentOrganization)
-    );
+      createStarterBranchStore(currentTenant, currentOrganization);
+    return sanitizeBranchStore(rawStore);
   }, [branchStores, activeBranchId, currentTenant, currentOrganization]);
 
   const updateBranchSlice = <K extends keyof BranchWorkspaceStore>(
@@ -797,7 +807,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const setOrders: React.Dispatch<React.SetStateAction<Order[]>> = (u) => updateBranchSlice('orders', u);
   const tables = activeStore.tables;
   const setTables: React.Dispatch<React.SetStateAction<Table[]>> = (u) => updateBranchSlice('tables', u);
-  const menuItems = activeStore.menuItems;
+  const menuItems = useMemo(
+    () => (activeStore.menuItems || []).map(sanitizeMenuItem).filter((m): m is MenuItem => Boolean(m)),
+    [activeStore.menuItems]
+  );
   const setMenuItems: React.Dispatch<React.SetStateAction<MenuItem[]>> = (u) => updateBranchSlice('menuItems', u);
   const ingredients = activeStore.ingredients;
   const setIngredients: React.Dispatch<React.SetStateAction<Ingredient[]>> = (u) => updateBranchSlice('ingredients', u);
@@ -843,7 +856,10 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const settledCommissionByWaiter = activeStore.settledCommissionByWaiter;
   const setSettledCommissionByWaiter: React.Dispatch<React.SetStateAction<Record<string, number>>> = (u) =>
     updateBranchSlice('settledCommissionByWaiter', u);
-  const cart = activeStore.cart;
+  const cart = useMemo(
+    () => sanitizeCartItems(activeStore.cart, menuItems),
+    [activeStore.cart, menuItems]
+  );
   const setCart: React.Dispatch<React.SetStateAction<CartItem[]>> = (u) => updateBranchSlice('cart', u);
   const notifications = activeStore.notifications;
   const setNotifications: React.Dispatch<React.SetStateAction<AppNotification[]>> = (u) => updateBranchSlice('notifications', u);
@@ -999,6 +1015,30 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return `TZS ${amountInTzs.toLocaleString()}`;
   };
 
+  const cartShadowRef = useRef<Record<string, CartItem[]>>({});
+  useEffect(() => {
+    const shadow: Record<string, CartItem[]> = {};
+    Object.entries(branchStores).forEach(([id, store]) => {
+      shadow[id] = sanitizeCartItems(store?.cart, store?.menuItems || []);
+    });
+    cartShadowRef.current = shadow;
+  }, [branchStores]);
+
+  const mutateActiveCart = (
+    computeNext: (currentCart: CartItem[]) => CartItem[],
+    syncLabel: string,
+    syncToServer: boolean = true
+  ) => {
+    const bId = activeBranchId;
+    const baseCart = cartShadowRef.current[bId] ?? cart;
+    const nextCart = sanitizeCartItems(computeNext(baseCart), menuItems);
+    cartShadowRef.current[bId] = nextCart;
+    updateBranchSlice('cart', nextCart, bId);
+    if (syncToServer) {
+      enqueueApiSync(() => apiClient.orders.syncCart(bId, nextCart), syncLabel);
+    }
+  };
+
   // Cart operations
   const addToCart = (
     item: MenuItem,
@@ -1007,56 +1047,93 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     notes: string = '',
     quantity: number = 1
   ) => {
-    const existingIndex = cart.findIndex(
-      (ci) =>
-        ci.menuItem.id === item.id &&
-        ci.selectedPortion?.name === portion?.name &&
-        ci.customerNotes === notes &&
-        JSON.stringify(ci.selectedModifiers) === JSON.stringify(modifiers)
-    );
+    const cleanItem = sanitizeMenuItem(item);
+    if (!cleanItem) return;
+    const cleanModifiers = Array.isArray(modifiers)
+      ? modifiers.map(sanitizeModifier).filter((m): m is ModifierItem => Boolean(m))
+      : [];
+    const cleanPortion =
+      portion && portion.name
+        ? {
+            name: String(portion.name),
+            priceDelta: Number.isFinite(Number(portion.priceDelta)) ? Number(portion.priceDelta) : 0,
+          }
+        : undefined;
+    const cleanQty = Math.max(1, Math.round(Number(quantity) || 1));
 
-    const nextCart: CartItem[] =
-      existingIndex > -1
-        ? cart.map((ci, idx) => (idx === existingIndex ? { ...ci, quantity: ci.quantity + quantity } : ci))
+    mutateActiveCart((currCart) => {
+      const existingIndex = currCart.findIndex(
+        (ci) =>
+          ci.menuItem?.id === cleanItem.id &&
+          ci.selectedPortion?.name === cleanPortion?.name &&
+          (ci.customerNotes || '') === notes &&
+          JSON.stringify(ci.selectedModifiers || []) === JSON.stringify(cleanModifiers)
+      );
+
+      return existingIndex > -1
+        ? currCart.map((ci, idx) =>
+            idx === existingIndex ? { ...ci, quantity: ci.quantity + cleanQty } : ci
+          )
         : [
-            ...cart,
+            ...currCart,
             {
-              menuItem: item,
-              quantity,
-              selectedPortion: portion,
-              selectedModifiers: modifiers,
+              menuItem: cleanItem,
+              quantity: cleanQty,
+              selectedPortion: cleanPortion,
+              selectedModifiers: cleanModifiers,
               customerNotes: notes,
             },
           ];
-
-    setCart(nextCart);
-    enqueueApiSync(() => apiClient.orders.syncCart(activeBranchId, nextCart), 'addToCart');
+    }, 'addToCart');
   };
 
   const updateCartItemQty = (index: number, delta: number) => {
-    if (!cart[index]) return;
-    const newQty = cart[index].quantity + delta;
-    const nextCart =
-      newQty <= 0
-        ? cart.filter((_, i) => i !== index)
-        : cart.map((ci, i) => (i === index ? { ...ci, quantity: newQty } : ci));
-    setCart(nextCart);
-    enqueueApiSync(() => apiClient.orders.syncCart(activeBranchId, nextCart), 'updateCartItemQty');
+    mutateActiveCart((currCart) => {
+      if (!currCart[index]) return currCart;
+      const newQty = currCart[index].quantity + delta;
+      return newQty <= 0
+        ? currCart.filter((_, i) => i !== index)
+        : currCart.map((ci, i) => (i === index ? { ...ci, quantity: newQty } : ci));
+    }, 'updateCartItemQty');
+  };
+
+  const updateCartItem = (
+    index: number,
+    patch: { customerNotes?: string; customInstructions?: string; extraCharge?: number }
+  ) => {
+    mutateActiveCart((currCart) => {
+      if (!currCart[index]) return currCart;
+      return currCart.map((ci, i) =>
+        i === index
+          ? {
+              ...ci,
+              ...(patch.customerNotes !== undefined ? { customerNotes: patch.customerNotes } : {}),
+              ...(patch.customInstructions !== undefined
+                ? { customInstructions: patch.customInstructions }
+                : {}),
+              ...(patch.extraCharge !== undefined
+                ? { extraCharge: Math.max(0, Math.round(Number(patch.extraCharge) || 0)) }
+                : {}),
+            }
+          : ci
+      );
+    }, 'updateCartItem');
   };
 
   const removeFromCart = (index: number) => {
-    const nextCart = cart.filter((_, i) => i !== index);
-    setCart(nextCart);
-    enqueueApiSync(() => apiClient.orders.syncCart(activeBranchId, nextCart), 'removeFromCart');
+    mutateActiveCart((currCart) => currCart.filter((_, i) => i !== index), 'removeFromCart');
+  };
+
+  const replaceCart = (items: CartItem[]) => {
+    mutateActiveCart(() => items, 'replaceCart');
   };
 
   const clearCartLocal = () => {
-    setCart([]);
+    mutateActiveCart(() => [], 'clearCartLocal', false);
   };
 
   const clearCart = () => {
-    setCart([]);
-    enqueueApiSync(() => apiClient.orders.syncCart(activeBranchId, []), 'clearCart');
+    mutateActiveCart(() => [], 'clearCart');
   };
 
   // Recursive / Sub-recipe-aware BOM Costing Helper (Delegated to shared costingEngine)
@@ -1115,8 +1192,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   // Backwards-compatible wrapper
   const deductIngredientsForOrder = (orderItems: CartItem[], orderNum: string) => {
+    const safeOrderItems = sanitizeCartItems(orderItems, menuItems);
     deductStockForOrderLines(
-      orderItems.map((ci) => ({
+      safeOrderItems.map((ci) => ({
         menuItemId: ci.menuItem.id,
         name: ci.menuItem.name,
         quantity: ci.quantity,
@@ -1157,11 +1235,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     actorName?: string;
     actorRole?: Role;
   }) => {
-    const sourceItems = params.customItems ?? cart;
+    const sourceItems = sanitizeCartItems(params.customItems ?? cart, menuItems);
     let subtotal = 0;
     const items = sourceItems.map((ci) => {
-      const unitPrice = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0);
-      const modifiersSum = ci.selectedModifiers.reduce((acc, m) => acc + m.price, 0);
+      const unitPrice = (ci.menuItem?.price ?? 0) + (ci.selectedPortion?.priceDelta || 0);
+      const modifiersSum = (ci.selectedModifiers || []).reduce((acc, m) => acc + (m?.price ?? 0), 0);
       const extraCharge = Math.max(0, Math.round(ci.extraCharge || 0));
       const totalItemPrice = unitPrice + modifiersSum + extraCharge;
       subtotal += totalItemPrice * ci.quantity;
@@ -1172,7 +1250,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         price: totalItemPrice,
         quantity: ci.quantity,
         portion: ci.selectedPortion?.name,
-        selectedModifiers: ci.selectedModifiers,
+        selectedModifiers: ci.selectedModifiers || [],
         customerNotes: ci.customerNotes,
         customInstructions: ci.customInstructions,
         extraCharge: extraCharge > 0 ? extraCharge : undefined,
@@ -6761,7 +6839,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setReferralCode: setActiveReferralCode,
         addToCart,
         updateCartItemQty,
+        updateCartItem,
         removeFromCart,
+        replaceCart,
         clearCart,
         submitOrder,
         submitDraftToKitchen,

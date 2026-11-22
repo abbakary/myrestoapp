@@ -50,7 +50,9 @@ export const PosView: React.FC = () => {
     cart,
     addToCart,
     updateCartItemQty,
+    updateCartItem,
     removeFromCart,
+    replaceCart,
     clearCart,
     submitOrder,
     processPayment,
@@ -73,7 +75,9 @@ export const PosView: React.FC = () => {
 
   // Active Category matching screenshot: 'Sweets', 'Fruits', 'Coffee & Tea', 'Breakfast', 'All Items'
   const [selectedCategory, setSelectedCategory] = useState<string>(() =>
-    menuItems.some((m) => m.category === 'Sweets' || m.category === 'Desserts') ? 'Sweets' : 'All Items'
+    (menuItems || []).some((m) => m && (m.category === 'Sweets' || m.category === 'Desserts'))
+      ? 'Sweets'
+      : 'All Items'
   );
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSearchActive, setIsSearchActive] = useState<boolean>(false);
@@ -165,9 +169,15 @@ export const PosView: React.FC = () => {
     return formatMoney(amountInTzs);
   };
 
+  const safeCart = useMemo(
+    () => (cart || []).filter((ci) => Boolean(ci && ci.menuItem)),
+    [cart]
+  );
+
   // Filter items
   const filteredItems = useMemo(() => {
-    return menuItems.filter((item) => {
+    return (menuItems || []).filter((item) => {
+      if (!item) return false;
       const matchesSearch =
         item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (item.description && item.description.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -191,28 +201,31 @@ export const PosView: React.FC = () => {
 
   // Calculate ticket totals in TZS
   const grossSubtotalTzs = useMemo(() => {
-    return cart.reduce((acc, ci) => {
-      const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0) + (ci.extraCharge || 0);
-      const mods = ci.selectedModifiers.reduce((mAcc, m) => mAcc + m.price, 0);
-      return acc + (unit + mods) * ci.quantity;
+    return safeCart.reduce((acc, ci) => {
+      const unit =
+        (ci.menuItem?.price ?? 0) +
+        (ci.selectedPortion?.priceDelta ?? 0) +
+        (ci.extraCharge ?? 0);
+      const mods = (ci.selectedModifiers || []).reduce((mAcc, m) => mAcc + (m?.price ?? 0), 0);
+      return acc + (unit + mods) * (Number(ci.quantity) || 0);
     }, 0);
-  }, [cart]);
+  }, [safeCart]);
 
   const calculatedDiscountTzs = useMemo(() => {
-    if (cart.length === 0) return 0;
+    if (safeCart.length === 0) return 0;
     if (discountType === 'percent') {
       return Math.round((grossSubtotalTzs * Math.min(100, Math.max(0, discountValue))) / 100);
     }
     return Math.min(grossSubtotalTzs, Math.max(0, Math.round(discountValue)));
-  }, [grossSubtotalTzs, discountType, discountValue, cart.length]);
+  }, [grossSubtotalTzs, discountType, discountValue, safeCart.length]);
 
   const netSubtotalTzs = Math.max(0, grossSubtotalTzs - calculatedDiscountTzs);
 
   // Tax calculation respects global optional taxEnabled & taxRatePct
   const calculatedTaxTzs = useMemo(() => {
-    if (cart.length === 0 || !taxEnabled) return 0;
+    if (safeCart.length === 0 || !taxEnabled) return 0;
     return Math.round(netSubtotalTzs * (taxRatePct / 100));
-  }, [netSubtotalTzs, cart.length, taxEnabled, taxRatePct]);
+  }, [netSubtotalTzs, safeCart.length, taxEnabled, taxRatePct]);
 
   const deliveryFeeEffectiveTzs = orderType === 'delivery' ? currentTenant.deliveryFee : 0;
 
@@ -227,7 +240,7 @@ export const PosView: React.FC = () => {
     const hasModifiers = Boolean(item.modifiers && item.modifiers.length > 0);
     if (hasPortions || hasModifiers) {
       const defaultPortion =
-        item.portions?.find((p) => p.priceDelta === 0) || item.portions?.[0];
+        item.portions?.find((p) => p?.priceDelta === 0) || item.portions?.[0];
       setCustomizingItem(item);
       setChosenPortion(defaultPortion);
       setChosenModifiers([]);
@@ -240,7 +253,7 @@ export const PosView: React.FC = () => {
 
   // Find item quantity in current cart
   const getItemQtyInCart = (itemId: string) => {
-    const found = cart.find((c) => c.menuItem.id === itemId);
+    const found = safeCart.find((c) => c?.menuItem?.id === itemId);
     return found ? found.quantity : 0;
   };
 
@@ -253,7 +266,7 @@ export const PosView: React.FC = () => {
 
   // Handle Save (Hold) Order
   const handleSaveTicket = () => {
-    if (cart.length === 0) {
+    if (safeCart.length === 0) {
       showToast('Ticket is empty');
       return;
     }
@@ -261,7 +274,7 @@ export const PosView: React.FC = () => {
     const newHeld = {
       id: `HT-${Date.now().toString().slice(-3)}`,
       name: `${orderType === 'dine_in' ? selectedTable : 'Takeaway'} (${customerName || 'Guest'})`,
-      itemsCount: cart.reduce((sum, i) => sum + i.quantity, 0),
+      itemsCount: safeCart.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0),
       total: totalPayableTzs,
       savedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
@@ -295,7 +308,7 @@ export const PosView: React.FC = () => {
 
   // Handle Charge / Settle Payment (supports single & split tenders)
   const handleProcessPayment = () => {
-    if (cart.length === 0) return;
+    if (safeCart.length === 0) return;
 
     if (isSplitPayment) {
       const amt1 = Math.min(totalPayableTzs, Math.max(0, Math.round(splitAmount1)));
@@ -395,21 +408,27 @@ export const PosView: React.FC = () => {
 
     const itemsToAdd = sampleItems.length > 0 ? sampleItems : menuItems.slice(0, 4);
 
-    clearCart();
-    setTimeout(() => {
-      itemsToAdd.forEach((item, idx) => {
-        addToCart(item, undefined, [], '', idx === 1 ? 2 : 1);
-      });
-      setDiscountValue(0);
-      setDiscountType('fixed');
-      showToast('Loaded sample POS ticket!');
-    }, 50);
+    replaceCart(
+      itemsToAdd.map((item, idx) => ({
+        menuItem: item,
+        quantity: idx === 1 ? 2 : 1,
+        selectedModifiers: [],
+      }))
+    );
+    setDiscountValue(0);
+    setDiscountType('fixed');
+    showToast('Loaded sample POS ticket!');
   };
 
   // Line item price formatting
   const getLineItemTotal = (ci: (typeof cart)[0]) => {
-    const unit = ci.menuItem.price + (ci.selectedPortion?.priceDelta || 0) + (ci.extraCharge || 0);
-    const totalTzs = unit * ci.quantity;
+    const mods = (ci?.selectedModifiers || []).reduce((mAcc, m) => mAcc + (m?.price ?? 0), 0);
+    const unit =
+      (ci?.menuItem?.price ?? 0) +
+      (ci?.selectedPortion?.priceDelta ?? 0) +
+      (ci?.extraCharge ?? 0) +
+      mods;
+    const totalTzs = unit * (Number(ci?.quantity) || 0);
     return formatPosNumber(totalTzs);
   };
 
@@ -1025,7 +1044,7 @@ export const PosView: React.FC = () => {
 
               {/* TICKET ITEMS LIST matching image_65047771.png */}
               <div className="flex-1 overflow-y-auto p-3.5 divide-y divide-neutral-100 space-y-0.5">
-                {cart.length === 0 ? (
+                {safeCart.length === 0 ? (
                   <div className="h-48 flex flex-col items-center justify-center text-center text-neutral-400 space-y-2">
                     <Sparkles className="w-8 h-8 text-neutral-300 stroke-1" />
                     <p className="text-xs">Active ticket is empty</p>
@@ -1044,24 +1063,27 @@ export const PosView: React.FC = () => {
                     )}
                   </div>
                 ) : (
-                  cart.map((ci, index) => {
+                  safeCart.map((ci, index) => {
+                    const cartIdx = cart.indexOf(ci);
+                    const targetIdx = cartIdx >= 0 ? cartIdx : index;
                     const linePriceStr = getLineItemTotal(ci);
-                    const isCustom = ci.isCustomItem || ci.menuItem.id.startsWith('custom-');
+                    const itemId = ci.menuItem?.id || 'item';
+                    const isCustom = Boolean(ci.isCustomItem || itemId.startsWith('custom-'));
 
                     return (
                       <div
-                        key={`${ci.menuItem.id}-${index}`}
+                        key={`${itemId}-${index}`}
                         onClick={() => {
-                          setEditingItemIndex(index);
+                          setEditingItemIndex(targetIdx);
                           setEditingItemNotes(ci.customInstructions || ci.customerNotes || '');
                           setEditingItemExtraCharge(ci.extraCharge || 0);
                         }}
                         className="py-2.5 flex items-start justify-between gap-2.5 text-xs cursor-pointer hover:bg-neutral-50 px-1 rounded-md transition-colors group"
                       >
-                        {!isCustom && ci.menuItem.image ? (
+                        {!isCustom && ci.menuItem?.image ? (
                           <img
                             src={ci.menuItem.image}
-                            alt={ci.menuItem.name}
+                            alt={ci.menuItem?.name || 'Menu item'}
                             referrerPolicy="no-referrer"
                             className="w-10 h-10 rounded-lg object-cover shrink-0 border border-neutral-200 bg-neutral-100"
                             onError={(e) => {
@@ -1077,7 +1099,7 @@ export const PosView: React.FC = () => {
                         {/* Full Item Name, Description & Prep Notes */}
                         <div className="flex-1 min-w-0 pr-2 space-y-0.5">
                           <div className="font-semibold text-neutral-800 leading-snug break-words flex items-center gap-1.5 flex-wrap">
-                            <span>{ci.menuItem.name}</span>
+                            <span>{ci.menuItem?.name || 'Menu item'}</span>
                             <span className="text-neutral-500 font-normal">
                               × {ci.quantity}
                             </span>
@@ -1087,7 +1109,7 @@ export const PosView: React.FC = () => {
                               </span>
                             )}
                           </div>
-                          {isCustom && ci.menuItem.description && ci.menuItem.description !== ci.customInstructions && (
+                          {isCustom && ci.menuItem?.description && ci.menuItem.description !== ci.customInstructions && (
                             <div className="text-[10px] text-neutral-500 leading-snug break-words">
                               {ci.menuItem.description}
                             </div>
@@ -1283,10 +1305,10 @@ export const PosView: React.FC = () => {
               <div className="grid grid-cols-2 gap-1 p-2 bg-neutral-100 border-t border-neutral-200 shrink-0">
                 {/* SAVE BUTTON */}
                 <button
-                  disabled={cart.length === 0}
+                  disabled={safeCart.length === 0}
                   onClick={handleSaveTicket}
                   className={`py-3 px-3 rounded-lg text-xs font-bold uppercase tracking-wider text-white transition-all shadow-xs flex items-center justify-center gap-1.5 ${
-                    cart.length > 0
+                    safeCart.length > 0
                       ? 'bg-[#689F38] hover:bg-[#558B2F] active:scale-98 cursor-pointer'
                       : 'bg-neutral-300 text-neutral-500 cursor-not-allowed'
                   }`}
@@ -1296,13 +1318,13 @@ export const PosView: React.FC = () => {
 
                 {/* CHARGE BUTTON */}
                 <button
-                  disabled={cart.length === 0}
+                  disabled={safeCart.length === 0}
                   onClick={() => {
                     setTenderCashTzs(totalPayableTzs);
                     setIsChargeModalOpen(true);
                   }}
                   className={`py-3 px-3 rounded-lg text-xs font-bold uppercase tracking-wider text-white transition-all shadow-xs flex items-center justify-center gap-1.5 ${
-                    cart.length > 0
+                    safeCart.length > 0
                       ? 'bg-[#43A047] hover:bg-[#388E3C] active:scale-98 cursor-pointer'
                       : 'bg-neutral-300 text-neutral-500 cursor-not-allowed'
                   }`}
@@ -1449,7 +1471,7 @@ export const PosView: React.FC = () => {
       )}
 
       {/* ================= LINE ITEM DETAIL / MODIFIER MODAL ================= */}
-      {editingItemIndex !== null && cart[editingItemIndex] && (
+      {editingItemIndex !== null && cart[editingItemIndex]?.menuItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
           <div className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-neutral-200 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b pb-2.5">
@@ -1540,9 +1562,11 @@ export const PosView: React.FC = () => {
 
               <button
                 onClick={() => {
-                  cart[editingItemIndex].customerNotes = editingItemNotes.trim();
-                  cart[editingItemIndex].customInstructions = editingItemNotes.trim();
-                  cart[editingItemIndex].extraCharge = Math.max(0, Math.round(editingItemExtraCharge));
+                  updateCartItem(editingItemIndex, {
+                    customerNotes: editingItemNotes.trim(),
+                    customInstructions: editingItemNotes.trim(),
+                    extraCharge: Math.max(0, Math.round(editingItemExtraCharge)),
+                  });
                   setEditingItemIndex(null);
                   showToast('Line item updated');
                 }}
@@ -1765,7 +1789,7 @@ export const PosView: React.FC = () => {
                 </div>
               </div>
               <div className="text-right text-xs text-neutral-400">
-                <div>Items: {cart.reduce((sum, ci) => sum + ci.quantity, 0)}</div>
+                <div>Items: {safeCart.reduce((sum, ci) => sum + (Number(ci.quantity) || 0), 0)}</div>
                 {taxEnabled && (
                   <div className="text-emerald-400 font-mono">
                     VAT ({taxRatePct}%): {formatMoney(calculatedTaxTzs)}
@@ -2204,7 +2228,7 @@ export const PosView: React.FC = () => {
               <div>
                 <h3 className="text-sm font-extrabold text-neutral-900">{customizingItem.name}</h3>
                 <p className="text-[11px] text-neutral-500">
-                  Base price: <span className="font-mono font-semibold">{formatPosNumber(customizingItem.price)}</span>
+                  Base price: <span className="font-mono font-semibold">{formatPosNumber(customizingItem.price ?? 0)}</span>
                 </p>
               </div>
               <button
@@ -2223,8 +2247,9 @@ export const PosView: React.FC = () => {
                     Portion Size (BOM Scaled)
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {customizingItem.portions.map((p) => {
+                    {customizingItem.portions.filter(Boolean).map((p) => {
                       const active = chosenPortion?.name === p.name;
+                      const delta = p?.priceDelta ?? 0;
                       return (
                         <button
                           key={p.name}
@@ -2238,11 +2263,11 @@ export const PosView: React.FC = () => {
                         >
                           <div>{p.name}</div>
                           <div className="text-[10px] font-mono text-neutral-500">
-                            {p.priceDelta === 0
+                            {delta === 0
                               ? 'Standard'
-                              : p.priceDelta > 0
-                              ? `+${formatPosNumber(p.priceDelta)}`
-                              : formatPosNumber(p.priceDelta)}
+                              : delta > 0
+                              ? `+${formatPosNumber(delta)}`
+                              : formatPosNumber(delta)}
                           </div>
                         </button>
                       );
@@ -2257,8 +2282,9 @@ export const PosView: React.FC = () => {
                     Kitchen Modifiers &amp; Extras
                   </div>
                   <div className="space-y-1.5">
-                    {customizingItem.modifiers.map((mod) => {
+                    {customizingItem.modifiers.filter(Boolean).map((mod) => {
                       const selected = chosenModifiers.some((m) => m.id === mod.id);
+                      const modPrice = mod?.price ?? 0;
                       return (
                         <button
                           key={mod.id}
@@ -2276,7 +2302,7 @@ export const PosView: React.FC = () => {
                         >
                           <span>{mod.name}</span>
                           <span className="font-mono text-[11px]">
-                            {mod.price > 0 ? `+${formatPosNumber(mod.price)}` : 'No charge'}
+                            {modPrice > 0 ? `+${formatPosNumber(modPrice)}` : 'No charge'}
                           </span>
                         </button>
                       );
@@ -2324,9 +2350,9 @@ export const PosView: React.FC = () => {
             <div className="px-5 py-3.5 border-t border-neutral-200 bg-neutral-50 flex items-center justify-between gap-3">
               <div className="text-xs font-mono font-extrabold text-neutral-900 tabular-nums">
                 {formatPosNumber(
-                  (customizingItem.price +
-                    (chosenPortion?.priceDelta || 0) +
-                    chosenModifiers.reduce((s, m) => s + m.price, 0)) *
+                  ((customizingItem?.price ?? 0) +
+                    (chosenPortion?.priceDelta ?? 0) +
+                    (chosenModifiers || []).reduce((s, m) => s + (m?.price ?? 0), 0)) *
                     customizingQty
                 )}
               </div>
