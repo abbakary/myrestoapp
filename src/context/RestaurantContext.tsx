@@ -113,6 +113,7 @@ interface RestaurantContextType {
     switchToNew?: boolean;
   }) => { org: SaasOrganization; branch: RestaurantTenant; account: SaasAccount };
   tenants: RestaurantTenant[];
+  allBranches: RestaurantTenant[];
   currentTenant: RestaurantTenant;
   setCurrentTenantId: (tenantId: string) => void;
   viewScope: BranchViewScope;
@@ -590,13 +591,31 @@ interface RestaurantContextType {
     email: string;
     password: string;
     role: SaasAccountRole;
+    status?: SaasAccountStatus;
     organizationId?: string;
     branchId?: string;
     phone?: string;
-  }) => { success: boolean; error?: string };
-  providerUpdateAccountStatus: (accountId: string, status: SaasAccountStatus) => void;
-  providerUpdateAccountRole: (accountId: string, role: SaasAccountRole) => void;
-  providerResetAccountPassword: (accountId: string, newPassword: string) => void;
+  }) => { success: boolean; error?: string; account?: SaasAccount };
+  providerUpdateAccount: (
+    accountId: string,
+    patch: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      role?: SaasAccountRole;
+      status?: SaasAccountStatus;
+      organizationId?: string;
+      branchId?: string;
+    }
+  ) => { success: boolean; error?: string; account?: SaasAccount };
+  providerUpdateAccountStatus: (accountId: string, status: SaasAccountStatus) => { success: boolean; error?: string };
+  providerUpdateAccountRole: (
+    accountId: string,
+    role: SaasAccountRole,
+    scope?: { organizationId?: string; branchId?: string }
+  ) => { success: boolean; error?: string };
+  providerResetAccountPassword: (accountId: string, newPassword: string) => { success: boolean; error?: string };
+  providerDeleteAccount: (accountId: string) => { success: boolean; error?: string };
   saasPlans: SaasPlanDefinition[];
   providerCreatePlan: (params: {
     name: string;
@@ -1997,7 +2016,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     orderId: string,
     reason: string,
     actor: string,
-    approvedBy: string = 'Manager David Kasambala'
+    approvedBy: string = 'Branch Manager'
   ) => {
     const target = orders.find((o) => o.id === orderId);
     if (!target || target.status === 'cancelled') return false;
@@ -2101,7 +2120,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     orderId: string,
     reason: string,
     actor: string,
-    approvedBy: string = 'Manager David Kasambala'
+    approvedBy: string = 'Branch Manager'
   ) => {
     const ok = applyCancelOrderLocal(orderId, reason, actor, approvedBy);
     if (!ok) return;
@@ -2114,7 +2133,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const reviewApprovalRequest = (
     requestId: string,
     approve: boolean,
-    managerName: string = 'David Kasambala (Manager)'
+    managerName: string = 'Branch Manager'
   ) => {
     const req = approvalRequests.find((r) => r.id === requestId);
     if (!req || req.status !== 'pending') return;
@@ -2431,7 +2450,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       reference: invoiceRef || newLot.invoiceRef,
       batchNumber: lotNumber,
       reason: `Received into Main Store from ${supplier || ing.supplier} (Weighted Avg recalculated to ${formatMoney(updatedCostPerPurchase)} / ${ing.purchaseUnit})`,
-      recordedBy: 'David Kasambala (Manager)',
+      recordedBy: 'Branch Manager',
       destinationLocation: 'main_store',
     };
 
@@ -2517,7 +2536,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: new Date().toISOString().split('T')[0],
       reference: `WST-${Math.floor(1000 + Math.random() * 9000)}`,
       reason: reason || `${location === 'kitchen' ? 'Kitchen prep waste or line loss' : 'Main store humidity or spoilage'}`,
-      recordedBy: 'David Kasambala (Manager)',
+      recordedBy: 'Branch Manager',
       sourceLocation: location,
     };
 
@@ -2592,7 +2611,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       date: new Date().toISOString().split('T')[0],
       reference: `DIR-${Math.floor(1000 + Math.random() * 9000)}`,
       reason: params.reason || 'Direct operational consumption (Non-BOM)',
-      recordedBy: params.recordedBy || 'Chef Hamisi Juma',
+      recordedBy: params.recordedBy || 'Kitchen Chef',
       sourceLocation: params.location,
     };
 
@@ -2691,7 +2710,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         (isToKitchen
           ? `Day operation prep requisition (${params.shift || 'Daily Shift'})`
           : 'End-of-day return from kitchen line to main storage'),
-      recordedBy: params.recordedBy || 'David Kasambala (Manager)',
+      recordedBy: params.recordedBy || 'Branch Manager',
       sourceLocation: params.fromLocation,
       destinationLocation: params.toLocation,
       transferStatus: needsConfirmation ? 'in_transit' : 'received',
@@ -2738,7 +2757,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   };
 
   // Kitchen Receipt Confirmation: Stock only counts once kitchen confirms receiving it!
-  const confirmStockTransferReceipt = (movementId: string, receivedBy: string = 'Chef Hamisi Juma'): boolean => {
+  const confirmStockTransferReceipt = (movementId: string, receivedBy: string = 'Kitchen Chef'): boolean => {
     const movement = stockMovements.find((m) => m.id === movementId);
     if (!movement || movement.transferStatus !== 'in_transit') return false;
 
@@ -2856,7 +2875,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           date: today,
           reference: `TRF-CLOSE-${Math.floor(1000 + Math.random() * 9000)}`,
           reason: 'Daily Shift Close: All kitchen prep stock returned to Main Storage Room',
-          recordedBy: staffName || 'David Kasambala (Manager)',
+          recordedBy: staffName || 'Branch Manager',
           sourceLocation: 'kitchen',
           destinationLocation: 'main_store',
         });
@@ -2917,7 +2936,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         date: new Date().toISOString().split('T')[0],
         reference: 'Initial Opening Balance',
         reason: 'New raw ingredient catalogued into Main Storage',
-        recordedBy: 'David Kasambala (Manager)',
+        recordedBy: 'Branch Manager',
         destinationLocation: 'main_store',
       };
       setStockMovements((prev) => [movement, ...prev]);
@@ -2947,7 +2966,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         const historyItem: RecipeVersionHistoryItem = {
           version: existing.version || 1,
           changedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-          changedBy: recipe.approvedBy || 'Executive Chef Juma',
+          changedBy: recipe.approvedBy || 'Executive Chef',
           changeSummary: `Version ${existing.version || 1} archived upon update (${existing.ingredients?.length || 0} ingredients, ${existing.batchYieldPlates || 100} plates batch)`,
           batchYieldPlates: existing.batchYieldPlates || 100,
           ingredients: existing.ingredients || [],
@@ -3068,7 +3087,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         recipeId: recipe.id,
         dishName: recipe.name || 'Dish',
         batches: params.batches,
-        attemptedBy: params.chefName || 'Executive Chef Juma',
+        attemptedBy: params.chefName || 'Executive Chef',
         timestamp: timestampStr,
         missingItems: validation.missingItems.filter((m) => m.status !== 'ok'),
         reason: `Cannot cook ${params.batches} batch of ${recipe.name}. Missing items: ${blockedReasons}`,
@@ -3177,7 +3196,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           batchNumber,
           recipeId: recipe.id,
           reason: `Issued prepared sub-recipe into ${batchNumber} (${recipe.name})`,
-          recordedBy: params.chefName || 'Executive Chef Juma',
+          recordedBy: params.chefName || 'Executive Chef',
           sourceLocation: 'kitchen',
         });
       });
@@ -3224,7 +3243,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             batchNumber,
             recipeId: recipe.id,
             reason: `Batch production ${batchNumber} (${actualOutputQty.toLocaleString()} ${recipe.yieldUnit || 'plates'}) of ${recipe.name || 'Dish'}`,
-            recordedBy: params.chefName || 'Executive Chef Juma',
+            recordedBy: params.chefName || 'Executive Chef',
             sourceLocation: 'kitchen',
           });
         }
@@ -3248,7 +3267,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         costPerUnit: Math.round(costPerUnit * 100) / 100,
         preparedAt: timestampStr,
         expiresAt: expiryDt || `${today} 23:59`,
-        preparedBy: params.chefName || 'Executive Chef Juma',
+        preparedBy: params.chefName || 'Executive Chef',
         status: 'available',
       };
       nextSubBatches = [newSubBatch, ...nextSubBatches];
@@ -3266,7 +3285,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         batchNumber,
         recipeId: recipe.id,
         reason: `Produced sub-recipe batch ${batchNumber} (${formatMoney(Math.round(costPerUnit * 100) / 100)}/${outputUnit})`,
-        recordedBy: params.chefName || 'Executive Chef Juma',
+        recordedBy: params.chefName || 'Executive Chef',
         destinationLocation: 'kitchen',
       });
     } else {
@@ -3326,7 +3345,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       unitLabel: recipe.yieldUnit || 'plates',
       totalCost: validation.totalCost,
       costPerPlate,
-      cookedBy: params.chefName || 'Executive Chef Juma',
+      cookedBy: params.chefName || 'Executive Chef',
       timestamp: timestampStr,
       expiryDate: expiryDt,
       remainingPlates: actualOutputQty,
@@ -3376,7 +3395,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const reverseProductionBatch = (
     productionLogId: string,
     reason: string,
-    actor: string = 'David Kasambala (Manager)'
+    actor: string = 'Branch Manager'
   ): { success: boolean; error?: string } => {
     const log = productionLogs.find((l) => l.id === productionLogId);
     if (!log) return { success: false, error: 'Production log not found.' };
@@ -3565,7 +3584,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const updateRecipeStatus = (
     recipeId: string,
     status: RecipeStatus,
-    actor: string = 'Executive Chef Juma',
+    actor: string = 'Executive Chef',
     note?: string
   ) => {
     const nowStr = `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`;
@@ -3658,9 +3677,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       yieldUnit: recipe.yieldUnit || (recipe.isSubRecipe ? 'grams' : 'plates'),
       status: scaled.canProduceWithStore ? 'stock_checked' : 'planned',
       standardCost: scaled.totalEstimatedCost,
-      assignedTo: params.assignedTo || 'Chef Hamisi Juma',
+      assignedTo: params.assignedTo || 'Kitchen Chef',
       scheduledFor: params.scheduledFor || `Today · ${new Date().toTimeString().substring(0, 5)}`,
-      createdBy: 'David Kasambala (Manager)',
+      createdBy: 'Branch Manager',
       createdAt: nowStr,
       stockCheckedAt: scaled.canProduceWithStore ? nowStr : undefined,
       lines: scaled.rows.map((r) => ({
@@ -3722,7 +3741,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   ): { success: boolean; error?: string } => {
     const order = productionOrders.find((po) => po.id === orderId);
     if (!order) return { success: false, error: 'Production order not found.' };
-    const actor = options?.actor || 'Executive Chef Juma';
+    const actor = options?.actor || 'Executive Chef';
     const today = new Date().toISOString().split('T')[0];
     const nowStr = `${today} ${new Date().toTimeString().substring(0, 5)}`;
 
@@ -3889,7 +3908,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             date: today,
             reference: `WST-LEFTOVER-${Math.min(wastagePortions, actualPortions)}P`,
             reason: options?.wastageReason || `Production loss on ${order.orderNumber}`,
-            recordedBy: 'Executive Chef Juma',
+            recordedBy: 'Executive Chef',
             sourceLocation: 'kitchen',
           },
           ...prev,
@@ -3914,7 +3933,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return { success: true };
   };
 
-  const cancelProductionOrder = (orderId: string, reason: string, actor: string = 'David Kasambala') => {
+  const cancelProductionOrder = (orderId: string, reason: string, actor: string = 'Branch Manager') => {
     setProductionOrders((prev) =>
       prev.map((po) =>
         po.id === orderId
@@ -3950,7 +3969,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       reason: params.reason,
       linkedOrderRef: params.linkedOrderRef,
       status: 'pending',
-      requestedBy: params.requestedBy || 'Executive Chef Juma',
+      requestedBy: params.requestedBy || 'Executive Chef',
       createdAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
     };
     setPurchaseRequests((prev) => [pr, ...prev]);
@@ -4009,7 +4028,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       quantity: Math.round(params.quantity),
       unit: ing.consumptionUnit,
       status: 'in_transit',
-      requestedBy: params.requestedBy || 'David Kasambala (Manager)',
+      requestedBy: params.requestedBy || 'Branch Manager',
       createdAt: `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`,
     };
     setBranchTransfers((prev) => [bt, ...prev]);
@@ -4107,7 +4126,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       foodCostPercentage: Math.round(foodCostPercentage * 10) / 10,
       depositPaid: params.depositPaid || 0,
       notes: params.notes,
-      createdBy: 'David Kasambala (Manager)',
+      createdBy: 'Branch Manager',
       createdAt: nowStr,
       updatedAt: nowStr,
     };
@@ -4363,7 +4382,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
               id: `amd-${Date.now()}`,
               summary: note || 'Amended event quantities',
               timestamp: nowStr,
-              actor: 'David Kasambala (Manager)',
+              actor: 'Branch Manager',
             },
             ...(c.amendments || []),
           ],
@@ -4455,7 +4474,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         date: today,
         reference: `WST-LEFTOVER-${platesCount}P`,
         reason: reason || 'End-of-day unsold batch leftover discard',
-        recordedBy: 'Executive Chef Juma',
+        recordedBy: 'Executive Chef',
         sourceLocation: 'kitchen',
       };
       setStockMovements((prev) => [wasteMovement, ...prev]);
@@ -4592,7 +4611,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     );
   };
 
-  const commitDailyReconciliation = (staffName: string = 'David Kasambala (Manager)') => {
+  const commitDailyReconciliation = (staffName: string = 'Branch Manager') => {
     let totalVariance = 0;
     const newMovements: StockMovement[] = [];
     const today = new Date().toISOString().split('T')[0];
@@ -4843,11 +4862,12 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         .toUpperCase()
         .replace(/[^A-Z0-9]/g, '') || 'STAFF';
       newWaiterId = `waiter-${Date.now()}`;
+      const emailDomain = currentOrganization.domain || 'restaurant.local';
       const newWaiter: Waiter = {
         id: newWaiterId,
         name: emp.name,
         phone: emp.phone,
-        email: emp.email || `${codeBase.toLowerCase()}@savannagrill.com`,
+        email: emp.email || `${codeBase.toLowerCase()}@${emailDomain}`,
         referralCode: `WAITER_${codeBase}_${nextNum}`,
         active: emp.status === 'active',
         commissionRate: defaultCommissionMode === 'percent' ? defaultCommissionValue / 100 : 0.05,
@@ -4944,7 +4964,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     paidBy?: string;
   }): PayrollPaymentRecord[] => {
     const nowIso = new Date().toISOString();
-    const payer = params.paidBy || 'David Kasambala (Manager)';
+    const payer = params.paidBy || 'Branch Manager';
     const createdRecords: PayrollPaymentRecord[] = [];
     const settledEmpIds = new Set<string>();
 
@@ -5113,7 +5133,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
     const method = options?.method || 'cash';
     const ref = options?.reference?.trim() || `COMM-${Date.now().toString().slice(-5)}`;
-    const settledBy = options?.settledBy || 'David Kasambala (Manager)';
+    const settledBy = options?.settledBy || 'Branch Manager';
 
     setSettledCommissionByWaiter((prev) => ({
       ...prev,
@@ -5734,6 +5754,9 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setCurrentOrganizationIdState(orgId);
       setCurrentBranchIdState(branchId);
       setViewScopeState('branch');
+      setActiveWaiterId('');
+      setActiveReferralCode(null);
+      setSoundAlertTriggered(false);
       setWorkspaceRevision((r) => r + 1);
     }
     return { org: newOrg, branch: hqBranch, account: newOwnerAccount };
@@ -6178,76 +6201,268 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     email: string;
     password: string;
     role: SaasAccountRole;
+    status?: SaasAccountStatus;
     organizationId?: string;
     branchId?: string;
     phone?: string;
-  }): { success: boolean; error?: string } => {
+  }): { success: boolean; error?: string; account?: SaasAccount } => {
     const cleanEmail = params.email.trim().toLowerCase();
-    if (!cleanEmail || !params.name.trim() || params.password.length < 4) {
-      return { success: false, error: 'Provide name, valid email, and password (min 4 chars).' };
+    const cleanName = params.name.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) || !cleanName || params.password.length < 4) {
+      return { success: false, error: 'Provide full name, valid email address, and password (min 4 chars).' };
     }
     if (saasAccounts.some((a) => a.email.toLowerCase() === cleanEmail)) {
       return { success: false, error: 'Email already registered on platform.' };
     }
+    let resolvedOrgId: string | undefined;
+    let resolvedBranchId: string | undefined;
+    if (params.role !== 'provider_admin') {
+      resolvedOrgId = params.organizationId || organizations[0]?.id;
+      if (!resolvedOrgId || !organizations.some((o) => o.id === resolvedOrgId)) {
+        return { success: false, error: 'Select a valid tenant organization.' };
+      }
+      if (params.role === 'branch_manager') {
+        const orgBranches = allBranches.filter((b) => b.organizationId === resolvedOrgId);
+        const branch = params.branchId
+          ? orgBranches.find((b) => b.id === params.branchId)
+          : orgBranches[0];
+        if (params.branchId && !branch) {
+          return { success: false, error: 'Selected branch does not belong to the chosen organization.' };
+        }
+        resolvedBranchId = branch?.id;
+      }
+    }
+    const initialStatus: SaasAccountStatus = params.status || 'active';
     const newAcc: SaasAccount = {
       id: `acc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: params.name.trim(),
+      name: cleanName,
       email: cleanEmail,
       password: params.password,
       role: params.role,
-      status: 'active',
-      organizationId: params.role === 'provider_admin' ? undefined : params.organizationId,
-      branchId: params.role === 'branch_manager' ? params.branchId : undefined,
-      phone: params.phone?.trim(),
+      status: initialStatus,
+      organizationId: resolvedOrgId,
+      branchId: resolvedBranchId,
+      phone: params.phone?.trim() || undefined,
       lastLoginAt: 'Never',
       createdAt: new Date().toISOString().split('T')[0],
     };
     setSaasAccounts((prev) => [newAcc, ...prev]);
-    recordProviderAudit('ACCOUNT_CREATED', cleanEmail, `Created ${params.role} account for ${params.name.trim()}.`);
+    recordProviderAudit(
+      'ACCOUNT_CREATED',
+      cleanEmail,
+      `Created ${initialStatus.toUpperCase()} ${params.role} account for ${cleanName}.`
+    );
     enqueueApiSync(
-      () => apiClient.provider.createAccount({ ...params, id: newAcc.id }),
+      () =>
+        apiClient.provider.createAccount({
+          ...params,
+          id: newAcc.id,
+          status: initialStatus,
+          organizationId: resolvedOrgId,
+          branchId: resolvedBranchId,
+        }),
       'providerCreateAccount'
     );
-    return { success: true };
+    return { success: true, account: newAcc };
   };
 
-  const providerUpdateAccountStatus = (accountId: string, status: SaasAccountStatus) => {
+  const providerUpdateAccount = (
+    accountId: string,
+    patch: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      role?: SaasAccountRole;
+      status?: SaasAccountStatus;
+      organizationId?: string;
+      branchId?: string;
+    }
+  ): { success: boolean; error?: string; account?: SaasAccount } => {
     const acc = saasAccounts.find((a) => a.id === accountId);
-    if (!acc) return;
+    if (!acc) return { success: false, error: 'Account not found.' };
+
+    const nextRole = patch.role ?? acc.role;
+    const nextStatus = patch.status ?? acc.status;
+
+    if (
+      acc.role === 'provider_admin' &&
+      acc.status === 'active' &&
+      (nextRole !== 'provider_admin' || nextStatus !== 'active')
+    ) {
+      const otherActiveProviders = saasAccounts.filter(
+        (a) => a.id !== acc.id && a.role === 'provider_admin' && a.status === 'active'
+      );
+      if (otherActiveProviders.length === 0) {
+        return {
+          success: false,
+          error: 'Cannot demote or suspend the last active System Provider administrator.',
+        };
+      }
+    }
+
+    const nextName = patch.name !== undefined ? patch.name.trim() : acc.name;
+    if (!nextName) {
+      return { success: false, error: 'Account holder name cannot be empty.' };
+    }
+
+    const nextEmail = patch.email !== undefined ? patch.email.trim().toLowerCase() : acc.email;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      return { success: false, error: 'Provide a valid email address.' };
+    }
+    if (saasAccounts.some((a) => a.id !== acc.id && a.email.toLowerCase() === nextEmail)) {
+      return { success: false, error: 'Another account already uses this email address.' };
+    }
+
+    const nextPhone = patch.phone !== undefined ? patch.phone.trim() || undefined : acc.phone;
+
+    let nextOrgId: string | undefined;
+    let nextBranchId: string | undefined;
+    if (nextRole !== 'provider_admin') {
+      const candidateOrgId =
+        patch.organizationId !== undefined
+          ? patch.organizationId || undefined
+          : acc.organizationId || organizations[0]?.id;
+      if (candidateOrgId) {
+        if (!organizations.some((o) => o.id === candidateOrgId)) {
+          return { success: false, error: 'Selected organization does not exist.' };
+        }
+        nextOrgId = candidateOrgId;
+        if (nextRole === 'branch_manager') {
+          const orgBranches = allBranches.filter((b) => b.organizationId === candidateOrgId);
+          const candidateBranchId = patch.branchId !== undefined ? patch.branchId : acc.branchId;
+          const matchedBranch = candidateBranchId
+            ? orgBranches.find((b) => b.id === candidateBranchId)
+            : orgBranches[0];
+          if (candidateBranchId && !matchedBranch) {
+            return { success: false, error: 'Selected branch does not belong to the chosen organization.' };
+          }
+          nextBranchId = matchedBranch?.id;
+        }
+      }
+    }
+
+    const updated: SaasAccount = {
+      ...acc,
+      name: nextName,
+      email: nextEmail,
+      phone: nextPhone,
+      role: nextRole,
+      status: nextStatus,
+      organizationId: nextOrgId,
+      branchId: nextBranchId,
+    };
+
+    setSaasAccounts((prev) => prev.map((a) => (a.id === accountId ? updated : a)));
+    if (authenticatedAccount?.id === accountId) {
+      setAuthenticatedAccount(updated);
+    }
+    recordProviderAudit(
+      'ACCOUNT_UPDATED',
+      updated.email,
+      `Updated profile/access: role=${updated.role}, status=${updated.status.toUpperCase()}${
+        updated.organizationId ? `, org=${updated.organizationId}` : ', scope=GLOBAL'
+      }${updated.branchId ? `, branch=${updated.branchId}` : ''}.`
+    );
+    enqueueApiSync(
+      () =>
+        apiClient.provider.updateAccount(accountId, {
+          name: updated.name,
+          email: updated.email,
+          phone: updated.phone ?? '',
+          role: updated.role,
+          status: updated.status,
+          organizationId: updated.organizationId,
+          branchId: updated.branchId,
+        }),
+      'providerUpdateAccount'
+    );
+    return { success: true, account: updated };
+  };
+
+  const providerUpdateAccountStatus = (
+    accountId: string,
+    status: SaasAccountStatus
+  ): { success: boolean; error?: string } => {
+    const acc = saasAccounts.find((a) => a.id === accountId);
+    if (!acc) return { success: false, error: 'Account not found.' };
+    if (authenticatedAccount?.id === accountId && status !== 'active') {
+      return { success: false, error: 'You cannot suspend your own active session.' };
+    }
+    if (acc.role === 'provider_admin' && acc.status === 'active' && status !== 'active') {
+      const otherActiveProviders = saasAccounts.filter(
+        (a) => a.id !== acc.id && a.role === 'provider_admin' && a.status === 'active'
+      );
+      if (otherActiveProviders.length === 0) {
+        return {
+          success: false,
+          error: 'Cannot suspend the last active System Provider administrator.',
+        };
+      }
+    }
     setSaasAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, status } : a)));
     recordProviderAudit('ACCOUNT_STATUS_CHANGED', acc.email, `Set user account status to ${status.toUpperCase()}.`);
     enqueueApiSync(
       () => apiClient.provider.updateAccountStatus(accountId, status),
       'providerUpdateAccountStatus'
     );
+    return { success: true };
   };
 
-  const providerUpdateAccountRole = (accountId: string, role: SaasAccountRole) => {
-    const acc = saasAccounts.find((a) => a.id === accountId);
-    if (!acc) return;
-    setSaasAccounts((prev) =>
-      prev.map((a) =>
-        a.id === accountId
-          ? { ...a, role, organizationId: role === 'provider_admin' ? undefined : a.organizationId || organizations[0]?.id }
-          : a
-      )
-    );
-    recordProviderAudit('ACCOUNT_ROLE_CHANGED', acc.email, `Changed platform role to ${role}.`);
-    enqueueApiSync(
-      () => apiClient.provider.updateAccountRole(accountId, role),
-      'providerUpdateAccountRole'
-    );
+  const providerUpdateAccountRole = (
+    accountId: string,
+    role: SaasAccountRole,
+    scope?: { organizationId?: string; branchId?: string }
+  ): { success: boolean; error?: string } => {
+    const res = providerUpdateAccount(accountId, {
+      role,
+      organizationId: scope?.organizationId,
+      branchId: scope?.branchId,
+    });
+    return { success: res.success, error: res.error };
   };
 
-  const providerResetAccountPassword = (accountId: string, newPassword: string) => {
+  const providerResetAccountPassword = (
+    accountId: string,
+    newPassword: string
+  ): { success: boolean; error?: string } => {
     const acc = saasAccounts.find((a) => a.id === accountId);
-    if (!acc || newPassword.length < 4) return;
+    if (!acc) return { success: false, error: 'Account not found.' };
+    if (newPassword.length < 4) {
+      return { success: false, error: 'Password must be at least 4 characters.' };
+    }
     setSaasAccounts((prev) => prev.map((a) => (a.id === accountId ? { ...a, password: newPassword } : a)));
+    if (authenticatedAccount?.id === accountId) {
+      setAuthenticatedAccount((prev) => (prev ? { ...prev, password: newPassword } : prev));
+    }
     recordProviderAudit('ACCOUNT_PASSWORD_RESET', acc.email, 'System Provider issued new account password.');
     enqueueApiSync(
       () => apiClient.provider.resetAccountPassword(accountId, newPassword),
       'providerResetAccountPassword'
     );
+    return { success: true };
+  };
+
+  const providerDeleteAccount = (accountId: string): { success: boolean; error?: string } => {
+    const acc = saasAccounts.find((a) => a.id === accountId);
+    if (!acc) return { success: false, error: 'Account not found.' };
+    if (authenticatedAccount?.id === accountId) {
+      return { success: false, error: 'You cannot delete the currently signed-in account.' };
+    }
+    if (acc.role === 'provider_admin' && acc.status === 'active') {
+      const otherActiveProviders = saasAccounts.filter(
+        (a) => a.id !== acc.id && a.role === 'provider_admin' && a.status === 'active'
+      );
+      if (otherActiveProviders.length === 0) {
+        return {
+          success: false,
+          error: 'Cannot delete the last active System Provider administrator.',
+        };
+      }
+    }
+    setSaasAccounts((prev) => prev.filter((a) => a.id !== accountId));
+    recordProviderAudit('ACCOUNT_DELETED', acc.email, `Revoked and removed ${acc.role} account (${acc.name}).`);
+    enqueueApiSync(() => apiClient.provider.deleteAccount(accountId), 'providerDeleteAccount');
+    return { success: true };
   };
 
   const submitLeadInquiry = (params: {
@@ -6473,6 +6688,7 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setCurrentOrganizationId,
         createSaasTenant,
         tenants,
+        allBranches,
         currentTenant,
         setCurrentTenantId,
         viewScope,
@@ -6649,9 +6865,11 @@ export const RestaurantProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         providerInspectTenant,
         providerExitInspection,
         providerCreateAccount,
+        providerUpdateAccount,
         providerUpdateAccountStatus,
         providerUpdateAccountRole,
         providerResetAccountPassword,
+        providerDeleteAccount,
         currentBranchQuota,
         saasPlans,
         providerCreatePlan,

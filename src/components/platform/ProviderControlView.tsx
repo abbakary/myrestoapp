@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Ban,
   Building2,
   Check,
   Coins,
@@ -13,10 +14,12 @@ import {
   Layers,
   LayoutGrid,
   LogOut,
+  Pencil,
   Plus,
   Search,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
   UserCheck,
   Users,
   X,
@@ -24,6 +27,7 @@ import {
 import { useRestaurant } from '../../context/RestaurantContext';
 import {
   RestaurantTenant,
+  SaasAccount,
   SaasAccountRole,
   SaasAccountStatus,
   SaasPlanDefinition,
@@ -36,6 +40,7 @@ type ProviderTab = 'overview' | 'tenants' | 'packages' | 'accounts' | 'billing' 
 export const ProviderControlView: React.FC = () => {
   const {
     organizations,
+    allBranches,
     saasPlans,
     providerTenantSummaries,
     providerStats,
@@ -58,9 +63,11 @@ export const ProviderControlView: React.FC = () => {
     providerMarkBillingPaid,
     providerInspectTenant,
     providerCreateAccount,
+    providerUpdateAccount,
     providerUpdateAccountStatus,
     providerUpdateAccountRole,
     providerResetAccountPassword,
+    providerDeleteAccount,
     providerConvertLeadToTenant,
   } = useRestaurant();
 
@@ -71,6 +78,7 @@ export const ProviderControlView: React.FC = () => {
   const [tenantStatusFilter, setTenantStatusFilter] = useState<'all' | SaasTenantStatus>('all');
   const [accountSearch, setAccountSearch] = useState('');
   const [accountRoleFilter, setAccountRoleFilter] = useState<'all' | SaasAccountRole>('all');
+  const [accountStatusFilter, setAccountStatusFilter] = useState<'all' | SaasAccountStatus>('all');
   const [notice, setNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Provision Tenant Form
@@ -87,13 +95,37 @@ export const ProviderControlView: React.FC = () => {
   const [showNewAccountForm, setShowNewAccountForm] = useState(false);
   const [accName, setAccName] = useState('');
   const [accEmail, setAccEmail] = useState('');
-  const [accPassword, setAccPassword] = useState('pass1234');
+  const [accPhone, setAccPhone] = useState('');
+  const [accPassword, setAccPassword] = useState('');
+  const [showAccPassword, setShowAccPassword] = useState(false);
   const [accRole, setAccRole] = useState<SaasAccountRole>('tenant_owner');
+  const [accStatus, setAccStatus] = useState<SaasAccountStatus>('active');
   const [accOrgId, setAccOrgId] = useState<string>(() => organizations[0]?.id || '');
+  const [accBranchId, setAccBranchId] = useState<string>('');
 
-  // Password reset inline editor
+  // Account inline editors (Edit Details/Scope, Password Reset, Delete Confirmation)
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [editAccountDraft, setEditAccountDraft] = useState<{
+    name: string;
+    email: string;
+    phone: string;
+    role: SaasAccountRole;
+    status: SaasAccountStatus;
+    organizationId: string;
+    branchId: string;
+  }>({
+    name: '',
+    email: '',
+    phone: '',
+    role: 'tenant_owner',
+    status: 'active',
+    organizationId: '',
+    branchId: '',
+  });
   const [resetTargetId, setResetTargetId] = useState<string | null>(null);
-  const [resetPasswordDraft, setResetPasswordDraft] = useState('reset123');
+  const [resetPasswordDraft, setResetPasswordDraft] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   // Package Management state (Create & Edit SaaS Packages)
   const [showNewPlanForm, setShowNewPlanForm] = useState(false);
@@ -130,19 +162,38 @@ export const ProviderControlView: React.FC = () => {
     });
   }, [providerTenantSummaries, tenantSearch, tenantStatusFilter]);
 
+  const activeProviderCount = useMemo(
+    () => saasAccounts.filter((a) => a.role === 'provider_admin' && a.status === 'active').length,
+    [saasAccounts]
+  );
+
+  const accountStatusCounts = useMemo(
+    () => ({
+      all: saasAccounts.length,
+      active: saasAccounts.filter((a) => a.status === 'active').length,
+      pending: saasAccounts.filter((a) => a.status === 'pending').length,
+      suspended: saasAccounts.filter((a) => a.status === 'suspended').length,
+    }),
+    [saasAccounts]
+  );
+
   const filteredAccounts = useMemo(() => {
     const q = accountSearch.trim().toLowerCase();
     return saasAccounts.filter((a) => {
       if (accountRoleFilter !== 'all' && a.role !== accountRoleFilter) return false;
+      if (accountStatusFilter !== 'all' && a.status !== accountStatusFilter) return false;
       if (!q) return true;
       const orgName = organizations.find((o) => o.id === a.organizationId)?.name || '';
+      const branchName = allBranches.find((b) => b.id === a.branchId)?.name || '';
       return (
         a.name.toLowerCase().includes(q) ||
         a.email.toLowerCase().includes(q) ||
-        orgName.toLowerCase().includes(q)
+        (a.phone || '').toLowerCase().includes(q) ||
+        orgName.toLowerCase().includes(q) ||
+        branchName.toLowerCase().includes(q)
       );
     });
-  }, [saasAccounts, accountSearch, accountRoleFilter, organizations]);
+  }, [saasAccounts, accountSearch, accountRoleFilter, accountStatusFilter, organizations, allBranches]);
 
   const handleCreateTenant = (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,21 +224,74 @@ export const ProviderControlView: React.FC = () => {
 
   const handleCreateAccount = (e: React.FormEvent) => {
     e.preventDefault();
+    const effectiveOrgId = accRole === 'provider_admin' ? undefined : accOrgId || organizations[0]?.id;
+    const orgBranches = effectiveOrgId ? allBranches.filter((b) => b.organizationId === effectiveOrgId) : [];
+    const effectiveBranchId =
+      accRole === 'branch_manager' ? accBranchId || orgBranches[0]?.id : undefined;
     const res = providerCreateAccount({
       name: accName,
       email: accEmail,
+      phone: accPhone,
       password: accPassword,
       role: accRole,
-      organizationId: accRole === 'provider_admin' ? undefined : accOrgId,
+      status: accStatus,
+      organizationId: effectiveOrgId,
+      branchId: effectiveBranchId,
     });
     if (!res.success) {
       setNotice({ type: 'err', text: res.error || 'Could not create account.' });
       return;
     }
-    setNotice({ type: 'ok', text: `Created active ${accRole} account for ${accEmail.trim().toLowerCase()}.` });
+    setNotice({
+      type: 'ok',
+      text: `Created ${accStatus} ${accRole} account for ${accEmail.trim().toLowerCase()}.`,
+    });
     setAccName('');
     setAccEmail('');
+    setAccPhone('');
+    setAccPassword('');
+    setShowAccPassword(false);
+    setAccBranchId('');
     setShowNewAccountForm(false);
+  };
+
+  const startEditingAccount = (acc: SaasAccount) => {
+    if (editingAccountId === acc.id) {
+      setEditingAccountId(null);
+      return;
+    }
+    const defaultOrgId = acc.organizationId || organizations[0]?.id || '';
+    const defaultBranches = allBranches.filter((b) => b.organizationId === defaultOrgId);
+    setResetTargetId(null);
+    setDeleteConfirmId(null);
+    setEditingAccountId(acc.id);
+    setEditAccountDraft({
+      name: acc.name,
+      email: acc.email,
+      phone: acc.phone || '',
+      role: acc.role,
+      status: acc.status,
+      organizationId: defaultOrgId,
+      branchId: acc.branchId || defaultBranches[0]?.id || '',
+    });
+  };
+
+  const handleSaveAccountEdit = (acc: SaasAccount) => {
+    const res = providerUpdateAccount(acc.id, {
+      name: editAccountDraft.name,
+      email: editAccountDraft.email,
+      phone: editAccountDraft.phone,
+      role: editAccountDraft.role,
+      status: editAccountDraft.status,
+      organizationId: editAccountDraft.role === 'provider_admin' ? undefined : editAccountDraft.organizationId,
+      branchId: editAccountDraft.role === 'branch_manager' ? editAccountDraft.branchId : undefined,
+    });
+    if (!res.success) {
+      setNotice({ type: 'err', text: res.error || 'Could not update account.' });
+      return;
+    }
+    setEditingAccountId(null);
+    setNotice({ type: 'ok', text: `Updated profile and access scope for ${editAccountDraft.email.trim().toLowerCase()}.` });
   };
 
   const handleCreatePackage = (e: React.FormEvent) => {
@@ -449,12 +553,20 @@ export const ProviderControlView: React.FC = () => {
               <div className="flex items-center gap-2 text-amber-950">
                 <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0" />
                 <span>
-                  <strong>{providerStats.pendingAccountsCount} user account</strong> awaiting System Provider activation before login access is permitted.
+                  <strong>
+                    {providerStats.pendingAccountsCount}{' '}
+                    {providerStats.pendingAccountsCount === 1 ? 'user account' : 'user accounts'}
+                  </strong>{' '}
+                  awaiting System Provider activation before login access is permitted.
                 </span>
               </div>
               <button
                 type="button"
-                onClick={() => setActiveTab('accounts')}
+                onClick={() => {
+                  setActiveTab('accounts');
+                  setAccountRoleFilter('all');
+                  setAccountStatusFilter('pending');
+                }}
                 className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-semibold cursor-pointer"
               >
                 Review Pending Accounts
@@ -1315,122 +1427,252 @@ export const ProviderControlView: React.FC = () => {
           {/* ================= TAB 3: USER & PROVIDER ACCOUNTS DIRECTORY ================= */}
           {activeTab === 'accounts' && (
             <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2 flex-1">
-                  <div className="relative flex-1 min-w-[220px] max-w-sm">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={accountSearch}
-                      onChange={(e) => setAccountSearch(e.target.value)}
-                      placeholder="Search name, email, or organization..."
-                      className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-lg text-xs"
-                    />
+              {/* Top Filter & Create Bar */}
+              <div className="bg-white border border-slate-200 rounded-xl p-3.5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2 flex-1">
+                    <div className="relative flex-1 min-w-[220px] max-w-sm">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={accountSearch}
+                        onChange={(e) => setAccountSearch(e.target.value)}
+                        placeholder="Search name, email, phone, organization, or branch..."
+                        className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg text-xs">
+                      {(
+                        [
+                          { id: 'all', label: 'All Roles' },
+                          { id: 'provider_admin', label: 'Providers' },
+                          { id: 'tenant_owner', label: 'Owners' },
+                          { id: 'branch_manager', label: 'Managers' },
+                        ] as const
+                      ).map((r) => (
+                        <button
+                          key={r.id}
+                          type="button"
+                          onClick={() => setAccountRoleFilter(r.id)}
+                          className={`px-2.5 py-1 rounded-md font-semibold cursor-pointer ${
+                            accountRoleFilter === r.id ? 'bg-white text-slate-950 shadow-xs' : 'text-slate-600'
+                          }`}
+                        >
+                          {r.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-lg text-xs">
+
+                  <button
+                    type="button"
+                    onClick={() => setShowNewAccountForm((v) => !v)}
+                    className="px-3.5 py-2 rounded-lg bg-slate-950 hover:bg-slate-800 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add User / Provider Account</span>
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 text-xs">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {(
                       [
-                        { id: 'all', label: 'All Roles' },
-                        { id: 'provider_admin', label: 'Providers' },
-                        { id: 'tenant_owner', label: 'Owners' },
-                        { id: 'branch_manager', label: 'Managers' },
+                        { id: 'all', label: 'All Statuses', count: accountStatusCounts.all },
+                        { id: 'active', label: 'Active', count: accountStatusCounts.active },
+                        { id: 'pending', label: 'Pending Approval', count: accountStatusCounts.pending },
+                        { id: 'suspended', label: 'Suspended', count: accountStatusCounts.suspended },
                       ] as const
-                    ).map((r) => (
+                    ).map((st) => (
                       <button
-                        key={r.id}
+                        key={st.id}
                         type="button"
-                        onClick={() => setAccountRoleFilter(r.id)}
-                        className={`px-2.5 py-1 rounded-md font-semibold cursor-pointer ${
-                          accountRoleFilter === r.id ? 'bg-white text-slate-950 shadow-xs' : 'text-slate-600'
+                        onClick={() => setAccountStatusFilter(st.id)}
+                        className={`px-2.5 py-1 rounded-md font-semibold inline-flex items-center gap-1.5 cursor-pointer border ${
+                          accountStatusFilter === st.id
+                            ? 'bg-slate-950 text-white border-slate-950'
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
                         }`}
                       >
-                        {r.label}
+                        <span>{st.label}</span>
+                        <span className="font-mono text-[11px] opacity-80">{st.count}</span>
                       </button>
                     ))}
                   </div>
+                  <div className="text-[11px] text-slate-500 font-mono">
+                    Showing {filteredAccounts.length} of {saasAccounts.length} accounts
+                  </div>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => setShowNewAccountForm((v) => !v)}
-                  className="px-3.5 py-2 rounded-lg bg-slate-950 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add User / Provider Account</span>
-                </button>
               </div>
 
               {showNewAccountForm && (
                 <form
                   onSubmit={handleCreateAccount}
-                  className="bg-white border border-slate-200 rounded-xl p-5 space-y-3 text-xs"
+                  className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 text-xs"
                 >
-                  <div className="font-bold text-slate-950">Create Platform Operator or Tenant User Account</div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                    <input
-                      type="text"
-                      required
-                      value={accName}
-                      onChange={(e) => setAccName(e.target.value)}
-                      placeholder="Full Name *"
-                      className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg"
-                    />
-                    <input
-                      type="email"
-                      required
-                      value={accEmail}
-                      onChange={(e) => setAccEmail(e.target.value)}
-                      placeholder="Email Address *"
-                      className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg font-mono"
-                    />
-                    <input
-                      type="text"
-                      required
-                      value={accPassword}
-                      onChange={(e) => setAccPassword(e.target.value)}
-                      placeholder="Password *"
-                      className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg font-mono"
-                    />
-                    <select
-                      value={accRole}
-                      onChange={(e) => setAccRole(e.target.value as SaasAccountRole)}
-                      className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg"
-                    >
-                      <option value="tenant_owner">Tenant Owner</option>
-                      <option value="branch_manager">Branch Manager</option>
-                      <option value="provider_admin">System Provider Admin</option>
-                    </select>
-                    {accRole !== 'provider_admin' ? (
-                      <select
-                        value={accOrgId}
-                        onChange={(e) => setAccOrgId(e.target.value)}
-                        className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg"
-                      >
-                        {organizations.map((o) => (
-                          <option key={o.id} value={o.id}>
-                            {o.name}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-600 font-mono flex items-center">
-                        Global Provider Scope
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-bold text-sm text-slate-950">Create Platform Operator or Tenant User Account</div>
+                      <div className="text-[11px] text-slate-500">
+                        Assign platform role, organization scope, optional branch assignment, and activation state.
                       </div>
-                    )}
-                  </div>
-                  <div className="flex justify-end gap-2">
+                    </div>
                     <button
                       type="button"
                       onClick={() => setShowNewAccountForm(false)}
-                      className="px-3 py-1.5 text-slate-600 cursor-pointer"
+                      className="text-slate-500 hover:text-slate-900 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Full Name *</label>
+                      <input
+                        type="text"
+                        required
+                        value={accName}
+                        onChange={(e) => setAccName(e.target.value)}
+                        placeholder="e.g. Amina Hassan"
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Email Address *</label>
+                      <input
+                        type="email"
+                        required
+                        value={accEmail}
+                        onChange={(e) => setAccEmail(e.target.value)}
+                        placeholder="user@company.co.tz"
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Phone</label>
+                      <input
+                        type="text"
+                        value={accPhone}
+                        onChange={(e) => setAccPhone(e.target.value)}
+                        placeholder="+255 7XX XXX XXX"
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Initial Password *</label>
+                      <div className="relative">
+                        <input
+                          type={showAccPassword ? 'text' : 'password'}
+                          required
+                          minLength={4}
+                          value={accPassword}
+                          onChange={(e) => setAccPassword(e.target.value)}
+                          placeholder="Min 4 characters"
+                          className="w-full pl-3 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-lg font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowAccPassword((v) => !v)}
+                          aria-label={showAccPassword ? 'Hide password' : 'Show password'}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-800 cursor-pointer"
+                        >
+                          {showAccPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Platform Role *</label>
+                      <select
+                        value={accRole}
+                        onChange={(e) => {
+                          const nextRole = e.target.value as SaasAccountRole;
+                          setAccRole(nextRole);
+                          if (nextRole === 'branch_manager') {
+                            const targetOrg = accOrgId || organizations[0]?.id || '';
+                            const firstBr = allBranches.find((b) => b.organizationId === targetOrg);
+                            setAccOrgId(targetOrg);
+                            setAccBranchId(firstBr?.id || '');
+                          }
+                        }}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg"
+                      >
+                        <option value="tenant_owner">Tenant Owner</option>
+                        <option value="branch_manager">Branch Manager</option>
+                        <option value="provider_admin">System Provider Admin</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Account Status *</label>
+                      <select
+                        value={accStatus}
+                        onChange={(e) => setAccStatus(e.target.value as SaasAccountStatus)}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg"
+                      >
+                        <option value="active">Active (Login Enabled)</option>
+                        <option value="pending">Pending Verification</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Organization Scope</label>
+                      {accRole !== 'provider_admin' ? (
+                        <select
+                          value={accOrgId || organizations[0]?.id || ''}
+                          onChange={(e) => {
+                            const nextOrg = e.target.value;
+                            setAccOrgId(nextOrg);
+                            const firstBr = allBranches.find((b) => b.organizationId === nextOrg);
+                            setAccBranchId(firstBr?.id || '');
+                          }}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg"
+                        >
+                          {organizations.map((o) => (
+                            <option key={o.id} value={o.id}>
+                              {o.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-600 font-mono">
+                          Global Provider Scope
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Branch Scope</label>
+                      {accRole === 'branch_manager' ? (
+                        <select
+                          value={accBranchId}
+                          onChange={(e) => setAccBranchId(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg"
+                        >
+                          {allBranches
+                            .filter((b) => b.organizationId === (accOrgId || organizations[0]?.id))
+                            .map((b) => (
+                              <option key={b.id} value={b.id}>
+                                {b.name} ({b.branchCode})
+                              </option>
+                            ))}
+                        </select>
+                      ) : (
+                        <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-500 font-mono">
+                          {accRole === 'provider_admin' ? 'All Platform Tenants' : 'All Org Branches (HQ)'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowNewAccountForm(false)}
+                      className="px-3 py-1.5 text-slate-600 hover:text-slate-900 cursor-pointer"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
-                      className="px-4 py-1.5 rounded-lg bg-orange-600 text-white font-bold cursor-pointer"
+                      className="px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold cursor-pointer"
                     >
-                      Create Active Account
+                      Create Account
                     </button>
                   </div>
                 </form>
@@ -1450,119 +1692,482 @@ export const ProviderControlView: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {filteredAccounts.map((acc) => {
-                        const org = organizations.find((o) => o.id === acc.organizationId);
-                        const isSelf = authenticatedAccount?.id === acc.id;
-                        return (
-                          <tr key={acc.id} className="hover:bg-slate-50">
-                            <td className="py-3 px-4">
-                              <div className="font-bold text-slate-950">{acc.name}</div>
-                              <div className="text-[11px] text-slate-500 font-mono">{acc.email}</div>
-                            </td>
-                            <td className="py-3 px-3">
-                              <select
-                                value={acc.role}
-                                disabled={isSelf}
-                                onChange={(e) => {
-                                  providerUpdateAccountRole(acc.id, e.target.value as SaasAccountRole);
-                                  setNotice({ type: 'ok', text: `Updated role for ${acc.email}.` });
-                                }}
-                                className="px-2 py-1 bg-slate-50 border border-slate-200 rounded-md text-xs font-semibold disabled:opacity-60"
-                              >
-                                <option value="provider_admin">System Provider</option>
-                                <option value="tenant_owner">Tenant Owner</option>
-                                <option value="branch_manager">Branch Manager</option>
-                              </select>
-                            </td>
-                            <td className="py-3 px-3 text-slate-700">
-                              {acc.role === 'provider_admin' ? 'Platform-Wide Root' : org?.name || 'Unassigned'}
-                            </td>
-                            <td className="py-3 px-3">
-                              <span className={statusTextStyle(acc.status)}>{acc.status.toUpperCase()}</span>
-                            </td>
-                            <td className="py-3 px-3 font-mono text-[11px] text-slate-500">
-                              {acc.lastLoginAt}
-                            </td>
-                            <td className="py-3 px-4 text-right">
-                              <div className="inline-flex items-center gap-1.5 flex-wrap justify-end">
-                                {acc.status === 'pending' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      providerUpdateAccountStatus(acc.id, 'active');
-                                      setNotice({ type: 'ok', text: `Approved pending account ${acc.email}.` });
-                                    }}
-                                    className="px-2.5 py-1 rounded-md bg-emerald-600 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-                                  >
-                                    <UserCheck className="w-3 h-3" />
-                                    <span>Approve</span>
-                                  </button>
-                                )}
-                                {acc.status === 'suspended' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      providerUpdateAccountStatus(acc.id, 'active');
-                                      setNotice({ type: 'ok', text: `Reactivated ${acc.email}.` });
-                                    }}
-                                    className="px-2.5 py-1 rounded-md bg-emerald-600 text-white text-[11px] font-semibold cursor-pointer"
-                                  >
-                                    Reactivate
-                                  </button>
-                                )}
-                                {acc.status === 'active' && !isSelf && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      providerUpdateAccountStatus(acc.id, 'suspended');
-                                      setNotice({ type: 'err', text: `Suspended user ${acc.email}.` });
-                                    }}
-                                    className="px-2.5 py-1 rounded-md border border-rose-300 text-rose-700 hover:bg-rose-50 text-[11px] font-semibold cursor-pointer"
-                                  >
-                                    Suspend
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setResetTargetId(resetTargetId === acc.id ? null : acc.id);
-                                    setResetPasswordDraft('reset123');
-                                  }}
-                                  className="px-2.5 py-1 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-                                >
-                                  <KeyRound className="w-3 h-3" />
-                                  <span>Reset Key</span>
-                                </button>
-                              </div>
+                      {filteredAccounts.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-10 px-4 text-center text-slate-500 space-y-2">
+                            <div>No platform or tenant user accounts match the current filters.</div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAccountSearch('');
+                                setAccountRoleFilter('all');
+                                setAccountStatusFilter('all');
+                              }}
+                              className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 font-semibold hover:bg-slate-50 cursor-pointer"
+                            >
+                              Clear Account Filters
+                            </button>
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredAccounts.map((acc) => {
+                          const org = organizations.find((o) => o.id === acc.organizationId);
+                          const branch = allBranches.find((b) => b.id === acc.branchId);
+                          const isSelf = authenticatedAccount?.id === acc.id;
+                          const isLastActiveProvider =
+                            acc.role === 'provider_admin' &&
+                            acc.status === 'active' &&
+                            activeProviderCount <= 1;
+                          const editOrgBranches = allBranches.filter(
+                            (b) => b.organizationId === editAccountDraft.organizationId
+                          );
 
-                              {resetTargetId === acc.id && (
-                                <div className="mt-2 flex items-center justify-end gap-1.5">
-                                  <input
-                                    type="text"
-                                    value={resetPasswordDraft}
-                                    onChange={(e) => setResetPasswordDraft(e.target.value)}
-                                    className="px-2 py-1 border border-slate-300 rounded font-mono text-[11px] w-28"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      providerResetAccountPassword(acc.id, resetPasswordDraft);
-                                      setResetTargetId(null);
+                          return (
+                            <React.Fragment key={acc.id}>
+                              <tr className="hover:bg-slate-50">
+                                <td className="py-3 px-4">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-slate-950">{acc.name}</span>
+                                    {isSelf && (
+                                      <span className="text-[10px] font-mono font-bold text-orange-700">
+                                        (CURRENT SESSION)
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[11px] text-slate-500 font-mono">{acc.email}</div>
+                                  {acc.phone && (
+                                    <div className="text-[11px] text-slate-400 font-mono">{acc.phone}</div>
+                                  )}
+                                </td>
+                                <td className="py-3 px-3">
+                                  <select
+                                    value={acc.role}
+                                    disabled={isSelf || isLastActiveProvider}
+                                    title={
+                                      isLastActiveProvider
+                                        ? 'At least one active System Provider administrator is required'
+                                        : isSelf
+                                        ? 'Signed-in session role cannot be changed inline'
+                                        : 'Change platform role'
+                                    }
+                                    onChange={(e) => {
+                                      const res = providerUpdateAccountRole(
+                                        acc.id,
+                                        e.target.value as SaasAccountRole
+                                      );
                                       setNotice({
-                                        type: 'ok',
-                                        text: `Updated password for ${acc.email} to "${resetPasswordDraft}".`,
+                                        type: res.success ? 'ok' : 'err',
+                                        text: res.success
+                                          ? `Updated role for ${acc.email}.`
+                                          : res.error || 'Could not update role.',
                                       });
                                     }}
-                                    className="px-2.5 py-1 rounded bg-slate-950 text-white text-[11px] font-semibold cursor-pointer"
+                                    className="px-2 py-1 bg-slate-50 border border-slate-200 rounded-md text-xs font-semibold disabled:opacity-60"
                                   >
-                                    Save
-                                  </button>
-                                </div>
+                                    <option value="provider_admin">System Provider</option>
+                                    <option value="tenant_owner">Tenant Owner</option>
+                                    <option value="branch_manager">Branch Manager</option>
+                                  </select>
+                                </td>
+                                <td className="py-3 px-3 text-slate-700">
+                                  {acc.role === 'provider_admin' ? (
+                                    <span className="font-semibold text-slate-800">Platform-Wide Root</span>
+                                  ) : (
+                                    <div className="space-y-0.5">
+                                      <div className="font-semibold text-slate-900">
+                                        {org?.name || 'Unassigned Tenant'}
+                                      </div>
+                                      {acc.role === 'branch_manager' && (
+                                        <div className="text-[11px] font-mono text-slate-500">
+                                          Branch: {branch ? `${branch.name} (${branch.branchCode})` : 'Unassigned'}
+                                        </div>
+                                      )}
+                                      {org && (
+                                        <button
+                                          type="button"
+                                          onClick={() => providerInspectTenant(org.id)}
+                                          className="text-[11px] font-semibold text-orange-600 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                                        >
+                                          <span>Inspect ERP</span>
+                                          <ExternalLink className="w-2.5 h-2.5" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-3 px-3">
+                                  <span className={statusTextStyle(acc.status)}>{acc.status.toUpperCase()}</span>
+                                </td>
+                                <td className="py-3 px-3 font-mono text-[11px] text-slate-500">
+                                  <div>{acc.lastLoginAt}</div>
+                                  <div className="text-[10px] text-slate-400">Added {acc.createdAt}</div>
+                                </td>
+                                <td className="py-3 px-4 text-right">
+                                  <div className="inline-flex items-center gap-1.5 flex-wrap justify-end">
+                                    {acc.status === 'pending' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const res = providerUpdateAccountStatus(acc.id, 'active');
+                                          setNotice({
+                                            type: res.success ? 'ok' : 'err',
+                                            text: res.success
+                                              ? `Approved pending account ${acc.email}.`
+                                              : res.error || 'Could not approve account.',
+                                          });
+                                        }}
+                                        className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                                      >
+                                        <UserCheck className="w-3 h-3" />
+                                        <span>Approve</span>
+                                      </button>
+                                    )}
+                                    {acc.status === 'suspended' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const res = providerUpdateAccountStatus(acc.id, 'active');
+                                          setNotice({
+                                            type: res.success ? 'ok' : 'err',
+                                            text: res.success
+                                              ? `Reactivated ${acc.email}.`
+                                              : res.error || 'Could not reactivate account.',
+                                          });
+                                        }}
+                                        className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                                      >
+                                        <UserCheck className="w-3 h-3" />
+                                        <span>Reactivate</span>
+                                      </button>
+                                    )}
+                                    {acc.status === 'active' && !isSelf && !isLastActiveProvider && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const res = providerUpdateAccountStatus(acc.id, 'suspended');
+                                          setNotice({
+                                            type: res.success ? 'ok' : 'err',
+                                            text: res.success
+                                              ? `Suspended user ${acc.email}.`
+                                              : res.error || 'Could not suspend account.',
+                                          });
+                                        }}
+                                        className="px-2.5 py-1 rounded-md border border-rose-300 text-rose-700 hover:bg-rose-50 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                                      >
+                                        <Ban className="w-3 h-3" />
+                                        <span>Suspend</span>
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => startEditingAccount(acc)}
+                                      className={`px-2.5 py-1 rounded-md border text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer ${
+                                        editingAccountId === acc.id
+                                          ? 'bg-slate-950 text-white border-slate-950'
+                                          : 'border-slate-300 text-slate-700 hover:bg-slate-100'
+                                      }`}
+                                    >
+                                      <Pencil className="w-3 h-3" />
+                                      <span>{editingAccountId === acc.id ? 'Close Edit' : 'Edit'}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingAccountId(null);
+                                        setDeleteConfirmId(null);
+                                        setResetTargetId(resetTargetId === acc.id ? null : acc.id);
+                                        setResetPasswordDraft('');
+                                        setShowResetPassword(false);
+                                      }}
+                                      className={`px-2.5 py-1 rounded-md border text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer ${
+                                        resetTargetId === acc.id
+                                          ? 'bg-slate-950 text-white border-slate-950'
+                                          : 'border-slate-300 text-slate-700 hover:bg-slate-100'
+                                      }`}
+                                    >
+                                      <KeyRound className="w-3 h-3" />
+                                      <span>Reset Key</span>
+                                    </button>
+                                    {!isSelf && !isLastActiveProvider && (
+                                      deleteConfirmId === acc.id ? (
+                                        <div className="inline-flex items-center gap-1">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const res = providerDeleteAccount(acc.id);
+                                              setDeleteConfirmId(null);
+                                              setNotice({
+                                                type: res.success ? 'ok' : 'err',
+                                                text: res.success
+                                                  ? `Deleted account ${acc.email}.`
+                                                  : res.error || 'Could not delete account.',
+                                              });
+                                            }}
+                                            className="px-2.5 py-1 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold cursor-pointer"
+                                          >
+                                            Confirm Delete
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setDeleteConfirmId(null)}
+                                            className="px-2 py-1 rounded-md border border-slate-300 text-slate-600 text-[11px] font-semibold cursor-pointer"
+                                          >
+                                            Cancel
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingAccountId(null);
+                                            setResetTargetId(null);
+                                            setDeleteConfirmId(acc.id);
+                                          }}
+                                          aria-label={`Delete ${acc.email}`}
+                                          className="px-2 py-1 rounded-md border border-slate-300 text-rose-700 hover:bg-rose-50 hover:border-rose-300 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                          <span>Delete</span>
+                                        </button>
+                                      )
+                                    )}
+                                  </div>
+
+                                  {resetTargetId === acc.id && (
+                                    <div className="mt-2.5 flex items-center justify-end gap-1.5">
+                                      <div className="relative">
+                                        <input
+                                          type={showResetPassword ? 'text' : 'password'}
+                                          value={resetPasswordDraft}
+                                          onChange={(e) => setResetPasswordDraft(e.target.value)}
+                                          placeholder="New key (min 4 chars)"
+                                          className="pl-2.5 pr-7 py-1 border border-slate-300 rounded font-mono text-[11px] w-40"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => setShowResetPassword((v) => !v)}
+                                          aria-label={showResetPassword ? 'Hide key' : 'Show key'}
+                                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-800 cursor-pointer"
+                                        >
+                                          {showResetPassword ? (
+                                            <EyeOff className="w-3 h-3" />
+                                          ) : (
+                                            <Eye className="w-3 h-3" />
+                                          )}
+                                        </button>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const res = providerResetAccountPassword(acc.id, resetPasswordDraft);
+                                          if (!res.success) {
+                                            setNotice({
+                                              type: 'err',
+                                              text: res.error || 'Password must be at least 4 characters.',
+                                            });
+                                            return;
+                                          }
+                                          setResetTargetId(null);
+                                          setResetPasswordDraft('');
+                                          setNotice({
+                                            type: 'ok',
+                                            text: `Updated access password for ${acc.email}.`,
+                                          });
+                                        }}
+                                        className="px-2.5 py-1 rounded bg-slate-950 hover:bg-slate-800 text-white text-[11px] font-semibold cursor-pointer"
+                                      >
+                                        Save Key
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setResetTargetId(null);
+                                          setResetPasswordDraft('');
+                                        }}
+                                        className="px-2 py-1 rounded border border-slate-300 text-slate-600 text-[11px] font-semibold cursor-pointer"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+
+                              {editingAccountId === acc.id && (
+                                <tr className="bg-slate-50/90">
+                                  <td colSpan={6} className="p-4 border-t border-slate-200">
+                                    <div className="space-y-3 text-xs">
+                                      <div className="flex items-center justify-between">
+                                        <div className="font-bold text-slate-950">
+                                          Edit Account Profile &amp; Access Scope — {acc.email}
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingAccountId(null)}
+                                          className="text-slate-500 hover:text-slate-900 font-semibold cursor-pointer"
+                                        >
+                                          Close
+                                        </button>
+                                      </div>
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+                                        <div>
+                                          <label className="block font-semibold text-slate-600 mb-1">Full Name</label>
+                                          <input
+                                            type="text"
+                                            value={editAccountDraft.name}
+                                            onChange={(e) =>
+                                              setEditAccountDraft((d) => ({ ...d, name: e.target.value }))
+                                            }
+                                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-md"
+                                          />
+                                        </div>
+                                        <div>
+                                          <label className="block font-semibold text-slate-600 mb-1">Email</label>
+                                          <input
+                                            type="email"
+                                            value={editAccountDraft.email}
+                                            onChange={(e) =>
+                                              setEditAccountDraft((d) => ({ ...d, email: e.target.value }))
+                                            }
+                                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-md font-mono"
+                                          />
+                                        </div>
+                                        <div>
+                                          <label className="block font-semibold text-slate-600 mb-1">Phone</label>
+                                          <input
+                                            type="text"
+                                            value={editAccountDraft.phone}
+                                            onChange={(e) =>
+                                              setEditAccountDraft((d) => ({ ...d, phone: e.target.value }))
+                                            }
+                                            placeholder="+255..."
+                                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-md font-mono"
+                                          />
+                                        </div>
+                                        <div>
+                                          <label className="block font-semibold text-slate-600 mb-1">Role</label>
+                                          <select
+                                            value={editAccountDraft.role}
+                                            disabled={isSelf || isLastActiveProvider}
+                                            onChange={(e) => {
+                                              const nextRole = e.target.value as SaasAccountRole;
+                                              const fallbackOrg =
+                                                editAccountDraft.organizationId || organizations[0]?.id || '';
+                                              const firstBr = allBranches.find(
+                                                (b) => b.organizationId === fallbackOrg
+                                              );
+                                              setEditAccountDraft((d) => ({
+                                                ...d,
+                                                role: nextRole,
+                                                organizationId: fallbackOrg,
+                                                branchId:
+                                                  nextRole === 'branch_manager'
+                                                    ? d.branchId || firstBr?.id || ''
+                                                    : '',
+                                              }));
+                                            }}
+                                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-md disabled:opacity-60"
+                                          >
+                                            <option value="provider_admin">System Provider</option>
+                                            <option value="tenant_owner">Tenant Owner</option>
+                                            <option value="branch_manager">Branch Manager</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label className="block font-semibold text-slate-600 mb-1">Status</label>
+                                          <select
+                                            value={editAccountDraft.status}
+                                            disabled={isSelf || isLastActiveProvider}
+                                            onChange={(e) =>
+                                              setEditAccountDraft((d) => ({
+                                                ...d,
+                                                status: e.target.value as SaasAccountStatus,
+                                              }))
+                                            }
+                                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-md disabled:opacity-60"
+                                          >
+                                            <option value="active">ACTIVE</option>
+                                            <option value="pending">PENDING</option>
+                                            <option value="suspended">SUSPENDED</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label className="block font-semibold text-slate-600 mb-1">
+                                            Organization / Branch
+                                          </label>
+                                          {editAccountDraft.role === 'provider_admin' ? (
+                                            <div className="px-2.5 py-1.5 bg-slate-100 rounded-md text-slate-600 font-mono">
+                                              Platform-Wide Root
+                                            </div>
+                                          ) : (
+                                            <div className="space-y-1.5">
+                                              <select
+                                                value={editAccountDraft.organizationId}
+                                                onChange={(e) => {
+                                                  const nextOrg = e.target.value;
+                                                  const firstBr = allBranches.find(
+                                                    (b) => b.organizationId === nextOrg
+                                                  );
+                                                  setEditAccountDraft((d) => ({
+                                                    ...d,
+                                                    organizationId: nextOrg,
+                                                    branchId: firstBr?.id || '',
+                                                  }));
+                                                }}
+                                                className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-md"
+                                              >
+                                                {organizations.map((o) => (
+                                                  <option key={o.id} value={o.id}>
+                                                    {o.name}
+                                                  </option>
+                                                ))}
+                                              </select>
+                                              {editAccountDraft.role === 'branch_manager' && (
+                                                <select
+                                                  value={editAccountDraft.branchId}
+                                                  onChange={(e) =>
+                                                    setEditAccountDraft((d) => ({
+                                                      ...d,
+                                                      branchId: e.target.value,
+                                                    }))
+                                                  }
+                                                  className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-md"
+                                                >
+                                                  {editOrgBranches.map((b) => (
+                                                    <option key={b.id} value={b.id}>
+                                                      {b.name} ({b.branchCode})
+                                                    </option>
+                                                  ))}
+                                                </select>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center justify-end gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => setEditingAccountId(null)}
+                                          className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 font-semibold cursor-pointer"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSaveAccountEdit(acc)}
+                                          className="px-4 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold cursor-pointer"
+                                        >
+                                          Save Account Changes
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
                               )}
-                            </td>
-                          </tr>
-                        );
-                      })}
+                            </React.Fragment>
+                          );
+                        })
+                      )}
                     </tbody>
                   </table>
                 </div>

@@ -48,11 +48,13 @@ export const hrService = {
           .split(/\s+/)[0]
           .toUpperCase()
           .replace(/[^A-Z0-9]/g, '') || 'STAFF';
+      const branch = storeRepo.getBranchOrThrow(branchId);
+      const emailDomain = branch.email?.split('@')[1] || 'restaurant.local';
       newWaiter = {
         id: emp.waiterId || createId('waiter'),
         name: emp.name,
         phone: emp.phone,
-        email: emp.email || `${codeBase.toLowerCase()}@savannagrill.com`,
+        email: emp.email || `${codeBase.toLowerCase()}@${emailDomain}`,
         referralCode: `WAITER_${codeBase}_${nextNum}`,
         active: emp.status === 'active',
         commissionRate: store.defaultCommissionMode === 'percent' ? store.defaultCommissionValue / 100 : 0.05,
@@ -150,7 +152,7 @@ export const hrService = {
 
     const method = options?.method || 'cash';
     const ref = options?.reference?.trim() || `COMM-${Date.now().toString().slice(-5)}`;
-    const settledBy = options?.settledBy || 'David Kasambala (Manager)';
+    const settledBy = options?.settledBy || 'Branch Manager';
 
     store.settledCommissionByWaiter[waiterId] = (store.settledCommissionByWaiter[waiterId] || 0) + settleAmt;
     const payout: CommissionPayoutLog = {
@@ -341,7 +343,7 @@ export const hrService = {
   ): PayrollPaymentRecord[] {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
     const nowIso = new Date().toISOString();
-    const payer = params.paidBy || 'David Kasambala (Manager)';
+    const payer = params.paidBy || 'Branch Manager';
     const createdRecords: PayrollPaymentRecord[] = [];
     const settledEmpIds = new Set<string>();
 

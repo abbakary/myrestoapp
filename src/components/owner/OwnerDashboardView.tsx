@@ -75,6 +75,9 @@ export const OwnerDashboardView: React.FC = () => {
     orders,
     waiters,
     employees,
+    menuItems,
+    recipes,
+    computeRecipeUnitCost,
     cashierShift,
     formatMoney,
     currency,
@@ -138,160 +141,504 @@ export const OwnerDashboardView: React.FC = () => {
     y: number;
   } | null>(null);
 
-  // Exact figures from Loyverse Back Office screenshot (image_04d4b5da.png):
-  // Gross sales: $23,383.79 (+$1,611.04 / +7.41%)
-  // Refunds: $0.00 (-$17.49 / -100%)
-  // Discounts: $191.32 (+$8.31 / +4.55%)
-  // Net sales: $23,192.47 (+$1,479 / +1.34%)
-  // Gross profit: $15,461.65 (+$1,479 / +1.34%)
-  const baseKpi = {
-    grossSales: 23383.79,
-    refunds: 0.0,
-    discounts: 191.32,
-    netSales: 23192.47,
-    grossProfit: 15461.65,
-    cogs: 7730.82,
-    marginPct: 66.67,
-    grossChangePct: '+7.41%',
-    refundChangePct: '-100%',
-    discountChangePct: '+4.55%',
-    netChangePct: '+1.34%',
-    profitChangePct: '+1.34%',
+  // Date Range Presets (live calendar bounds)
+  const datePresets = ['all', 'last_month', 'this_month', 'today'] as const;
+  const cycleDatePreset = (dir: -1 | 1) => {
+    const idx = datePresets.indexOf(dateRangePreset as (typeof datePresets)[number]);
+    const currentIdx = idx === -1 ? 2 : idx;
+    const nextIdx = (currentIdx + dir + datePresets.length) % datePresets.length;
+    setDateRangePreset(datePresets[nextIdx]);
   };
 
-  // Convert USD to current currency string
-  const formatVal = (usdAmount: number) => {
-    if (currency === 'USD') {
-      return `$${usdAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const dateRangeInfo = useMemo(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    if (dateRangePreset === 'today') {
+      const start = new Date(y, m, now.getDate(), 0, 0, 0, 0);
+      const end = new Date(y, m, now.getDate(), 23, 59, 59, 999);
+      return {
+        label: `Today · ${monthNames[m]} ${now.getDate()}, ${y}`,
+        start,
+        end,
+      };
     }
-    const tzs = Math.round(usdAmount * currentTenant.currencyRate);
-    return `TZS ${tzs.toLocaleString()}`;
-  };
-
-  // Format compact number without $
-  const formatRawNumber = (usdAmount: number) => {
-    if (currency === 'USD') {
-      return usdAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (dateRangePreset === 'last_month') {
+      const prevMonthDate = new Date(y, m - 1, 1);
+      const py = prevMonthDate.getFullYear();
+      const pm = prevMonthDate.getMonth();
+      const lastDay = new Date(py, pm + 1, 0).getDate();
+      return {
+        label: `${monthNames[pm]} 1, ${py} - ${monthNames[pm]} ${lastDay}, ${py}`,
+        start: new Date(py, pm, 1, 0, 0, 0, 0),
+        end: new Date(py, pm, lastDay, 23, 59, 59, 999),
+      };
     }
-    const tzs = Math.round(usdAmount * currentTenant.currencyRate);
-    return tzs.toLocaleString();
+    if (dateRangePreset === 'all') {
+      return {
+        label: 'All Recorded Dates',
+        start: null as Date | null,
+        end: null as Date | null,
+      };
+    }
+    const lastDay = new Date(y, m + 1, 0).getDate();
+    return {
+      label: `${monthNames[m]} 1, ${y} - ${monthNames[m]} ${lastDay}, ${y}`,
+      start: new Date(y, m, 1, 0, 0, 0, 0),
+      end: new Date(y, m, lastDay, 23, 59, 59, 999),
+    };
+  }, [dateRangePreset]);
+
+  // Format TZS amount to current currency string
+  const formatVal = (amountTzs: number) => formatMoney(amountTzs);
+
+  // Format compact number in active currency without currency prefix
+  const formatRawNumber = (amountTzs: number) => {
+    if (currency === 'USD') {
+      const usd = amountTzs / currentTenant.currencyRate;
+      return usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return Math.round(amountTzs).toLocaleString();
   };
 
-  // Historical Daily Sales Data matching the curve in image_04d4b5da.png
-  // 30 days of June 2025
-  const dailyData = [
-    { date: 'Jun 1, 2025', gross: 580.4, discounts: 4.5, net: 575.9, cogs: 192.0, profit: 383.9, orders: 24 },
-    { date: 'Jun 2, 2025', gross: 720.15, discounts: 6.2, net: 713.95, cogs: 238.0, profit: 475.95, orders: 29 },
-    { date: 'Jun 3, 2025', gross: 840.0, discounts: 8.0, net: 832.0, cogs: 277.2, profit: 554.8, orders: 34 },
-    { date: 'Jun 4, 2025', gross: 610.5, discounts: 5.1, net: 605.4, cogs: 201.8, profit: 403.6, orders: 25 },
-    { date: 'Jun 5, 2025', gross: 950.8, discounts: 7.5, net: 943.3, cogs: 314.4, profit: 628.9, orders: 38 },
-    { date: 'Jun 6, 2025', gross: 1120.3, discounts: 12.0, net: 1108.3, cogs: 369.4, profit: 738.9, orders: 46 },
-    { date: 'Jun 7, 2025', gross: 1350.0, discounts: 15.5, net: 1334.5, cogs: 444.8, profit: 889.7, orders: 55 },
-    { date: 'Jun 8, 2025', gross: 1080.25, discounts: 9.8, net: 1070.45, cogs: 356.8, profit: 713.65, orders: 44 },
-    { date: 'Jun 9, 2025', gross: 640.1, discounts: 4.0, net: 636.1, cogs: 212.0, profit: 424.1, orders: 26 },
-    { date: 'Jun 10, 2025', gross: 780.0, discounts: 5.5, net: 774.5, cogs: 258.2, profit: 516.3, orders: 31 },
-    { date: 'Jun 11, 2025', gross: 820.6, discounts: 6.8, net: 813.8, cogs: 271.3, profit: 542.5, orders: 33 },
-    { date: 'Jun 12, 2025', gross: 910.4, discounts: 7.2, net: 903.2, cogs: 301.1, profit: 602.1, orders: 37 },
-    { date: 'Jun 13, 2025', gross: 1240.5, discounts: 11.0, net: 1229.5, cogs: 409.8, profit: 819.7, orders: 50 },
-    { date: 'Jun 14, 2025', gross: 1410.8, discounts: 14.2, net: 1396.6, cogs: 465.5, profit: 931.1, orders: 58 },
-    { date: 'Jun 15, 2025', gross: 1190.2, discounts: 10.5, net: 1179.7, cogs: 393.2, profit: 786.5, orders: 48 },
-    { date: 'Jun 16, 2025', gross: 670.3, discounts: 5.0, net: 665.3, cogs: 221.8, profit: 443.5, orders: 27 },
-    { date: 'Jun 17, 2025', gross: 750.9, discounts: 6.1, net: 744.8, cogs: 248.3, profit: 496.5, orders: 30 },
-    { date: 'Jun 18, 2025', gross: 890.0, discounts: 7.8, net: 882.2, cogs: 294.1, profit: 588.1, orders: 36 },
-    { date: 'Jun 19, 2025', gross: 960.5, discounts: 8.5, net: 952.0, cogs: 317.3, profit: 634.7, orders: 39 },
-    { date: 'Jun 20, 2025', gross: 1290.4, discounts: 11.8, net: 1278.6, cogs: 426.2, profit: 852.4, orders: 52 },
-    { date: 'Jun 21, 2025', gross: 1480.0, discounts: 16.0, net: 1464.0, cogs: 488.0, profit: 976.0, orders: 60 },
-    { date: 'Jun 22, 2025', gross: 1150.6, discounts: 9.9, net: 1140.7, cogs: 380.2, profit: 760.5, orders: 47 },
-    { date: 'Jun 23, 2025', gross: 620.0, discounts: 4.8, net: 615.2, cogs: 205.1, profit: 410.1, orders: 25 },
-    { date: 'Jun 24, 2025', gross: 810.7, discounts: 6.5, net: 804.2, cogs: 268.1, profit: 536.1, orders: 32 },
-    { date: 'Jun 25, 2025', gross: 880.3, discounts: 7.0, net: 873.3, cogs: 291.1, profit: 582.2, orders: 35 },
-    { date: 'Jun 26, 2025', gross: 940.1, discounts: 8.0, net: 932.1, cogs: 310.7, profit: 621.4, orders: 38 },
-    { date: 'Jun 27, 2025', gross: 1320.6, discounts: 12.5, net: 1308.1, cogs: 436.0, profit: 872.1, orders: 54 },
-    { date: 'Jun 28, 2025', gross: 1687.54, discounts: 12.5, net: 1675.04, cogs: 562.51, profit: 1112.53, orders: 68 },
-    { date: 'Jun 29, 2025', gross: 1222.56, discounts: 10.8, net: 1211.76, cogs: 407.85, profit: 803.91, orders: 49 },
-    { date: 'Jun 30, 2025', gross: 1657.54, discounts: 12.3, net: 1645.24, cogs: 552.51, profit: 1092.73, orders: 66 },
-  ];
+  // Determine active waiter when Waiter Persona is selected (never hardcoded)
+  const selectedPersonaWaiter = useMemo(() => {
+    if (selectedEmployeeFilter !== 'all_employees') {
+      const emp = employees.find((e) => e.id === selectedEmployeeFilter);
+      if (emp) {
+        const byMatch = waiters.find(
+          (w) => w.id === emp.id || w.name.toLowerCase() === emp.name.toLowerCase()
+        );
+        if (byMatch) return byMatch;
+      }
+    }
+    return waiters[0];
+  }, [waiters, employees, selectedEmployeeFilter]);
 
-  // Sales by Salesperson / Waiter
-  const salespersonData = [
-    {
-      id: 'waiter-john',
-      name: 'John Mwamba',
-      role: 'Head Waiter',
-      ordersCount: 142,
-      grossSales: 9480.0,
-      discounts: 82.5,
-      netSales: 9397.5,
-      cogs: 3132.5,
-      commissionEarned: 469.88, // 5%
-      avgOrderSize: 66.76,
-      customerTips: 340.0,
-      payoutStatus: 'Paid / Reconciled',
-    },
-    {
-      id: 'waiter-sarah',
-      name: 'Sarah Kimani',
-      role: 'VIP Dining Hostess',
-      ordersCount: 128,
-      grossSales: 8240.5,
-      discounts: 64.0,
-      netSales: 8176.5,
-      cogs: 2725.5,
-      commissionEarned: 408.83,
-      avgOrderSize: 64.38,
-      customerTips: 295.0,
-      payoutStatus: 'Paid / Reconciled',
-    },
-    {
-      id: 'waiter-peter',
-      name: 'Peter Masawe',
-      role: 'Terrace Server',
-      ordersCount: 86,
-      grossSales: 5663.29,
-      discounts: 44.82,
-      netSales: 5618.47,
-      cogs: 1872.82,
-      commissionEarned: 280.92,
-      avgOrderSize: 65.85,
-      customerTips: 185.0,
-      payoutStatus: 'Pending Next Payroll',
-    },
-  ];
+  // Base orders scoped by Branch vs Main HQ
+  const scopeOrders = useMemo(
+    () => (viewScope === 'hq_overview' ? hqAllOrders : orders),
+    [viewScope, hqAllOrders, orders]
+  );
 
-  // Sales by Order Type / Channel
-  const orderTypeData = [
-    { type: 'Dine-in Service', code: 'dine_in', orders: 214, gross: 13562.6, discounts: 110.0, net: 13452.6, sharePct: 58.0 },
-    { type: 'Takeaway / Pickup', code: 'pickup', orders: 98, gross: 6313.62, discounts: 55.32, net: 6258.3, sharePct: 27.0 },
-    { type: 'Online Delivery', code: 'delivery', orders: 56, gross: 3507.57, discounts: 26.0, net: 3481.57, sharePct: 15.0 },
-  ];
+  // Apply Date Range, Shift, Employee, and Persona filters strictly to live tenant orders
+  const filteredOrders = useMemo(() => {
+    const selectedEmp =
+      selectedEmployeeFilter !== 'all_employees'
+        ? employees.find((e) => e.id === selectedEmployeeFilter)
+        : undefined;
+    const matchedEmpWaiter = selectedEmp
+      ? waiters.find(
+          (w) => w.id === selectedEmp.id || w.name.toLowerCase() === selectedEmp.name.toLowerCase()
+        )
+      : undefined;
 
-  // Sales by Category & Dishes
-  const categoryData = [
-    { category: 'Sweets & Desserts', itemsCount: 15, soldUnits: 840, gross: 8420.0, cogs: 2778.6, profit: 5641.4, margin: 67.0 },
-    { category: 'Breakfast & Savory', itemsCount: 8, soldUnits: 512, gross: 6890.0, cogs: 2273.7, profit: 4616.3, margin: 67.0 },
-    { category: 'Fruits & Salads', itemsCount: 6, soldUnits: 340, gross: 4680.0, cogs: 1544.4, profit: 3135.6, margin: 67.0 },
-    { category: 'Coffee, Tea & Drinks', itemsCount: 7, soldUnits: 620, gross: 3393.79, cogs: 1134.12, profit: 2259.67, margin: 66.6 },
-  ];
+    return scopeOrders.filter((o) => {
+      const created = new Date(o.createdAt);
+      const validDate = !Number.isNaN(created.getTime());
 
-  // Sales by Payment Method
-  const paymentMethodData = [
-    { method: 'Credit / Debit Card', orders: 172, gross: 11224.22, fee: 168.36, share: '48.0%' },
-    { method: 'Cash Drawer', orders: 124, gross: 7950.48, fee: 0.0, share: '34.0%' },
-    { method: 'Mobile Money (M-Pesa / Scan)', orders: 60, gross: 4209.09, fee: 42.09, share: '18.0%' },
-  ];
+      if (dateRangeInfo.start && dateRangeInfo.end && validDate) {
+        if (created < dateRangeInfo.start || created > dateRangeInfo.end) {
+          return false;
+        }
+      }
 
-  // SVG Chart Dimensions & Calculations matching image_04d4b5da.png
+      if (selectedShift !== 'all_day' && validDate) {
+        const hour = created.getHours();
+        if (selectedShift === 'morning' && (hour < 8 || hour >= 15)) return false;
+        if (selectedShift === 'dinner' && hour < 15) return false;
+      }
+
+      if (selectedEmp) {
+        const waiterMatch =
+          matchedEmpWaiter &&
+          (o.servingWaiterId === matchedEmpWaiter.id || o.referralWaiterId === matchedEmpWaiter.id);
+        const actorMatch = o.statusHistory?.some((h) =>
+          h.actor.toLowerCase().includes(selectedEmp.name.toLowerCase())
+        );
+        if (!waiterMatch && !actorMatch) return false;
+      }
+
+      if (activePersona === 'waiter') {
+        if (!selectedPersonaWaiter) return false;
+        if (
+          o.servingWaiterId !== selectedPersonaWaiter.id &&
+          o.referralWaiterId !== selectedPersonaWaiter.id
+        ) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [
+    scopeOrders,
+    dateRangeInfo,
+    selectedShift,
+    selectedEmployeeFilter,
+    employees,
+    waiters,
+    activePersona,
+    selectedPersonaWaiter,
+  ]);
+
+  const validFilteredOrders = useMemo(
+    () =>
+      filteredOrders.filter(
+        (o) => o.status !== 'draft' && o.status !== 'cancelled' && o.status !== 'rejected'
+      ),
+    [filteredOrders]
+  );
+
+  // Recipe lookup map for live BOM COGS calculations
+  const recipeByMenuId = useMemo(() => {
+    const map = new Map<string, number>();
+    recipes.forEach((rec) => {
+      if (!rec.menuItemId) return;
+      const cost = computeRecipeUnitCost(rec.id).perPlateCost;
+      map.set(rec.menuItemId, cost);
+    });
+    return map;
+  }, [recipes, computeRecipeUnitCost]);
+
+  const computeOrderCogs = (ord: Order) => {
+    return ord.items.reduce((sum, item) => {
+      if (item.status === 'rejected') return sum;
+      const plateCost = recipeByMenuId.get(item.menuItemId) || 0;
+      return sum + plateCost * item.quantity;
+    }, 0);
+  };
+
+  // Live KPI Summary (strictly in TZS)
+  const baseKpi = useMemo(() => {
+    let grossSales = 0;
+    let discounts = 0;
+    let netSales = 0;
+    let cogs = 0;
+    let refunds = 0;
+
+    filteredOrders.forEach((o) => {
+      if (o.payments && o.payments.length > 0) {
+        o.payments.forEach((tx) => {
+          if (tx.isRefund) refunds += tx.amount;
+        });
+      }
+    });
+
+    validFilteredOrders.forEach((o) => {
+      const disc = o.discount || 0;
+      discounts += disc;
+      netSales += o.total;
+      grossSales += o.total + disc;
+      cogs += computeOrderCogs(o);
+    });
+
+    const grossProfit = netSales - cogs - refunds;
+    const marginPct = netSales > 0 ? Number(((grossProfit / netSales) * 100).toFixed(1)) : 0;
+    const waiterCommission =
+      activePersona === 'waiter' && selectedPersonaWaiter
+        ? validFilteredOrders
+            .filter((o) => o.paymentStatus === 'paid')
+            .reduce((s, o) => s + getOrderCommission(o, selectedPersonaWaiter.id).amount, 0)
+        : 0;
+
+    return {
+      grossSales,
+      refunds,
+      discounts,
+      netSales,
+      cogs,
+      grossProfit,
+      marginPct,
+      waiterCommission,
+      receiptsCount: validFilteredOrders.length,
+    };
+  }, [
+    filteredOrders,
+    validFilteredOrders,
+    recipeByMenuId,
+    activePersona,
+    selectedPersonaWaiter,
+    getOrderCommission,
+  ]);
+
+  // Live Trend Series (by Days or Hours)
+  const dailyData = useMemo(() => {
+    const buckets = new Map<
+      string,
+      {
+        sortKey: string;
+        date: string;
+        shortLabel: string;
+        gross: number;
+        discounts: number;
+        net: number;
+        cogs: number;
+        profit: number;
+        orders: number;
+      }
+    >();
+
+    validFilteredOrders.forEach((o) => {
+      const dt = new Date(o.createdAt);
+      const validDt = !Number.isNaN(dt.getTime());
+      let key = 'Unknown';
+      let display = 'Unknown';
+      let shortLabel = 'N/A';
+
+      if (validDt) {
+        if (chartStep === 'hours') {
+          const hr = String(dt.getHours()).padStart(2, '0');
+          key = `${hr}:00`;
+          display = `${hr}:00 - ${hr}:59`;
+          shortLabel = `${hr}:00`;
+        } else {
+          const y = dt.getFullYear();
+          const m = String(dt.getMonth() + 1).padStart(2, '0');
+          const d = String(dt.getDate()).padStart(2, '0');
+          key = `${y}-${m}-${d}`;
+          display = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+          shortLabel = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+      }
+
+      const existing = buckets.get(key) || {
+        sortKey: key,
+        date: display,
+        shortLabel,
+        gross: 0,
+        discounts: 0,
+        net: 0,
+        cogs: 0,
+        profit: 0,
+        orders: 0,
+      };
+
+      const disc = o.discount || 0;
+      const oCogs = computeOrderCogs(o);
+      existing.gross += o.total + disc;
+      existing.discounts += disc;
+      existing.net += o.total;
+      existing.cogs += oCogs;
+      existing.profit += o.total - oCogs;
+      existing.orders += 1;
+
+      buckets.set(key, existing);
+    });
+
+    return Array.from(buckets.values()).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  }, [validFilteredOrders, chartStep, recipeByMenuId]);
+
+  // Live Sales by Salesperson / Waiter
+  const salespersonData = useMemo(() => {
+    return waiters.map((w) => {
+      const wOrders = validFilteredOrders.filter(
+        (o) => o.servingWaiterId === w.id || o.referralWaiterId === w.id
+      );
+      const grossSales = wOrders.reduce((s, o) => s + o.total + (o.discount || 0), 0);
+      const discounts = wOrders.reduce((s, o) => s + (o.discount || 0), 0);
+      const netSales = wOrders.reduce((s, o) => s + o.total, 0);
+      const cogs = wOrders.reduce((s, o) => s + computeOrderCogs(o), 0);
+      const paidOrders = wOrders.filter((o) => o.paymentStatus === 'paid');
+      const commissionEarned = paidOrders.reduce(
+        (s, o) => s + getOrderCommission(o, w.id).amount,
+        0
+      );
+      const avgOrderSize = wOrders.length > 0 ? Math.round(netSales / wOrders.length) : 0;
+
+      return {
+        id: w.id,
+        name: w.name,
+        role: w.referralCode,
+        ordersCount: wOrders.length,
+        grossSales,
+        discounts,
+        netSales,
+        cogs,
+        commissionEarned,
+        avgOrderSize,
+        customerTips: 0,
+        payoutStatus:
+          wOrders.length === 0
+            ? 'No Sales Yet'
+            : commissionEarned > 0
+            ? 'Commission Active'
+            : 'Settled / Clear',
+      };
+    });
+  }, [waiters, validFilteredOrders, recipeByMenuId, getOrderCommission]);
+
+  // Live Sales by Order Type / Channel
+  const orderTypeData = useMemo(() => {
+    const channels: { type: string; code: Order['type'] }[] = [
+      { type: 'Dine-in Service', code: 'dine_in' },
+      { type: 'Takeaway / Pickup', code: 'pickup' },
+      { type: 'Online Delivery', code: 'delivery' },
+    ];
+    const totalNetAll = validFilteredOrders.reduce((s, o) => s + o.total, 0);
+
+    return channels.map((ch) => {
+      const list = validFilteredOrders.filter((o) => o.type === ch.code);
+      const discounts = list.reduce((s, o) => s + (o.discount || 0), 0);
+      const net = list.reduce((s, o) => s + o.total, 0);
+      const gross = net + discounts;
+      const sharePct = totalNetAll > 0 ? Number(((net / totalNetAll) * 100).toFixed(1)) : 0;
+      return {
+        type: ch.type,
+        code: ch.code,
+        orders: list.length,
+        gross,
+        discounts,
+        net,
+        sharePct,
+      };
+    });
+  }, [validFilteredOrders]);
+
+  // Live Sales by Category & Dish
+  const categoryData = useMemo(() => {
+    const menuCatMap = new Map<string, string>();
+    const catItemCounts = new Map<string, number>();
+
+    menuItems.forEach((m) => {
+      menuCatMap.set(m.id, m.category);
+      catItemCounts.set(m.category, (catItemCounts.get(m.category) || 0) + 1);
+    });
+
+    const agg = new Map<
+      string,
+      { category: string; itemsCount: number; soldUnits: number; gross: number; cogs: number }
+    >();
+
+    menuItems.forEach((m) => {
+      if (!agg.has(m.category)) {
+        agg.set(m.category, {
+          category: m.category,
+          itemsCount: catItemCounts.get(m.category) || 0,
+          soldUnits: 0,
+          gross: 0,
+          cogs: 0,
+        });
+      }
+    });
+
+    validFilteredOrders.forEach((ord) => {
+      ord.items.forEach((it) => {
+        if (it.status === 'rejected') return;
+        const catName =
+          menuCatMap.get(it.menuItemId) || (it.isCustomItem ? 'Custom / Off-Menu' : 'Other Dishes');
+        const entry = agg.get(catName) || {
+          category: catName,
+          itemsCount: catItemCounts.get(catName) || 0,
+          soldUnits: 0,
+          gross: 0,
+          cogs: 0,
+        };
+        const lineGross = it.price * it.quantity;
+        const unitCogs = recipeByMenuId.get(it.menuItemId) || 0;
+        entry.soldUnits += it.quantity;
+        entry.gross += lineGross;
+        entry.cogs += unitCogs * it.quantity;
+        agg.set(catName, entry);
+      });
+    });
+
+    return Array.from(agg.values())
+      .filter((row) => row.soldUnits > 0 || row.itemsCount > 0)
+      .map((row) => {
+        const profit = row.gross - row.cogs;
+        const margin = row.gross > 0 ? Number(((profit / row.gross) * 100).toFixed(1)) : 0;
+        return { ...row, profit, margin };
+      })
+      .sort((a, b) => b.gross - a.gross);
+  }, [validFilteredOrders, menuItems, recipeByMenuId]);
+
+  // Live Sales by Payment Method
+  const paymentMethodData = useMemo(() => {
+    let cardAmt = 0;
+    let cardCnt = 0;
+    let cashAmt = 0;
+    let cashCnt = 0;
+    let mobileAmt = 0;
+    let mobileCnt = 0;
+
+    validFilteredOrders.forEach((ord) => {
+      if (ord.payments && ord.payments.length > 0) {
+        ord.payments.forEach((tx) => {
+          if (tx.isRefund) return;
+          if (tx.method === 'card') {
+            cardAmt += tx.amount;
+            cardCnt += 1;
+          } else if (tx.method === 'cash') {
+            cashAmt += tx.amount;
+            cashCnt += 1;
+          } else if (tx.method === 'mpesa' || tx.method === 'airtel') {
+            mobileAmt += tx.amount;
+            mobileCnt += 1;
+          }
+        });
+      } else if ((ord.paidAmount || 0) > 0) {
+        if (ord.paymentMethod === 'card') {
+          cardAmt += ord.paidAmount;
+          cardCnt += 1;
+        } else if (ord.paymentMethod === 'cash') {
+          cashAmt += ord.paidAmount;
+          cashCnt += 1;
+        } else if (ord.paymentMethod === 'mpesa' || ord.paymentMethod === 'airtel') {
+          mobileAmt += ord.paidAmount;
+          mobileCnt += 1;
+        }
+      }
+    });
+
+    const totalCollected = cardAmt + cashAmt + mobileAmt;
+    const shareStr = (amt: number) =>
+      totalCollected > 0 ? `${((amt / totalCollected) * 100).toFixed(1)}%` : '0.0%';
+
+    return [
+      {
+        method: 'Credit / Debit Card',
+        orders: cardCnt,
+        gross: cardAmt,
+        fee: Math.round(cardAmt * 0.015),
+        share: shareStr(cardAmt),
+      },
+      {
+        method: 'Cash Drawer',
+        orders: cashCnt,
+        gross: cashAmt,
+        fee: 0,
+        share: shareStr(cashAmt),
+      },
+      {
+        method: 'Mobile Money (M-Pesa / Airtel)',
+        orders: mobileCnt,
+        gross: mobileAmt,
+        fee: Math.round(mobileAmt * 0.01),
+        share: shareStr(mobileAmt),
+      },
+    ];
+  }, [validFilteredOrders]);
+
+  // SVG Chart Dimensions & Dynamic Scaling
   const chartW = 900;
   const chartH = 220;
-  const maxGross = 2000;
+  const rawMaxGross = dailyData.reduce((mx, d) => Math.max(mx, d.gross), 0);
+  const maxGross = rawMaxGross > 0 ? Math.ceil(rawMaxGross * 1.15) : 100000;
 
   const points = useMemo(() => {
+    if (dailyData.length === 0) return [];
     return dailyData.map((d, index) => {
-      const x = (index / (dailyData.length - 1)) * (chartW - 40) + 20;
+      const x =
+        dailyData.length === 1
+          ? chartW / 2
+          : (index / (dailyData.length - 1)) * (chartW - 60) + 30;
       const y = chartH - (d.gross / maxGross) * (chartH - 40) - 20;
       return { x, y, data: d };
     });
-  }, [dailyData]);
+  }, [dailyData, maxGross]);
 
   const svgPathD = useMemo(() => {
     if (points.length === 0) return '';
@@ -306,6 +653,13 @@ export const OwnerDashboardView: React.FC = () => {
     const lastX = points[points.length - 1].x;
     return `${svgPathD} L ${lastX} ${chartH - 20} L ${firstX} ${chartH - 20} Z`;
   }, [svgPathD, points]);
+
+  const chartBottomLabels = useMemo(() => {
+    if (dailyData.length === 0) return [];
+    if (dailyData.length <= 7) return dailyData.map((d) => d.shortLabel);
+    const step = (dailyData.length - 1) / 6;
+    return Array.from({ length: 7 }, (_, i) => dailyData[Math.round(i * step)].shortLabel);
+  }, [dailyData]);
 
   // Live Today Operations & EOD Financial Reconciliation (computed directly from live orders & payments)
   const liveOps = useMemo(() => {
@@ -422,26 +776,26 @@ export const OwnerDashboardView: React.FC = () => {
         ['Date', 'Gross Sales', 'Discounts', 'Net Sales', 'Cost of Goods', 'Gross Profit', 'Orders'],
         ...dailyData.map((d) => [
           d.date,
-          d.gross.toFixed(2),
-          d.discounts.toFixed(2),
-          d.net.toFixed(2),
-          d.cogs.toFixed(2),
-          d.profit.toFixed(2),
+          formatRawNumber(d.gross).replace(/,/g, ''),
+          formatRawNumber(d.discounts).replace(/,/g, ''),
+          formatRawNumber(d.net).replace(/,/g, ''),
+          formatRawNumber(d.cogs).replace(/,/g, ''),
+          formatRawNumber(d.profit).replace(/,/g, ''),
           d.orders.toString(),
         ]),
       ];
     } else if (activeDimension === 'by_salesperson') {
       rows = [
-        ['Salesperson', 'Role', 'Orders', 'Gross Sales', 'Discounts', 'Net Sales', 'Commission (5%)', 'Avg Order'],
+        ['Salesperson', 'Code', 'Orders', 'Gross Sales', 'Discounts', 'Net Sales', 'Commission', 'Avg Order'],
         ...salespersonData.map((s) => [
           s.name,
           s.role,
           s.ordersCount.toString(),
-          s.grossSales.toFixed(2),
-          s.discounts.toFixed(2),
-          s.netSales.toFixed(2),
-          s.commissionEarned.toFixed(2),
-          s.avgOrderSize.toFixed(2),
+          formatRawNumber(s.grossSales).replace(/,/g, ''),
+          formatRawNumber(s.discounts).replace(/,/g, ''),
+          formatRawNumber(s.netSales).replace(/,/g, ''),
+          formatRawNumber(s.commissionEarned).replace(/,/g, ''),
+          formatRawNumber(s.avgOrderSize).replace(/,/g, ''),
         ]),
       ];
     } else {
@@ -450,9 +804,9 @@ export const OwnerDashboardView: React.FC = () => {
         ...orderTypeData.map((o) => [
           o.type,
           o.orders.toString(),
-          o.gross.toFixed(2),
-          o.discounts.toFixed(2),
-          o.net.toFixed(2),
+          formatRawNumber(o.gross).replace(/,/g, ''),
+          formatRawNumber(o.discounts).replace(/,/g, ''),
+          formatRawNumber(o.net).replace(/,/g, ''),
           `${o.sharePct}%`,
         ]),
       ];
@@ -462,7 +816,10 @@ export const OwnerDashboardView: React.FC = () => {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Loyverse_Sales_Report_${activeDimension}_June2025.csv`);
+    link.setAttribute(
+      'download',
+      `RestaurantOS_${currentTenant.branchCode}_${activeDimension}_Report.csv`
+    );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -561,21 +918,25 @@ export const OwnerDashboardView: React.FC = () => {
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
           {/* Filter Pills Left */}
           <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 text-xs text-neutral-700">
-            {/* Date Range Selector matching: < Jun 1, 2025 - Jun 30, 2025 > */}
+            {/* Live Date Range Selector */}
             <div className="flex items-center bg-neutral-100 hover:bg-neutral-200/70 border border-neutral-300/80 rounded-lg px-2.5 py-1.5 font-medium transition-colors">
               <Calendar className="w-3.5 h-3.5 text-neutral-500 mr-1.5" />
               <button
-                onClick={() => setDateRangePreset('last_month')}
-                className="hover:text-neutral-950 font-mono text-[11px] px-1"
+                type="button"
+                onClick={() => cycleDatePreset(-1)}
+                className="hover:text-neutral-950 font-mono text-[11px] px-1 cursor-pointer"
+                aria-label="Previous date range"
               >
                 &lt;
               </button>
               <span className="font-semibold text-neutral-900 px-1 font-mono text-[11px] sm:text-xs">
-                Jun 1, 2025 - Jun 30, 2025
+                {dateRangeInfo.label}
               </span>
               <button
-                onClick={() => setDateRangePreset('this_month')}
-                className="hover:text-neutral-950 font-mono text-[11px] px-1"
+                type="button"
+                onClick={() => cycleDatePreset(1)}
+                className="hover:text-neutral-950 font-mono text-[11px] px-1 cursor-pointer"
+                aria-label="Next date range"
               >
                 &gt;
               </button>
@@ -675,7 +1036,7 @@ export const OwnerDashboardView: React.FC = () => {
                 {activePersona === 'manager' && 'Role: Store Manager (Shift & Kitchen Costing)'}
                 {activePersona === 'cashier' && 'Role: Cashier Terminal 01 (Register Audit)'}
                 {activePersona === 'waiter' &&
-                  `Role: John Mwamba (${
+                  `Role: ${selectedPersonaWaiter ? selectedPersonaWaiter.name : 'No Waiter Assigned'} (${
                     defaultCommissionMode === 'percent'
                       ? `${defaultCommissionValue}% Commission`
                       : `${formatMoney(defaultCommissionValue)} / Paid Order`
@@ -1444,18 +1805,23 @@ export const OwnerDashboardView: React.FC = () => {
           </div>
         )}
 
-        {/* ================= 5 KPI CARDS STRIP matching image_04d4b5da.png ================= */}
-        {/* In the screenshot: Gross sales, Refunds, Discounts, Net sales, Gross profit */}
+        {/* ================= 5 KPI CARDS STRIP ================= */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
           {/* Gross sales Card */}
           <div className="bg-white rounded-xl p-4 border border-neutral-200/90 shadow-2xs hover:shadow-xs transition-shadow">
             <div className="text-xs text-neutral-500 font-medium">Gross sales</div>
             <div className="text-lg sm:text-2xl font-bold font-mono text-neutral-900 mt-1 tabular-nums">
-              {formatVal(activePersona === 'waiter' ? 9480.0 : baseKpi.grossSales)}
+              {formatVal(baseKpi.grossSales)}
             </div>
-            <div className="flex items-center gap-1 text-[11px] text-emerald-700 font-medium mt-1">
-              <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
-              <span>{baseKpi.grossChangePct} vs last month</span>
+            <div className="flex items-center gap-1 text-[11px] text-neutral-500 font-medium mt-1">
+              {baseKpi.receiptsCount > 0 ? (
+                <>
+                  <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
+                  <span className="text-emerald-700">{baseKpi.receiptsCount} settled/active tickets</span>
+                </>
+              ) : (
+                <span>No sales recorded yet</span>
+              )}
             </div>
           </div>
 
@@ -1466,7 +1832,7 @@ export const OwnerDashboardView: React.FC = () => {
               {formatVal(baseKpi.refunds)}
             </div>
             <div className="flex items-center gap-1 text-[11px] text-neutral-400 font-medium mt-1">
-              <span>{baseKpi.refundChangePct}</span>
+              <span>{baseKpi.refunds > 0 ? 'Refunded transactions' : 'No refunds issued'}</span>
             </div>
           </div>
 
@@ -1474,10 +1840,12 @@ export const OwnerDashboardView: React.FC = () => {
           <div className="bg-white rounded-xl p-4 border border-neutral-200/90 shadow-2xs hover:shadow-xs transition-shadow">
             <div className="text-xs text-neutral-500 font-medium">Discounts</div>
             <div className="text-lg sm:text-2xl font-bold font-mono text-neutral-900 mt-1 tabular-nums">
-              {formatVal(activePersona === 'waiter' ? 82.5 : baseKpi.discounts)}
+              {formatVal(baseKpi.discounts)}
             </div>
-            <div className="flex items-center gap-1 text-[11px] text-rose-700 font-medium mt-1">
-              <span>{baseKpi.discountChangePct}</span>
+            <div className="flex items-center gap-1 text-[11px] text-neutral-500 font-medium mt-1">
+              <span className={baseKpi.discounts > 0 ? 'text-rose-700' : 'text-neutral-400'}>
+                {baseKpi.discounts > 0 ? 'Approved promos & courtesy' : 'No discounts applied'}
+              </span>
             </div>
           </div>
 
@@ -1485,11 +1853,17 @@ export const OwnerDashboardView: React.FC = () => {
           <div className="bg-white rounded-xl p-4 border border-neutral-200/90 shadow-2xs hover:shadow-xs transition-shadow">
             <div className="text-xs text-neutral-500 font-medium">Net sales</div>
             <div className="text-lg sm:text-2xl font-bold font-mono text-neutral-900 mt-1 tabular-nums">
-              {formatVal(activePersona === 'waiter' ? 9397.5 : baseKpi.netSales)}
+              {formatVal(baseKpi.netSales)}
             </div>
-            <div className="flex items-center gap-1 text-[11px] text-emerald-700 font-medium mt-1">
-              <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
-              <span>{baseKpi.netChangePct}</span>
+            <div className="flex items-center gap-1 text-[11px] text-neutral-500 font-medium mt-1">
+              {baseKpi.netSales > 0 ? (
+                <>
+                  <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
+                  <span className="text-emerald-700">Live tenant net total</span>
+                </>
+              ) : (
+                <span>Awaiting first order</span>
+              )}
             </div>
           </div>
 
@@ -1499,7 +1873,7 @@ export const OwnerDashboardView: React.FC = () => {
               {activePersona === 'waiter' ? 'Earned Commission' : 'Gross profit'}
             </div>
             <div className="text-lg sm:text-2xl font-bold font-mono text-[#43A047] mt-1 tabular-nums">
-              {formatVal(activePersona === 'waiter' ? 469.88 : baseKpi.grossProfit)}
+              {formatVal(activePersona === 'waiter' ? baseKpi.waiterCommission : baseKpi.grossProfit)}
             </div>
             <div className="flex items-center gap-1 text-[11px] text-emerald-700 font-medium mt-1">
               <span>
@@ -1507,30 +1881,33 @@ export const OwnerDashboardView: React.FC = () => {
                   ? defaultCommissionMode === 'percent'
                     ? `${defaultCommissionValue}% paid net sales`
                     : `${formatMoney(defaultCommissionValue)} / paid order`
-                  : `${baseKpi.profitChangePct} (${baseKpi.marginPct}% margin)`}
+                  : `${baseKpi.marginPct}% food margin · COGS ${formatVal(baseKpi.cogs)}`}
               </span>
             </div>
           </div>
         </div>
 
-        {/* ================= INTERACTIVE CHART VIEW matching image_04d4b5da.png ================= */}
+        {/* ================= INTERACTIVE CHART VIEW ================= */}
         <div className="bg-white rounded-2xl p-5 border border-neutral-200/90 shadow-xs space-y-4">
           {/* Chart Header & Controls */}
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div>
               <h3 className="text-sm font-bold text-neutral-900">
-                {activePersona === 'waiter' ? 'My Sales Trend (Daily)' : 'Gross Sales Trend'}
+                {activePersona === 'waiter' ? 'Waiter Sales Trend' : 'Gross Sales Trend'}
               </h3>
               <p className="text-xs text-neutral-400">
-                Historical June performance across {dailyData.length} active service days
+                {dailyData.length > 0
+                  ? `Live ${dateRangeInfo.label} performance across ${dailyData.length} active ${
+                      chartStep === 'days' ? 'service days' : 'hours'
+                    }`
+                  : `No live sales recorded for ${dateRangeInfo.label} yet`}
               </p>
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Chart Type: Area ▾ / Line ▾ / Bar ▾ matching screenshot */}
               <select
                 value={chartType}
-                onChange={(e) => setChartType(e.target.value as any)}
+                onChange={(e) => setChartType(e.target.value as 'area' | 'line' | 'bar')}
                 className="bg-neutral-100 border border-neutral-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-neutral-700 outline-hidden"
               >
                 <option value="area">Area</option>
@@ -1538,10 +1915,9 @@ export const OwnerDashboardView: React.FC = () => {
                 <option value="bar">Bar</option>
               </select>
 
-              {/* Step: Days ▾ / Hours ▾ matching screenshot */}
               <select
                 value={chartStep}
-                onChange={(e) => setChartStep(e.target.value as any)}
+                onChange={(e) => setChartStep(e.target.value as 'days' | 'hours')}
                 className="bg-neutral-100 border border-neutral-200 rounded-lg px-2.5 py-1 text-xs font-semibold text-neutral-700 outline-hidden"
               >
                 <option value="days">Days</option>
@@ -1550,102 +1926,148 @@ export const OwnerDashboardView: React.FC = () => {
             </div>
           </div>
 
-          {/* SVG Canvas Area Chart */}
+          {/* SVG Canvas Area / Line / Bar Chart */}
           <div className="relative w-full overflow-x-auto">
-            <div className="min-w-[700px] sm:min-w-full">
-              <svg
-                viewBox={`0 0 ${chartW} ${chartH}`}
-                className="w-full h-56 sm:h-64 select-none"
-              >
-                <defs>
-                  {/* Loyverse Green Gradient Fill */}
-                  <linearGradient id="loyverseGreenGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#43A047" stopOpacity="0.45" />
-                    <stop offset="70%" stopColor="#81C784" stopOpacity="0.12" />
-                    <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.0" />
-                  </linearGradient>
-                </defs>
-
-                {/* Horizontal Grid lines */}
-                {[0, 500, 1000, 1500, 2000].map((val) => {
-                  const y = chartH - (val / maxGross) * (chartH - 40) - 20;
-                  return (
-                    <g key={val}>
-                      <line
-                        x1="20"
-                        y1={y}
-                        x2={chartW - 20}
-                        y2={y}
-                        stroke="#E5E7EB"
-                        strokeDasharray="3 3"
-                        strokeWidth="1"
-                      />
-                      <text
-                        x="22"
-                        y={y - 4}
-                        fill="#9CA3AF"
-                        fontSize="9"
-                        fontFamily="monospace"
-                      >
-                        {currency === 'USD'
-                          ? `$${val}`
-                          : val === 0
-                          ? 'TZS 0'
-                          : `TZS ${((val * currentTenant.currencyRate) / 1000000).toFixed(1)}M`}
-                      </text>
-                    </g>
-                  );
-                })}
-
-                {/* Area Gradient */}
-                {chartType === 'area' && (
-                  <path d={svgAreaD} fill="url(#loyverseGreenGradient)" />
-                )}
-
-                {/* Solid Line Stroke */}
-                <path
-                  d={svgPathD}
-                  fill="none"
-                  stroke="#43A047"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-
-                {/* Interactive Points */}
-                {points.map((p, idx) => (
-                  <circle
-                    key={idx}
-                    cx={p.x}
-                    cy={p.y}
-                    r={hoveredDataPoint?.date === p.data.date ? 5 : 2.5}
-                    fill={hoveredDataPoint?.date === p.data.date ? '#1B5E20' : '#43A047'}
-                    stroke="#FFFFFF"
-                    strokeWidth="1.5"
-                    className="cursor-pointer transition-all hover:scale-150"
-                    onMouseEnter={() =>
-                      setHoveredDataPoint({
-                        date: p.data.date,
-                        gross: p.data.gross,
-                        net: p.data.net,
-                        profit: p.data.profit,
-                        orders: p.data.orders,
-                        x: p.x,
-                        y: p.y,
-                      })
-                    }
-                    onMouseLeave={() => setHoveredDataPoint(null)}
-                  />
-                ))}
-              </svg>
-
-              {/* Bottom Date labels matching image_04d4b5da.png */}
-              <div className="flex justify-between px-4 pt-1 text-[10px] text-neutral-400 font-mono">
-                {['Jun 1', 'Jun 5', 'Jun 10', 'Jun 15', 'Jun 20', 'Jun 25', 'Jun 30'].map((d) => (
-                  <span key={d}>{d}</span>
-                ))}
+            {dailyData.length === 0 ? (
+              <div className="h-44 rounded-xl border border-dashed border-neutral-200 bg-neutral-50/70 flex flex-col items-center justify-center text-center px-4 space-y-1.5">
+                <TrendingUp className="w-6 h-6 text-neutral-300" />
+                <div className="text-xs font-bold text-neutral-700">
+                  No sales activity in {currentTenant.name} for this filter yet
+                </div>
+                <p className="text-[11px] text-neutral-500 max-w-md">
+                  Orders placed from Cashier POS, Waiter App, or Customer Portal will immediately chart here.
+                </p>
               </div>
-            </div>
+            ) : (
+              <div className="min-w-[700px] sm:min-w-full">
+                <svg
+                  viewBox={`0 0 ${chartW} ${chartH}`}
+                  className="w-full h-56 sm:h-64 select-none"
+                >
+                  <defs>
+                    <linearGradient id="loyverseGreenGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#43A047" stopOpacity="0.45" />
+                      <stop offset="70%" stopColor="#81C784" stopOpacity="0.12" />
+                      <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.0" />
+                    </linearGradient>
+                  </defs>
+
+                  {/* Horizontal Grid lines */}
+                  {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                    const valTzs = Math.round(maxGross * ratio);
+                    const y = chartH - ratio * (chartH - 40) - 20;
+                    const displayTick =
+                      currency === 'USD'
+                        ? `$${(valTzs / currentTenant.currencyRate).toFixed(0)}`
+                        : valTzs === 0
+                        ? 'TZS 0'
+                        : valTzs >= 1000000
+                        ? `TZS ${(valTzs / 1000000).toFixed(1)}M`
+                        : `TZS ${Math.round(valTzs / 1000)}k`;
+                    return (
+                      <g key={ratio}>
+                        <line
+                          x1="20"
+                          y1={y}
+                          x2={chartW - 20}
+                          y2={y}
+                          stroke="#E5E7EB"
+                          strokeDasharray="3 3"
+                          strokeWidth="1"
+                        />
+                        <text
+                          x="22"
+                          y={y - 4}
+                          fill="#9CA3AF"
+                          fontSize="9"
+                          fontFamily="monospace"
+                        >
+                          {displayTick}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  {/* Bar mode */}
+                  {chartType === 'bar' &&
+                    points.map((p, idx) => {
+                      const barW = Math.max(12, Math.min(44, (chartW - 100) / Math.max(points.length, 1) * 0.6));
+                      const barH = Math.max(2, chartH - 20 - p.y);
+                      return (
+                        <rect
+                          key={idx}
+                          x={p.x - barW / 2}
+                          y={p.y}
+                          width={barW}
+                          height={barH}
+                          rx="4"
+                          fill={hoveredDataPoint?.date === p.data.date ? '#1B5E20' : '#43A047'}
+                          className="cursor-pointer transition-colors"
+                          onMouseEnter={() =>
+                            setHoveredDataPoint({
+                              date: p.data.date,
+                              gross: p.data.gross,
+                              net: p.data.net,
+                              profit: p.data.profit,
+                              orders: p.data.orders,
+                              x: p.x,
+                              y: p.y,
+                            })
+                          }
+                          onMouseLeave={() => setHoveredDataPoint(null)}
+                        />
+                      );
+                    })}
+
+                  {/* Area & Line modes */}
+                  {chartType === 'area' && <path d={svgAreaD} fill="url(#loyverseGreenGradient)" />}
+                  {chartType !== 'bar' && points.length > 1 && (
+                    <path
+                      d={svgPathD}
+                      fill="none"
+                      stroke="#43A047"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
+
+                  {/* Interactive Points */}
+                  {chartType !== 'bar' &&
+                    points.map((p, idx) => (
+                      <circle
+                        key={idx}
+                        cx={p.x}
+                        cy={p.y}
+                        r={hoveredDataPoint?.date === p.data.date ? 5 : 3.5}
+                        fill={hoveredDataPoint?.date === p.data.date ? '#1B5E20' : '#43A047'}
+                        stroke="#FFFFFF"
+                        strokeWidth="1.5"
+                        className="cursor-pointer transition-all hover:scale-150"
+                        onMouseEnter={() =>
+                          setHoveredDataPoint({
+                            date: p.data.date,
+                            gross: p.data.gross,
+                            net: p.data.net,
+                            profit: p.data.profit,
+                            orders: p.data.orders,
+                            x: p.x,
+                            y: p.y,
+                          })
+                        }
+                        onMouseLeave={() => setHoveredDataPoint(null)}
+                      />
+                    ))}
+                </svg>
+
+                {/* Bottom Dynamic Date Labels */}
+                <div className="flex justify-between px-4 pt-1 text-[10px] text-neutral-400 font-mono">
+                  {chartBottomLabels.map((lbl, idx) => (
+                    <span key={`${lbl}-${idx}`}>{lbl}</span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Hover Tooltip Box */}
             {hoveredDataPoint && (
@@ -1746,13 +2168,13 @@ export const OwnerDashboardView: React.FC = () => {
             </div>
           </div>
 
-          {/* ================= TABLE 1: DAILY SALES SUMMARY matching image_04d4b5da.png ================= */}
+          {/* ================= TABLE 1: DAILY SALES SUMMARY ================= */}
           {activeDimension === 'daily_trend' && (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead className="bg-neutral-100/80 text-neutral-500 font-semibold uppercase tracking-wider border-b border-neutral-200 text-[11px]">
                   <tr>
-                    <th className="py-3 px-4">Date</th>
+                    <th className="py-3 px-4">{chartStep === 'days' ? 'Date' : 'Hour Window'}</th>
                     <th className="py-3 px-4 text-right">Gross sales</th>
                     <th className="py-3 px-4 text-right">Discounts</th>
                     <th className="py-3 px-4 text-right">Net sales</th>
@@ -1762,37 +2184,46 @@ export const OwnerDashboardView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100 font-mono text-neutral-800">
-                  {dailyData
-                    .filter((d) => d.date.toLowerCase().includes(tableSearch.toLowerCase()))
-                    .slice(0, 15)
-                    .map((row, idx) => (
-                      <tr key={idx} className="hover:bg-neutral-50 transition-colors">
-                        <td className="py-3 px-4 font-sans font-medium text-neutral-900">
-                          {row.date}
-                        </td>
-                        <td className="py-3 px-4 text-right tabular-nums">{formatRawNumber(row.gross)}</td>
-                        <td className="py-3 px-4 text-right tabular-nums text-neutral-500">
-                          {row.discounts > 0 ? `-${formatRawNumber(row.discounts)}` : '0.00'}
-                        </td>
-                        <td className="py-3 px-4 text-right tabular-nums font-semibold">
-                          {formatRawNumber(row.net)}
-                        </td>
-                        <td className="py-3 px-4 text-right tabular-nums text-neutral-500">
-                          {formatRawNumber(row.cogs)}
-                        </td>
-                        <td className="py-3 px-4 text-right tabular-nums font-bold text-[#2E7D32]">
-                          {formatRawNumber(row.profit)}
-                        </td>
-                        <td className="py-3 px-4 text-right tabular-nums font-sans">{row.orders}</td>
-                      </tr>
-                    ))}
+                  {dailyData.filter((d) => d.date.toLowerCase().includes(tableSearch.toLowerCase())).length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-8 px-4 text-center font-sans text-neutral-500">
+                        No sales records match the current filter.
+                      </td>
+                    </tr>
+                  ) : (
+                    dailyData
+                      .filter((d) => d.date.toLowerCase().includes(tableSearch.toLowerCase()))
+                      .map((row, idx) => (
+                        <tr key={idx} className="hover:bg-neutral-50 transition-colors">
+                          <td className="py-3 px-4 font-sans font-medium text-neutral-900">
+                            {row.date}
+                          </td>
+                          <td className="py-3 px-4 text-right tabular-nums">{formatRawNumber(row.gross)}</td>
+                          <td className="py-3 px-4 text-right tabular-nums text-neutral-500">
+                            {row.discounts > 0 ? `-${formatRawNumber(row.discounts)}` : '0'}
+                          </td>
+                          <td className="py-3 px-4 text-right tabular-nums font-semibold">
+                            {formatRawNumber(row.net)}
+                          </td>
+                          <td className="py-3 px-4 text-right tabular-nums text-neutral-500">
+                            {formatRawNumber(row.cogs)}
+                          </td>
+                          <td className="py-3 px-4 text-right tabular-nums font-bold text-[#2E7D32]">
+                            {formatRawNumber(row.profit)}
+                          </td>
+                          <td className="py-3 px-4 text-right tabular-nums font-sans">{row.orders}</td>
+                        </tr>
+                      ))
+                  )}
                 </tbody>
                 <tfoot className="bg-neutral-100 font-bold border-t border-neutral-200 font-mono text-neutral-900">
                   <tr>
-                    <td className="py-3 px-4 font-sans">Total (30 Days)</td>
+                    <td className="py-3 px-4 font-sans">
+                      Total ({dailyData.length} {chartStep === 'days' ? 'Days' : 'Hours'})
+                    </td>
                     <td className="py-3 px-4 text-right tabular-nums">{formatVal(baseKpi.grossSales)}</td>
                     <td className="py-3 px-4 text-right tabular-nums text-rose-700">
-                      -{formatVal(baseKpi.discounts)}
+                      {baseKpi.discounts > 0 ? `-${formatVal(baseKpi.discounts)}` : formatVal(0)}
                     </td>
                     <td className="py-3 px-4 text-right tabular-nums">{formatVal(baseKpi.netSales)}</td>
                     <td className="py-3 px-4 text-right tabular-nums text-neutral-600">
@@ -1801,7 +2232,9 @@ export const OwnerDashboardView: React.FC = () => {
                     <td className="py-3 px-4 text-right tabular-nums text-[#2E7D32]">
                       {formatVal(baseKpi.grossProfit)}
                     </td>
-                    <td className="py-3 px-4 text-right tabular-nums font-sans">1,248</td>
+                    <td className="py-3 px-4 text-right tabular-nums font-sans">
+                      {baseKpi.receiptsCount.toLocaleString()}
+                    </td>
                   </tr>
                 </tfoot>
               </table>
@@ -1815,41 +2248,51 @@ export const OwnerDashboardView: React.FC = () => {
                 <thead className="bg-neutral-100/80 text-neutral-500 font-semibold uppercase tracking-wider border-b border-neutral-200 text-[11px]">
                   <tr>
                     <th className="py-3 px-4">Salesperson</th>
-                    <th className="py-3 px-4">Role / Title</th>
+                    <th className="py-3 px-4">Referral Code</th>
                     <th className="py-3 px-4 text-right">Orders Taken</th>
                     <th className="py-3 px-4 text-right">Gross Sales</th>
                     <th className="py-3 px-4 text-right">Net Sales</th>
-                    <th className="py-3 px-4 text-right">Earned Commission (5%)</th>
+                    <th className="py-3 px-4 text-right">Earned Commission</th>
                     <th className="py-3 px-4 text-right">Customer Tips</th>
                     <th className="py-3 px-4 text-right">Avg Ticket</th>
                     <th className="py-3 px-4 text-center">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100 font-mono text-neutral-800">
-                  {salespersonData.map((sp) => (
-                    <tr key={sp.id} className="hover:bg-neutral-50 transition-colors">
-                      <td className="py-3 px-4 font-sans font-bold text-neutral-900 flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-[11px]">
-                          {sp.name[0]}
-                        </div>
-                        <span>{sp.name}</span>
-                      </td>
-                      <td className="py-3 px-4 font-sans text-neutral-500">{sp.role}</td>
-                      <td className="py-3 px-4 text-right font-sans">{sp.ordersCount}</td>
-                      <td className="py-3 px-4 text-right tabular-nums">{formatVal(sp.grossSales)}</td>
-                      <td className="py-3 px-4 text-right tabular-nums font-semibold">{formatVal(sp.netSales)}</td>
-                      <td className="py-3 px-4 text-right tabular-nums font-bold text-emerald-700">
-                        {formatVal(sp.commissionEarned)}
-                      </td>
-                      <td className="py-3 px-4 text-right tabular-nums text-neutral-600">{formatVal(sp.customerTips)}</td>
-                      <td className="py-3 px-4 text-right tabular-nums">{formatVal(sp.avgOrderSize)}</td>
-                      <td className="py-3 px-4 text-center">
-                        <span className="text-[10px] font-sans font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
-                          {sp.payoutStatus}
-                        </span>
+                  {salespersonData.filter((sp) => sp.name.toLowerCase().includes(tableSearch.toLowerCase())).length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-8 px-4 text-center font-sans text-neutral-500">
+                        No waiters registered for this branch yet. Add waiters in Staff &amp; Payroll.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    salespersonData
+                      .filter((sp) => sp.name.toLowerCase().includes(tableSearch.toLowerCase()))
+                      .map((sp) => (
+                        <tr key={sp.id} className="hover:bg-neutral-50 transition-colors">
+                          <td className="py-3 px-4 font-sans font-bold text-neutral-900 flex items-center gap-2">
+                            <div className="w-7 h-7 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-[11px]">
+                              {sp.name[0] || '?'}
+                            </div>
+                            <span>{sp.name}</span>
+                          </td>
+                          <td className="py-3 px-4 font-mono text-neutral-500">{sp.role}</td>
+                          <td className="py-3 px-4 text-right font-sans">{sp.ordersCount}</td>
+                          <td className="py-3 px-4 text-right tabular-nums">{formatVal(sp.grossSales)}</td>
+                          <td className="py-3 px-4 text-right tabular-nums font-semibold">{formatVal(sp.netSales)}</td>
+                          <td className="py-3 px-4 text-right tabular-nums font-bold text-emerald-700">
+                            {formatVal(sp.commissionEarned)}
+                          </td>
+                          <td className="py-3 px-4 text-right tabular-nums text-neutral-600">{formatVal(sp.customerTips)}</td>
+                          <td className="py-3 px-4 text-right tabular-nums">{formatVal(sp.avgOrderSize)}</td>
+                          <td className="py-3 px-4 text-center">
+                            <span className="text-[10px] font-sans font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+                              {sp.payoutStatus}
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1901,17 +2344,25 @@ export const OwnerDashboardView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100 font-mono text-neutral-800">
-                  {categoryData.map((cat, idx) => (
-                    <tr key={idx} className="hover:bg-neutral-50 transition-colors">
-                      <td className="py-3 px-4 font-sans font-bold text-neutral-900">{cat.category}</td>
-                      <td className="py-3 px-4 text-right font-sans">{cat.itemsCount}</td>
-                      <td className="py-3 px-4 text-right font-sans font-semibold">{cat.soldUnits}</td>
-                      <td className="py-3 px-4 text-right tabular-nums">{formatVal(cat.gross)}</td>
-                      <td className="py-3 px-4 text-right tabular-nums text-neutral-500">{formatVal(cat.cogs)}</td>
-                      <td className="py-3 px-4 text-right tabular-nums font-bold text-[#2E7D32]">{formatVal(cat.profit)}</td>
-                      <td className="py-3 px-4 text-right font-sans font-bold text-emerald-700">{cat.margin}%</td>
+                  {categoryData.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-8 px-4 text-center font-sans text-neutral-500">
+                        No menu categories or dish sales recorded for this branch yet.
+                      </td>
                     </tr>
-                  ))}
+                  ) : (
+                    categoryData.map((cat, idx) => (
+                      <tr key={idx} className="hover:bg-neutral-50 transition-colors">
+                        <td className="py-3 px-4 font-sans font-bold text-neutral-900">{cat.category}</td>
+                        <td className="py-3 px-4 text-right font-sans">{cat.itemsCount}</td>
+                        <td className="py-3 px-4 text-right font-sans font-semibold">{cat.soldUnits}</td>
+                        <td className="py-3 px-4 text-right tabular-nums">{formatVal(cat.gross)}</td>
+                        <td className="py-3 px-4 text-right tabular-nums text-neutral-500">{formatVal(cat.cogs)}</td>
+                        <td className="py-3 px-4 text-right tabular-nums font-bold text-[#2E7D32]">{formatVal(cat.profit)}</td>
+                        <td className="py-3 px-4 text-right font-sans font-bold text-emerald-700">{cat.margin}%</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1960,31 +2411,37 @@ export const OwnerDashboardView: React.FC = () => {
                   <span className="font-mono text-[11px] text-neutral-500">{orders.length} tickets</span>
                 </div>
                 <div className="divide-y divide-neutral-100 text-xs">
-                  {orders.slice(0, 8).map((o) => (
-                    <div key={o.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="font-mono font-extrabold text-[11px] px-2 py-0.5 rounded bg-amber-50 border border-dashed border-amber-300 text-amber-900">
-                          {o.serviceCouponCode || `SV-${o.orderNumber.replace('#', '')}`}
-                        </span>
-                        <span className="font-mono font-bold text-neutral-900">{o.orderNumber}</span>
-                        <span className="text-neutral-500 truncate">{o.customerName || 'Guest'}</span>
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <span className="font-mono font-bold text-neutral-900 tabular-nums">
-                          {formatMoney(o.total)}
-                        </span>
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                            o.paymentStatus === 'paid'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {o.paymentStatus.toUpperCase()}
-                        </span>
-                      </div>
+                  {orders.length === 0 ? (
+                    <div className="px-4 py-6 text-center text-neutral-500">
+                      No shift tickets recorded yet.
                     </div>
-                  ))}
+                  ) : (
+                    orders.slice(0, 8).map((o) => (
+                      <div key={o.id} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="font-mono font-extrabold text-[11px] px-2 py-0.5 rounded bg-amber-50 border border-dashed border-amber-300 text-amber-900">
+                            {o.serviceCouponCode || `SV-${o.orderNumber.replace('#', '')}`}
+                          </span>
+                          <span className="font-mono font-bold text-neutral-900">{o.orderNumber}</span>
+                          <span className="text-neutral-500 truncate">{o.customerName || 'Guest'}</span>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className="font-mono font-bold text-neutral-900 tabular-nums">
+                            {formatMoney(o.total)}
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                              o.paymentStatus === 'paid'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-amber-100 text-amber-800'
+                            }`}
+                          >
+                            {o.paymentStatus.toUpperCase()}
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
@@ -2024,7 +2481,14 @@ export const OwnerDashboardView: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100">
-                      {liveOps.perWaiter.map((row) => (
+                      {liveOps.perWaiter.length === 0 ? (
+                        <tr>
+                          <td colSpan={11} className="py-6 px-4 text-center text-neutral-500">
+                            No waiter accounts configured for {currentTenant.name} yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        liveOps.perWaiter.map((row) => (
                         <tr
                           key={row.waiter.id}
                           onClick={() => setInspectedWaiterId(row.waiter.id)}
@@ -2075,7 +2539,7 @@ export const OwnerDashboardView: React.FC = () => {
                             </button>
                           </td>
                         </tr>
-                      ))}
+                      )))}
                     </tbody>
                   </table>
                 </div>

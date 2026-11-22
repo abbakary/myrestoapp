@@ -64,7 +64,10 @@ export const KitchenView: React.FC = () => {
     formatMoney,
     subRecipeBatches,
     bomDeductionPolicy,
+    activeOperator,
   } = useRestaurant();
+
+  const chefActor = activeOperator.name || 'Kitchen Chef';
 
   const [viewMode, setViewMode] = useState<'board' | 'list'>('board');
   const [showServedHistory, setShowServedHistory] = useState(false);
@@ -92,7 +95,7 @@ export const KitchenView: React.FC = () => {
     itemName: string;
   } | null>(null);
   const [rejectReason, setRejectReason] = useState('Out of ingredient stock');
-  const [rejectStaff, setRejectStaff] = useState('Chef Hamisi Juma');
+  const [rejectStaff, setRejectStaff] = useState(chefActor);
 
   // Reprint KOT Modal
   const [reprintOrder, setReprintOrder] = useState<Order | null>(null);
@@ -216,7 +219,7 @@ export const KitchenView: React.FC = () => {
     rejectOrderItem(
       rejectModal.order.id,
       rejectModal.itemIndex,
-      rejectStaff.trim() || 'Chef Hamisi Juma',
+      rejectStaff.trim() || chefActor,
       rejectReason.trim()
     );
     showNotice(
@@ -419,7 +422,7 @@ export const KitchenView: React.FC = () => {
                 {order.status === 'sent_to_kitchen' && (
                   <button
                     type="button"
-                    onClick={() => updateOrderStatus(order.id, 'accepted', 'Chef Hamisi Juma', 'Accepted on KDS')}
+                    onClick={() => updateOrderStatus(order.id, 'accepted', chefActor, 'Accepted on KDS')}
                     className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-bold whitespace-nowrap cursor-pointer"
                   >
                     Accept
@@ -427,7 +430,7 @@ export const KitchenView: React.FC = () => {
                 )}
                 <button
                   type="button"
-                  onClick={() => updateOrderStatus(order.id, 'preparing', 'Chef Hamisi Juma', 'Started cooking')}
+                  onClick={() => updateOrderStatus(order.id, 'preparing', chefActor, 'Started cooking')}
                   className="px-3 py-1.5 rounded-lg bg-[#2563EB] hover:bg-blue-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shadow-xs cursor-pointer"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
@@ -439,7 +442,7 @@ export const KitchenView: React.FC = () => {
             {columnType === 'preparing' && (
               <button
                 type="button"
-                onClick={() => updateOrderStatus(order.id, 'ready', 'Chef Hamisi Juma', 'All items ready on pass')}
+                onClick={() => updateOrderStatus(order.id, 'ready', chefActor, 'All items ready on pass')}
                 className="px-3 py-1.5 rounded-lg bg-[#16A34A] hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shadow-xs cursor-pointer"
               >
                 <Check className="w-3.5 h-3.5" />
@@ -860,7 +863,7 @@ export const KitchenView: React.FC = () => {
                                 toLocation: 'kitchen',
                                 reason: 'Kitchen line chef live restock request',
                                 shift: 'Kitchen Live Requisition',
-                                recordedBy: 'Chef Hamisi Juma',
+                                recordedBy: chefActor,
                               });
                               showNotice(
                                 'info',
@@ -1175,7 +1178,7 @@ export const KitchenView: React.FC = () => {
                               {ord.status === 'sent_to_kitchen' && (
                                 <button
                                   type="button"
-                                  onClick={() => updateOrderStatus(ord.id, 'preparing', 'Chef Hamisi Juma')}
+                                  onClick={() => updateOrderStatus(ord.id, 'preparing', chefActor)}
                                   className="px-2.5 py-1 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold cursor-pointer"
                                 >
                                   Start
@@ -1184,7 +1187,7 @@ export const KitchenView: React.FC = () => {
                               {(ord.status === 'accepted' || ord.status === 'preparing') && (
                                 <button
                                   type="button"
-                                  onClick={() => updateOrderStatus(ord.id, 'ready', 'Chef Hamisi Juma')}
+                                  onClick={() => updateOrderStatus(ord.id, 'ready', chefActor)}
                                   className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold cursor-pointer"
                                 >
                                   Ready

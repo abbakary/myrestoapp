@@ -83,30 +83,30 @@ export const SidebarNav: React.FC = () => {
   return (
     <aside
       aria-label="Sidebar Navigation"
-      className="flex flex-col items-center justify-between w-16 sm:w-20 lg:w-[84px] bg-white border-r border-neutral-200/90 py-4 sm:py-5 shrink-0 select-none z-30 sticky top-0 h-screen"
+      className="flex flex-col items-center justify-between w-16 sm:w-20 lg:w-[84px] bg-white border-r border-neutral-200/90 py-3 sm:py-4 shrink-0 select-none z-30 sticky top-0 h-screen"
     >
-      {/* Top Brand Logo matching screenshot circular GT EATS style */}
-      <div className="flex flex-col items-center gap-4 w-full">
+      {/* Top Brand Logo */}
+      <div className="flex flex-col items-center gap-2.5 sm:gap-3 w-full">
         <a
           href="/"
           onClick={(e) => {
             e.preventDefault();
             setActiveRole('owner');
           }}
-          className="relative group p-2 rounded-2xl hover:bg-neutral-50 transition-transform hover:scale-105"
+          className="relative group p-1.5 rounded-2xl hover:bg-neutral-50 transition-transform hover:scale-105"
           title="RestaurantOS"
         >
-          {/* Circular Ring Logo (Inspired by GT EATS) */}
-          <div className="w-12 h-12 rounded-2xl bg-white border border-neutral-200 shadow-sm flex items-center justify-center p-1.5 relative overflow-hidden">
+          {/* Circular Ring Logo */}
+          <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-white border border-neutral-200 shadow-sm flex items-center justify-center p-1.5 relative overflow-hidden">
             <div className="absolute inset-1 rounded-xl border-2 border-dashed border-orange-500/70 animate-spin-slow pointer-events-none" />
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-orange-500 to-amber-500 text-white flex items-center justify-center font-bold text-xs shadow-xs">
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-tr from-orange-500 to-amber-500 text-white flex items-center justify-center font-bold text-xs shadow-xs">
               <UtensilsCrossed className="w-4 h-4 text-white" />
             </div>
           </div>
         </a>
 
-        {/* Vertical Track Container (Curved rounded capsule track as in screenshot) */}
-        <div className="w-14 bg-neutral-100/80 rounded-full py-2.5 px-1.5 flex flex-col items-center gap-2 border border-neutral-200/60 shadow-inner">
+        {/* Vertical Track Container */}
+        <div className="w-13 sm:w-14 bg-neutral-100/80 rounded-full py-2 px-1.5 flex flex-col items-center gap-1.5 border border-neutral-200/60 shadow-inner">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeRole === item.role;
@@ -119,8 +119,9 @@ export const SidebarNav: React.FC = () => {
                 onMouseLeave={() => setHoveredRole(null)}
               >
                 <button
+                  type="button"
                   onClick={() => setActiveRole(item.role)}
-                  className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 relative group cursor-pointer ${
+                  className={`w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center transition-all duration-200 relative group cursor-pointer ${
                     isActive
                       ? 'bg-orange-500 text-white shadow-md shadow-orange-500/30 scale-105'
                       : 'text-neutral-500 hover:text-neutral-900 hover:bg-white/80'

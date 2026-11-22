@@ -912,7 +912,7 @@ export const orderService = {
     orderId: string,
     reason: string,
     actor: string,
-    approvedBy = 'Manager David Kasambala',
+    approvedBy = 'Branch Manager',
     actorRole: Role = 'manager'
   ) {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
@@ -1112,7 +1112,7 @@ export const orderService = {
     branchId: string,
     requestId: string,
     approve: boolean,
-    managerName = 'David Kasambala (Manager)'
+    managerName = 'Branch Manager'
   ) {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
     const req = store.approvalRequests.find((r) => r.id === requestId);

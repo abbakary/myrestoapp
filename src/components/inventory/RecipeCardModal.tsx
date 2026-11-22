@@ -81,6 +81,7 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
     computeRecipeUnitCost,
     addNewIngredient,
     addMenuItem,
+    activeOperator,
   } = useRestaurant();
 
   const [activeTab, setActiveTab] = useState<ModalTab>('basic');
@@ -774,7 +775,7 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
       modifierRules: modifierRules.length > 0 ? modifierRules : undefined,
       preparationInstructions: prepInstructions,
       cookingInstructions,
-      approvedBy: status === 'approved' ? 'Executive Chef Juma' : recipe?.approvedBy,
+      approvedBy: status === 'approved' ? (activeOperator.name || 'Executive Chef') : recipe?.approvedBy,
       approvedAt:
         status === 'approved'
           ? `${new Date().toISOString().split('T')[0]} ${new Date().toTimeString().substring(0, 5)}`
@@ -795,7 +796,7 @@ export const RecipeCardModal: React.FC<RecipeCardModalProps> = ({
         !isSubRecipe && foodCostPercentage > 45
           ? [`High food cost % (${foodCostPercentage.toFixed(1)}%)`]
           : [],
-      approvedBy: 'Executive Chef Juma',
+      approvedBy: activeOperator.name || 'Executive Chef',
       totalCostPerPlate: roundedPlateCost,
       foodCostPercentage,
     });

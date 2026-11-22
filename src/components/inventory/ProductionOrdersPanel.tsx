@@ -47,6 +47,7 @@ export const ProductionOrdersPanel: React.FC<ProductionOrdersPanelProps> = ({
     productionLogs,
     reverseProductionBatch,
     blockedCookingAttempts,
+    activeOperator,
   } = useRestaurant();
 
   const producibleRecipes = useMemo(
@@ -55,11 +56,11 @@ export const ProductionOrdersPanel: React.FC<ProductionOrdersPanelProps> = ({
   );
 
   const [calcRecipeId, setCalcRecipeId] = useState<string>(
-    producibleRecipes[0]?.id || 'rec-wali-nyama'
+    producibleRecipes[0]?.id || ''
   );
   const [targetPortions, setTargetPortions] = useState<number>(96);
   const [substituteOverrides, setSubstituteOverrides] = useState<Record<string, string>>({});
-  const [assignedTo, setAssignedTo] = useState<string>('Chef Hamisi Juma');
+  const [assignedTo, setAssignedTo] = useState<string>(activeOperator.name || 'Kitchen Chef');
 
   // Stage completion inline editor state
   const [completingOrderId, setCompletingOrderId] = useState<string | null>(null);
@@ -1034,7 +1035,7 @@ export const ProductionOrdersPanel: React.FC<ProductionOrdersPanelProps> = ({
                                   const res = reverseProductionBatch(
                                     log.id,
                                     reversalReason,
-                                    'David Kasambala (Manager)'
+                                    activeOperator.name || 'Manager'
                                   );
                                   if (res.success) {
                                     setReversingLogId(null);

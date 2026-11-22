@@ -98,7 +98,7 @@ export const WaiterView: React.FC = () => {
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
   const [draftOrderType, setDraftOrderType] = useState<OrderType>('dine_in');
   const [draftPriority, setDraftPriority] = useState<'normal' | 'rush' | 'vip'>('normal');
-  const [orderTableNumber, setOrderTableNumber] = useState<string>('Table 03');
+  const [orderTableNumber, setOrderTableNumber] = useState<string>(() => tables[0]?.number || 'Table 01');
   const [orderGuestName, setOrderGuestName] = useState<string>('');
   const [orderGuestPhone, setOrderGuestPhone] = useState<string>('');
   const [orderDeliveryAddress, setOrderDeliveryAddress] = useState<string>('');
@@ -117,14 +117,14 @@ export const WaiterView: React.FC = () => {
   const [customPrepNote, setCustomPrepNote] = useState('');
 
   const currentWaiter = waiters.find((w) => w.id === activeWaiterId) || waiters[0];
-  const stats = calculateWaiterStats(currentWaiter.id);
+  const stats = calculateWaiterStats(currentWaiter?.id || '');
 
   // Real deep link pointing to the running app's Customer Portal with waiter attribution
   const personalLink = useMemo(() => {
     const origin = typeof window !== 'undefined' ? window.location.origin : 'https://app.restaurantos.io';
-    const code = currentWaiter.referralCode.toLowerCase();
+    const code = (currentWaiter?.referralCode || 'waiter').toLowerCase();
     return `${origin}/?portal=customer&w=${encodeURIComponent(code)}&tenant=${encodeURIComponent(currentTenant.id)}`;
-  }, [currentWaiter.referralCode, currentTenant.id]);
+  }, [currentWaiter?.referralCode, currentTenant.id]);
 
   const handleCopyLink = async () => {
     try {
@@ -137,6 +137,7 @@ export const WaiterView: React.FC = () => {
   };
 
   const handleShareLink = async () => {
+    if (!currentWaiter) return;
     const result = await shareOrCopyLink({
       title: `${currentTenant.name} — Order Menu`,
       text: `Order directly with ${currentWaiter.name} at ${currentTenant.name}:`,
@@ -149,7 +150,9 @@ export const WaiterView: React.FC = () => {
   };
 
   const handleOpenCustomerPortal = () => {
-    setReferralCode(currentWaiter.referralCode);
+    if (currentWaiter) {
+      setReferralCode(currentWaiter.referralCode);
+    }
     setActiveRole('customer');
   };
 
@@ -198,10 +201,12 @@ export const WaiterView: React.FC = () => {
 
   // Quick Order Sheet helpers
   const openNewOrderForTable = (tblNumber?: string) => {
+    if (!currentWaiter) return;
     const targetTable =
       tblNumber ||
       tables.find((t) => t.assignedWaiterId === currentWaiter.id && t.status === 'occupied')?.number ||
       tables.find((t) => t.status === 'available')?.number ||
+      tables[0]?.number ||
       'Table 01';
     setEditingDraftId(null);
     setDraftOrderType('dine_in');
@@ -280,6 +285,7 @@ export const WaiterView: React.FC = () => {
   };
 
   const handleFastServeToServed = (order: Order) => {
+    if (!currentWaiter) return;
     const ok = fastForwardOrderToServed(order.id, currentWaiter.name);
     if (!ok) return;
     const isUnpaid = order.paymentStatus !== 'paid';
@@ -297,7 +303,7 @@ export const WaiterView: React.FC = () => {
 
   const handleConfirmWaiterPayment = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!paymentOrder) return;
+    if (!paymentOrder || !currentWaiter) return;
     const remaining = Math.max(0, paymentOrder.total - (paymentOrder.paidAmount || 0));
     const collectAmt = Math.min(remaining, Math.max(1, Math.round(amountToCollect)));
     if (remaining <= 0 || collectAmt <= 0) return;
@@ -398,7 +404,7 @@ export const WaiterView: React.FC = () => {
   const draftTotal = draftSubtotal + draftTax + draftDeliveryFee;
 
   const submitWaiterOrderAction = (asDraft: boolean) => {
-    if (draftItems.length === 0) return;
+    if (draftItems.length === 0 || !currentWaiter) return;
 
     const paidNow = !asDraft && orderPayTiming !== 'later';
     const newOrder = submitOrder({
@@ -408,7 +414,7 @@ export const WaiterView: React.FC = () => {
         orderGuestName.trim() ||
         (draftOrderType === 'dine_in' ? `${orderTableNumber} Guest` : 'Walk-in Guest'),
       customerPhone: orderGuestPhone.trim() || undefined,
-      deliveryAddress: draftOrderType === 'delivery' ? orderDeliveryAddress.trim() || 'Dar es Salaam' : undefined,
+      deliveryAddress: draftOrderType === 'delivery' ? orderDeliveryAddress.trim() || currentTenant.address : undefined,
       servingWaiterId: currentWaiter.id,
       referralWaiterId: currentWaiter.id,
       notes: orderNotes.trim() || `Table order by ${currentWaiter.name}`,
@@ -448,7 +454,7 @@ export const WaiterView: React.FC = () => {
 
   const handleSendApprovalRequest = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!approvalOrder || !approvalReason.trim()) return;
+    if (!approvalOrder || !approvalReason.trim() || !currentWaiter) return;
     const impact =
       approvalType === 'cancel_order'
         ? approvalOrder.total
@@ -498,13 +504,76 @@ export const WaiterView: React.FC = () => {
     (o) => o.paymentStatus === 'paid' && o.status !== 'cancelled'
   );
 
+  if (!currentWaiter) {
+    return (
+      <div className="min-h-screen bg-neutral-50 text-neutral-900 flex flex-col">
+        <header className="bg-white border-b border-neutral-200 px-4 sm:px-6 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-base" aria-hidden="true">{currentTenant.logo}</span>
+            <h1 className="text-sm sm:text-base font-extrabold text-neutral-900 truncate">
+              {currentTenant.name} · Waiter Portal
+            </h1>
+          </div>
+          {!lockedStandalone && (
+            <button
+              type="button"
+              onClick={() => setActiveRole('owner')}
+              className="px-3 py-1.5 rounded-xl bg-neutral-900 text-white text-xs font-bold cursor-pointer"
+            >
+              Back to Dashboard
+            </button>
+          )}
+        </header>
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl border border-neutral-200 p-8 max-w-md w-full text-center space-y-4 shadow-xs">
+            <div className="w-12 h-12 rounded-2xl bg-orange-50 text-orange-600 flex items-center justify-center mx-auto">
+              <UtensilsCrossed className="w-6 h-6" />
+            </div>
+            <h2 className="text-base font-extrabold text-neutral-900">No Waiters Configured Yet</h2>
+            <p className="text-xs text-neutral-600 leading-relaxed">
+              {currentTenant.name} has no waiter profiles registered yet. Add waiters in Staff &amp; Payroll to generate personal referral QR links and track commission.
+            </p>
+            {!lockedStandalone && (
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveRole('reception')}
+                  className="px-4 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold cursor-pointer"
+                >
+                  Open Staff &amp; Payroll
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveRole('cashier')}
+                  className="px-4 py-2.5 rounded-xl border border-neutral-200 bg-neutral-50 hover:bg-neutral-100 text-neutral-800 text-xs font-bold cursor-pointer"
+                >
+                  Open Cashier POS
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-[100dvh] md:h-auto md:min-h-screen bg-neutral-50 text-neutral-900 flex flex-col overflow-hidden md:overflow-visible">
       {/* Compact Flutter-Style Waiter AppBar with Centered Restaurant Name */}
       <header className="shrink-0 md:sticky md:top-0 z-30 bg-white/95 backdrop-blur-md border-b border-neutral-200/80 pt-safe">
-        <div className="max-w-6xl mx-auto px-3 sm:px-6 h-14 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-          {/* Left: Waiter identity */}
+        <div className="max-w-6xl w-full mx-auto px-3 sm:px-6 h-14 grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+          {/* Left: optional mobile Back-to-ERP + Waiter identity */}
           <div className="flex items-center gap-2 min-w-0">
+            {!lockedStandalone && (
+              <button
+                type="button"
+                onClick={() => setActiveRole('owner')}
+                className="md:hidden px-2 py-1 text-[11px] font-bold bg-neutral-900 text-white rounded-lg shrink-0 cursor-pointer"
+                title="Back to Main Dashboard"
+              >
+                ERP
+              </button>
+            )}
             <div className="w-8 h-8 rounded-full bg-neutral-900 text-white flex items-center justify-center font-bold text-xs shrink-0">
               {currentWaiter.name.charAt(0)}
             </div>

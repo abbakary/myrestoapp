@@ -71,7 +71,15 @@ export const HrPayrollView: React.FC = () => {
     toggleWaiterActive,
     taxEnabled,
     taxRatePct,
+    activeOperator,
   } = useRestaurant();
+
+  const managerActor = activeOperator.name || 'Branch Manager';
+  const currentMonthStr = useMemo(() => new Date().toISOString().slice(0, 7), []);
+  const availablePeriods = useMemo(() => {
+    const base = Array.from(new Set([currentMonthStr, '2026-11', '2026-12', '2026-10']));
+    return base;
+  }, [currentMonthStr]);
 
   const [activeTab, setActiveTab] = useState<HrTab>('coupons');
   const [actionBanner, setActionBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -250,7 +258,7 @@ export const HrPayrollView: React.FC = () => {
     setEmpEmail('');
     setEmpRole('waiter');
     setEmpPosition('Floor Waiter');
-    setEmpBranch('Peninsula Masaki');
+    setEmpBranch(currentTenant.name);
     setEmpSalaryType('monthly');
     setEmpBaseSalary(350000);
     setEmpAllowances(0);
@@ -309,7 +317,7 @@ export const HrPayrollView: React.FC = () => {
         email: empEmail.trim() || undefined,
         role: empRole,
         position: empPosition.trim(),
-        branch: empBranch.trim() || 'Peninsula Masaki',
+        branch: empBranch.trim() || currentTenant.name,
         salaryType: empSalaryType,
         baseSalary: Math.max(0, Math.round(empBaseSalary)),
         allowances: Math.max(0, Math.round(empAllowances)),
@@ -428,7 +436,7 @@ export const HrPayrollView: React.FC = () => {
       employeeIds: runEmployeeIds,
       method: runMethod,
       referencePrefix: runRefPrefix.trim() || 'SAL',
-      paidBy: 'David Kasambala (Manager)',
+      paidBy: managerActor,
     });
     setIsPayrollRunOpen(false);
     if (created.length > 0) {
@@ -483,7 +491,7 @@ export const HrPayrollView: React.FC = () => {
     settleWaiterCommission(payoutWaiterId, payoutAmount, {
       method: payoutMethod,
       reference: payoutRef.trim() || undefined,
-      settledBy: 'David Kasambala (Manager)',
+      settledBy: managerActor,
     });
     showBanner(
       'success',
@@ -578,7 +586,7 @@ export const HrPayrollView: React.FC = () => {
       addAdvanceRequest(selectedEmpId, Number(advanceAmount), advanceReason, {
         autoApprove: advanceAutoApprove,
         repaymentMonth: advanceRepaymentMonth,
-        approvedBy: advanceAutoApprove ? 'David Kasambala (Manager)' : undefined,
+        approvedBy: advanceAutoApprove ? managerActor : undefined,
       });
       const emp = employees.find((e2) => e2.id === selectedEmpId);
       showBanner(
@@ -1103,9 +1111,11 @@ export const HrPayrollView: React.FC = () => {
                   aria-label="Payroll period"
                   className="px-2.5 py-1.5 text-xs font-semibold bg-neutral-50 border border-neutral-200 rounded-lg cursor-pointer"
                 >
-                  <option value="2026-11">Nov 2026 (2026-11)</option>
-                  <option value="2026-10">Oct 2026 (2026-10)</option>
-                  <option value="2026-12">Dec 2026 (2026-12)</option>
+                  {availablePeriods.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
                 </select>
 
                 <button
@@ -1742,7 +1752,7 @@ export const HrPayrollView: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  approveAdvance(emp.id, adv.id, 'David Kasambala (Manager)');
+                                  approveAdvance(emp.id, adv.id, managerActor);
                                   showBanner('success', `Approved ${formatMoney(adv.amount)} advance for ${emp.name}.`);
                                 }}
                                 className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold cursor-pointer"
@@ -2011,17 +2021,23 @@ export const HrPayrollView: React.FC = () => {
               <div className="grid grid-cols-3 gap-3">
                 <div className="col-span-2">
                   <label className="block font-semibold text-neutral-700 mb-1">Dish / Item</label>
-                  <select
-                    value={walkInMenuItemId}
-                    onChange={(e) => setWalkInMenuItemId(e.target.value)}
-                    className="w-full px-2.5 py-2 border border-neutral-200 rounded-lg bg-white"
-                  >
-                    {menuItems.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} ({formatMoney(m.price)})
-                      </option>
-                    ))}
-                  </select>
+                  {menuItems.length === 0 ? (
+                    <div className="px-2.5 py-2 border border-amber-200 bg-amber-50 text-amber-800 rounded-lg text-[11px] font-medium">
+                      No menu items catalogued yet — add dishes in Inventory &amp; Menu Builder first.
+                    </div>
+                  ) : (
+                    <select
+                      value={walkInMenuItemId}
+                      onChange={(e) => setWalkInMenuItemId(e.target.value)}
+                      className="w-full px-2.5 py-2 border border-neutral-200 rounded-lg bg-white"
+                    >
+                      {menuItems.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} ({formatMoney(m.price)})
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
                 <div>
                   <label className="block font-semibold text-neutral-700 mb-1">Qty</label>
@@ -2058,7 +2074,8 @@ export const HrPayrollView: React.FC = () => {
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg cursor-pointer whitespace-nowrap"
+                disabled={menuItems.length === 0}
+                className="px-4 py-2 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 disabled:opacity-40 text-white rounded-lg cursor-pointer whitespace-nowrap"
               >
                 Issue Service Coupon
               </button>
@@ -2982,8 +2999,11 @@ export const HrPayrollView: React.FC = () => {
                       onChange={(e) => setAdvanceRepaymentMonth(e.target.value)}
                       className="w-full px-3 py-2 border border-neutral-200 rounded-lg bg-white font-mono"
                     >
-                      <option value="2026-11">2026-11</option>
-                      <option value="2026-12">2026-12</option>
+                      {availablePeriods.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 )}

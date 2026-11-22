@@ -85,7 +85,7 @@ export const PosView: React.FC = () => {
   const [orderType, setOrderType] = useState<OrderType>('dine_in');
   const [selectedTable, setSelectedTable] = useState<string>(() => tables[0]?.number || 'Table 01');
   const [guestCount, setGuestCount] = useState<number>(2);
-  const [deliveryAddress, setDeliveryAddress] = useState<string>('Mikocheni B, Mwai Kibaki Rd, House 14');
+  const [deliveryAddress, setDeliveryAddress] = useState<string>('');
   const [isTicketMenuOpen, setIsTicketMenuOpen] = useState<boolean>(false);
   const [isTableDropdownOpen, setIsTableDropdownOpen] = useState<boolean>(false);
 
@@ -141,10 +141,7 @@ export const PosView: React.FC = () => {
   const [isReceiptOpen, setIsReceiptOpen] = useState<boolean>(false);
 
   // Held tickets (stored in TZS)
-  const [heldTickets, setHeldTickets] = useState<{ id: string; name: string; itemsCount: number; total: number; savedAt: string }[]>([
-    { id: 'HT-101', name: 'Table 07 (Patio)', itemsCount: 4, total: 84500, savedAt: '17:28' },
-    { id: 'HT-102', name: 'Bar Counter VIP', itemsCount: 2, total: 46800, savedAt: '17:35' },
-  ]);
+  const [heldTickets, setHeldTickets] = useState<{ id: string; name: string; itemsCount: number; total: number; savedAt: string }[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -380,19 +377,29 @@ export const PosView: React.FC = () => {
     setIsSplitPayment(false);
   };
 
-  // Quick reset to demo ticket
+  // Quick reset to sample ticket using live menu items
   const handleResetToDemoTicket = () => {
-    const findItem = (id: string, fallbackIdx: number) =>
-      menuItems.find((i) => i.id === id) || menuItems[fallbackIdx];
+    if (menuItems.length === 0) {
+      showToast('No menu items yet — create dishes in Inventory & BOM first.');
+      return;
+    }
+
+    const sampleItems = [
+      menuItems.find((i) => i.id === 'pos-pepperoni-pizza'),
+      menuItems.find((i) => i.id === 'pos-caesar-salad'),
+      menuItems.find((i) => i.id === 'pos-orange-juice'),
+      menuItems.find((i) => i.id === 'pos-black-tea'),
+      menuItems.find((i) => i.id === 'pos-sandwich'),
+      menuItems.find((i) => i.id === 'pos-mango-dessert'),
+    ].filter((item): item is MenuItem => Boolean(item));
+
+    const itemsToAdd = sampleItems.length > 0 ? sampleItems : menuItems.slice(0, 4);
 
     clearCart();
     setTimeout(() => {
-      addToCart(findItem('pos-pepperoni-pizza', 15), undefined, [], '', 1);
-      addToCart(findItem('pos-caesar-salad', 16), undefined, [], '', 2);
-      addToCart(findItem('pos-orange-juice', 17), undefined, [], '', 1);
-      addToCart(findItem('pos-black-tea', 18), undefined, [], '', 1);
-      addToCart(findItem('pos-sandwich', 19), undefined, [], '', 1);
-      addToCart(findItem('pos-mango-dessert', 2), undefined, [], '', 2);
+      itemsToAdd.forEach((item, idx) => {
+        addToCart(item, undefined, [], '', idx === 1 ? 2 : 1);
+      });
       setDiscountValue(0);
       setDiscountType('fixed');
       showToast('Loaded sample POS ticket!');
@@ -556,20 +563,54 @@ export const PosView: React.FC = () => {
                     );
                   })}
 
-                  {/* Fallback if fewer than 15 items in category */}
+                  {/* Fallback if no matching items in category or empty menu */}
                   {filteredItems.length === 0 && (
-                    <div className="col-span-full py-16 text-center text-neutral-500">
+                    <div className="col-span-full py-12 px-4 text-center text-neutral-500">
                       <Sparkles className="w-8 h-8 mx-auto text-neutral-400 mb-2" />
-                      <p className="text-xs font-semibold">No items found matching "{searchQuery}"</p>
-                      <button
-                        onClick={() => {
-                          setSearchQuery('');
-                          setSelectedCategory('Sweets');
-                        }}
-                        className="mt-2 text-xs font-bold text-[#43A047] hover:underline"
-                      >
-                        Reset to Sweets
-                      </button>
+                      {menuItems.length === 0 ? (
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold text-neutral-700">
+                            No menu items have been added for this restaurant yet
+                          </p>
+                          <p className="text-[11px] text-neutral-500 max-w-sm mx-auto">
+                            Create dishes in Inventory &amp; Menu Builder or ring up an off-menu custom item right away.
+                          </p>
+                          <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={() => setActiveRole('manager')}
+                              className="px-3 py-1.5 rounded-lg bg-[#43A047] hover:bg-[#388E3C] text-white text-xs font-bold cursor-pointer"
+                            >
+                              Open Inventory &amp; Menu Builder
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setIsCustomItemModalOpen(true)}
+                              className="px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold cursor-pointer"
+                            >
+                              + Add Custom Off-Menu Item
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="text-xs font-semibold">
+                            {searchQuery
+                              ? `No items found matching "${searchQuery}"`
+                              : `No items in ${selectedCategory}`}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSearchQuery('');
+                              setSelectedCategory('All Items');
+                            }}
+                            className="mt-2 text-xs font-bold text-[#43A047] hover:underline cursor-pointer"
+                          >
+                            Show All Items
+                          </button>
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -953,7 +994,9 @@ export const PosView: React.FC = () => {
                   <div className="mt-2 flex items-center justify-between text-xs text-neutral-700 bg-white px-2.5 py-1.5 rounded-lg border border-neutral-200">
                     <span className="font-semibold text-neutral-900 flex items-center gap-1.5">
                       <span>🛍️ Pickup Order</span>
-                      <span className="text-[10px] text-neutral-400 font-mono">#TK-204</span>
+                      <span className="text-[10px] text-neutral-400 font-mono">
+                        #{String(orders.length + 1).padStart(3, '0')}
+                      </span>
                     </span>
                     <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
                       Est. Ready: 15-20 min
@@ -987,14 +1030,18 @@ export const PosView: React.FC = () => {
                     <Sparkles className="w-8 h-8 text-neutral-300 stroke-1" />
                     <p className="text-xs">Active ticket is empty</p>
                     <p className="text-[11px] text-neutral-400">
-                      Tap any food tile on the left to add items
+                      {menuItems.length > 0
+                        ? 'Tap any food tile on the left to add items'
+                        : 'Add menu items in Inventory & BOM or create a custom item'}
                     </p>
-                    <button
-                      onClick={handleResetToDemoTicket}
-                      className="mt-2 text-xs font-bold text-[#43A047] hover:underline cursor-pointer"
-                    >
-                      Load Demo Ticket
-                    </button>
+                    {menuItems.length > 0 && (
+                      <button
+                        onClick={handleResetToDemoTicket}
+                        className="mt-2 text-xs font-bold text-[#43A047] hover:underline cursor-pointer"
+                      >
+                        Load Sample Ticket
+                      </button>
+                    )}
                   </div>
                 ) : (
                   cart.map((ci, index) => {

@@ -259,6 +259,7 @@ export const apiClient = {
       email: string;
       password: string;
       role: SaasAccountRole;
+      status?: SaasAccountStatus;
       organizationId?: string;
       branchId?: string;
       phone?: string;
@@ -267,20 +268,44 @@ export const apiClient = {
         method: 'POST',
         body: JSON.stringify(params),
       }),
+    updateAccount: (
+      accountId: string,
+      patch: {
+        name?: string;
+        email?: string;
+        phone?: string;
+        role?: SaasAccountRole;
+        status?: SaasAccountStatus;
+        organizationId?: string;
+        branchId?: string;
+      }
+    ) =>
+      request<{ success: boolean; account: SaasAccount }>(`/provider/accounts/${enc(accountId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
     updateAccountStatus: (accountId: string, status: SaasAccountStatus) =>
       request<SaasAccount>(`/provider/accounts/${enc(accountId)}/status`, {
         method: 'PATCH',
         body: JSON.stringify({ status }),
       }),
-    updateAccountRole: (accountId: string, role: SaasAccountRole) =>
+    updateAccountRole: (
+      accountId: string,
+      role: SaasAccountRole,
+      scope?: { organizationId?: string; branchId?: string }
+    ) =>
       request<SaasAccount>(`/provider/accounts/${enc(accountId)}/role`, {
         method: 'PATCH',
-        body: JSON.stringify({ role }),
+        body: JSON.stringify({ role, ...(scope || {}) }),
       }),
     resetAccountPassword: (accountId: string, newPassword: string) =>
       request<SaasAccount>(`/provider/accounts/${enc(accountId)}/password`, {
         method: 'PATCH',
         body: JSON.stringify({ newPassword }),
+      }),
+    deleteAccount: (accountId: string) =>
+      request<{ success: boolean; deletedId: string }>(`/provider/accounts/${enc(accountId)}`, {
+        method: 'DELETE',
       }),
     convertLeadToTenant: (
       leadId: string,

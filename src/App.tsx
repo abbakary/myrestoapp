@@ -137,19 +137,81 @@ const AppContent: React.FC = () => {
           </div>
         )}
 
-        <main key={workspaceKey} className="flex-1 min-w-0 animate-in fade-in duration-150">
-          {activeRole === 'owner' && <OwnerDashboardView />}
-          {activeRole === 'cashier' && <PosView />}
-          {activeRole === 'waiter' && <WaiterView />}
-          {activeRole === 'kitchen' && <KitchenView />}
-          {activeRole === 'customer' && <CustomerPortalView />}
-          {activeRole === 'manager' && <InventoryRecipesView />}
-          {activeRole === 'reception' && <HrPayrollView />}
-        </main>
+        <ViewErrorBoundary
+          resetKey={`${workspaceKey}:${activeRole}`}
+          onResetToDashboard={() => setActiveRole('owner')}
+        >
+          <main key={workspaceKey} className="flex-1 min-w-0 animate-in fade-in duration-150">
+            {activeRole === 'owner' && <OwnerDashboardView />}
+            {activeRole === 'cashier' && <PosView />}
+            {activeRole === 'waiter' && <WaiterView />}
+            {activeRole === 'kitchen' && <KitchenView />}
+            {activeRole === 'customer' && <CustomerPortalView />}
+            {activeRole === 'manager' && <InventoryRecipesView />}
+            {activeRole === 'reception' && <HrPayrollView />}
+          </main>
+        </ViewErrorBoundary>
       </div>
     </div>
   );
 };
+
+class ViewErrorBoundary extends React.Component<
+  { resetKey: string; onResetToDashboard: () => void; children: React.ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { resetKey: string; onResetToDashboard: () => void; children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidUpdate(prevProps: { resetKey: string }) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="p-6 sm:p-10 max-w-xl mx-auto">
+          <div className="bg-white rounded-2xl border border-rose-200 p-6 space-y-4 shadow-xs">
+            <div className="text-sm font-extrabold text-rose-900">
+              Unable to load this workspace section
+            </div>
+            <p className="text-xs text-neutral-600 leading-relaxed">
+              {this.state.error.message || 'An unexpected rendering issue occurred.'}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => this.setState({ error: null })}
+                className="px-4 py-2 rounded-xl bg-neutral-900 text-white text-xs font-bold cursor-pointer"
+              >
+                Retry Section
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  this.setState({ error: null });
+                  this.props.onResetToDashboard();
+                }}
+                className="px-4 py-2 rounded-xl border border-neutral-200 bg-neutral-50 text-neutral-800 text-xs font-bold cursor-pointer"
+              >
+                Return to Main Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function App() {
   return (

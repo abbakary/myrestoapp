@@ -71,10 +71,11 @@ export const CateringOrdersPanel: React.FC<CateringOrdersPanelProps> = ({
   const [eventNotes, setEventNotes] = useState('');
   const [newOrderItems, setNewOrderItems] = useState<
     Array<{ menuItemId: string; quantity: number }>
-  >([
-    { menuItemId: menuItems[0]?.id || 'menu-wali-nyama', quantity: 30 },
-    { menuItemId: menuItems[1]?.id || 'menu-chicken-biryani', quantity: 20 },
-  ]);
+  >(() =>
+    menuItems.length > 0
+      ? [{ menuItemId: menuItems[0].id, quantity: 30 }]
+      : []
+  );
 
   const activeOrder =
     cateringOrders.find((c) => c.id === selectedOrderId) || cateringOrders[0] || null;
@@ -103,6 +104,9 @@ export const CateringOrdersPanel: React.FC<CateringOrdersPanelProps> = ({
     setSiteLocation('');
     setDepositPaid(0);
     setEventNotes('');
+    setNewOrderItems(
+      menuItems.length > 0 ? [{ menuItemId: menuItems[0].id, quantity: 30 }] : []
+    );
     setIsCreateModalOpen(true);
   };
 
@@ -904,51 +908,57 @@ export const CateringOrdersPanel: React.FC<CateringOrdersPanelProps> = ({
                   </button>
                 </div>
 
-                {newOrderItems.map((row, idx) => (
-                  <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                    <select
-                      value={row.menuItemId}
-                      onChange={(e) =>
-                        setNewOrderItems((prev) =>
-                          prev.map((it, i) =>
-                            i === idx ? { ...it, menuItemId: e.target.value } : it
-                          )
-                        )
-                      }
-                      className="col-span-8 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-xl font-semibold"
-                    >
-                      {menuItems.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} ({formatMoney(m.price)})
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      type="number"
-                      min={1}
-                      value={row.quantity}
-                      onChange={(e) =>
-                        setNewOrderItems((prev) =>
-                          prev.map((it, i) =>
-                            i === idx
-                              ? { ...it, quantity: Math.max(1, parseInt(e.target.value, 10) || 1) }
-                              : it
-                          )
-                        )
-                      }
-                      className="col-span-3 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-xl font-mono font-bold text-right"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setNewOrderItems((prev) => prev.filter((_, i) => i !== idx))
-                      }
-                      className="col-span-1 p-1.5 text-neutral-400 hover:text-red-600 cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                {menuItems.length === 0 ? (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800">
+                    No menu dishes available yet. Add menu items first before scheduling a catering event.
                   </div>
-                ))}
+                ) : (
+                  newOrderItems.map((row, idx) => (
+                    <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                      <select
+                        value={row.menuItemId}
+                        onChange={(e) =>
+                          setNewOrderItems((prev) =>
+                            prev.map((it, i) =>
+                              i === idx ? { ...it, menuItemId: e.target.value } : it
+                            )
+                          )
+                        }
+                        className="col-span-8 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-xl font-semibold"
+                      >
+                        {menuItems.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({formatMoney(m.price)})
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        min={1}
+                        value={row.quantity}
+                        onChange={(e) =>
+                          setNewOrderItems((prev) =>
+                            prev.map((it, i) =>
+                              i === idx
+                                ? { ...it, quantity: Math.max(1, parseInt(e.target.value, 10) || 1) }
+                                : it
+                            )
+                          )
+                        }
+                        className="col-span-3 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-xl font-mono font-bold text-right"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setNewOrderItems((prev) => prev.filter((_, i) => i !== idx))
+                        }
+                        className="col-span-1 p-1.5 text-neutral-400 hover:text-red-600 cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
 
               <div className="space-y-1">
@@ -973,7 +983,8 @@ export const CateringOrdersPanel: React.FC<CateringOrdersPanelProps> = ({
               </button>
               <button
                 type="submit"
-                className="px-5 py-2 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 text-white rounded-xl cursor-pointer"
+                disabled={menuItems.length === 0 || newOrderItems.length === 0}
+                className="px-5 py-2 text-xs font-bold bg-neutral-900 hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed text-white rounded-xl cursor-pointer"
               >
                 Save Catering Order
               </button>

@@ -116,7 +116,7 @@ export const inventoryService = {
         date: todayDateStr(),
         reference: 'Initial Opening Balance',
         reason: 'New raw ingredient catalogued into Main Storage',
-        recordedBy: 'David Kasambala (Manager)',
+        recordedBy: 'Branch Manager',
         destinationLocation: 'main_store',
       });
     }
@@ -224,7 +224,7 @@ export const inventoryService = {
       reason: `Received into Main Store from ${params.supplier || ing.supplier} (Weighted Avg recalculated to ${formatTzs(
         updatedCostPerPurchase
       )} / ${ing.purchaseUnit})`,
-      recordedBy: 'David Kasambala (Manager)',
+      recordedBy: 'Branch Manager',
       destinationLocation: 'main_store',
     };
     store.stockMovements.unshift(movement);
@@ -281,7 +281,7 @@ export const inventoryService = {
       reason:
         params.reason ||
         (location === 'kitchen' ? 'Kitchen prep waste or line loss' : 'Main store humidity or spoilage'),
-      recordedBy: 'David Kasambala (Manager)',
+      recordedBy: 'Branch Manager',
       sourceLocation: location,
     };
     store.stockMovements.unshift(movement);
@@ -344,7 +344,7 @@ export const inventoryService = {
       date: todayDateStr(),
       reference: `DIR-${Math.floor(1000 + Math.random() * 9000)}`,
       reason: params.reason || 'Direct operational consumption (Non-BOM)',
-      recordedBy: params.recordedBy || 'Chef Hamisi Juma',
+      recordedBy: params.recordedBy || 'Kitchen Chef',
       sourceLocation: params.location,
     };
     store.stockMovements.unshift(movement);
@@ -422,7 +422,7 @@ export const inventoryService = {
         (isToKitchen
           ? `Day operation prep requisition (${params.shift || 'Daily Shift'})`
           : 'End-of-day return from kitchen line to main storage'),
-      recordedBy: params.recordedBy || 'David Kasambala (Manager)',
+      recordedBy: params.recordedBy || 'Branch Manager',
       sourceLocation: params.fromLocation,
       destinationLocation: params.toLocation,
       transferStatus: needsConfirmation ? 'in_transit' : 'received',
@@ -454,7 +454,7 @@ export const inventoryService = {
     return { success: true, ingredient: ing, movement };
   },
 
-  confirmStockTransferReceipt(branchId: string, movementId: string, receivedBy = 'Chef Hamisi Juma') {
+  confirmStockTransferReceipt(branchId: string, movementId: string, receivedBy = 'Kitchen Chef') {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
     const movement = store.stockMovements.find((m) => m.id === movementId);
     if (!movement || movement.transferStatus !== 'in_transit') {
@@ -530,7 +530,7 @@ export const inventoryService = {
           date: today,
           reference: `TRF-CLOSE-${Math.floor(1000 + Math.random() * 9000)}`,
           reason: 'Daily Shift Close: All kitchen prep stock returned to Main Storage Room',
-          recordedBy: staffName || 'David Kasambala (Manager)',
+          recordedBy: staffName || 'Branch Manager',
           sourceLocation: 'kitchen',
           destinationLocation: 'main_store',
         });
@@ -571,7 +571,7 @@ export const inventoryService = {
       const historyItem: RecipeVersionHistoryItem = {
         version: existing.version || 1,
         changedAt: nowTimestampStr(),
-        changedBy: recipe.approvedBy || 'Executive Chef Juma',
+        changedBy: recipe.approvedBy || 'Executive Chef',
         changeSummary: `Version ${existing.version || 1} archived upon update (${
           existing.ingredients?.length || 0
         } ingredients, ${existing.batchYieldPlates || 100} plates batch)`,
@@ -634,7 +634,7 @@ export const inventoryService = {
     return { deleted: true };
   },
 
-  updateRecipeStatus(branchId: string, recipeId: string, status: RecipeStatus, actor = 'Executive Chef Juma', note?: string) {
+  updateRecipeStatus(branchId: string, recipeId: string, status: RecipeStatus, actor = 'Executive Chef', note?: string) {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
     const r = store.recipes.find((rec) => rec.id === recipeId);
     if (!r) throw new HttpError(404, `Recipe "${recipeId}" not found.`, 'RECIPE_NOT_FOUND');
@@ -772,7 +772,7 @@ export const inventoryService = {
         recipeId: recipe.id,
         dishName: recipe.name || 'Dish',
         batches: params.batches,
-        attemptedBy: params.chefName || 'Executive Chef Juma',
+        attemptedBy: params.chefName || 'Executive Chef',
         timestamp: nowTimestampStr(),
         missingItems: validation.missingItems.filter((m) => m.status !== 'ok'),
         reason: `Cannot cook ${params.batches} batch of ${recipe.name}. Missing items: ${blockedReasons}`,
@@ -872,7 +872,7 @@ export const inventoryService = {
           batchNumber,
           recipeId: recipe.id,
           reason: `Issued prepared sub-recipe into ${batchNumber} (${recipe.name})`,
-          recordedBy: params.chefName || 'Executive Chef Juma',
+          recordedBy: params.chefName || 'Executive Chef',
           sourceLocation: 'kitchen',
         });
       });
@@ -912,7 +912,7 @@ export const inventoryService = {
           reason: `Batch production ${batchNumber} (${actualOutputQty.toLocaleString()} ${
             recipe.yieldUnit || 'plates'
           }) of ${recipe.name || 'Dish'}`,
-          recordedBy: params.chefName || 'Executive Chef Juma',
+          recordedBy: params.chefName || 'Executive Chef',
           sourceLocation: 'kitchen',
         });
       });
@@ -933,7 +933,7 @@ export const inventoryService = {
         costPerUnit: Math.round(costPerUnit * 100) / 100,
         preparedAt: timestampStr,
         expiresAt: expiryDt || `${today} 23:59`,
-        preparedBy: params.chefName || 'Executive Chef Juma',
+        preparedBy: params.chefName || 'Executive Chef',
         status: 'available',
       };
       store.subRecipeBatches.unshift(newSubBatch);
@@ -950,7 +950,7 @@ export const inventoryService = {
         batchNumber,
         recipeId: recipe.id,
         reason: `Produced sub-recipe batch ${batchNumber} (${formatTzs(Math.round(costPerUnit * 100) / 100)}/${outputUnit})`,
-        recordedBy: params.chefName || 'Executive Chef Juma',
+        recordedBy: params.chefName || 'Executive Chef',
         destinationLocation: 'kitchen',
       });
     } else {
@@ -995,7 +995,7 @@ export const inventoryService = {
       unitLabel: recipe.yieldUnit || 'plates',
       totalCost: validation.totalCost,
       costPerPlate,
-      cookedBy: params.chefName || 'Executive Chef Juma',
+      cookedBy: params.chefName || 'Executive Chef',
       timestamp: timestampStr,
       expiryDate: expiryDt,
       remainingPlates: actualOutputQty,
@@ -1028,7 +1028,7 @@ export const inventoryService = {
     branchId: string,
     productionLogId: string,
     reason: string,
-    actor = 'David Kasambala (Manager)'
+    actor = 'Branch Manager'
   ) {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
     const log = store.productionLogs.find((l) => l.id === productionLogId);
@@ -1197,7 +1197,7 @@ export const inventoryService = {
         date: todayDateStr(),
         reference: `WST-LEFTOVER-${platesCount}P`,
         reason: reason || 'End-of-day unsold batch leftover discard',
-        recordedBy: 'Executive Chef Juma',
+        recordedBy: 'Executive Chef',
         sourceLocation: 'kitchen',
       });
       store.notifications.unshift({
@@ -1295,9 +1295,9 @@ export const inventoryService = {
       yieldUnit: recipe.yieldUnit || (recipe.isSubRecipe ? 'grams' : 'plates'),
       status: scaled.canProduceWithStore ? 'stock_checked' : 'planned',
       standardCost: scaled.totalEstimatedCost,
-      assignedTo: params.assignedTo || 'Chef Hamisi Juma',
+      assignedTo: params.assignedTo || 'Kitchen Chef',
       scheduledFor: params.scheduledFor || `Today · ${nowTimeStr()}`,
-      createdBy: 'David Kasambala (Manager)',
+      createdBy: 'Branch Manager',
       createdAt: nowStr,
       stockCheckedAt: scaled.canProduceWithStore ? nowStr : undefined,
       lines: scaled.rows.map((r) => ({
@@ -1345,7 +1345,7 @@ export const inventoryService = {
     const order = store.productionOrders.find((po) => po.id === orderId);
     if (!order) return { success: false, error: 'Production order not found.' };
 
-    const actor = options?.actor || 'Executive Chef Juma';
+    const actor = options?.actor || 'Executive Chef';
     const nowStr = nowTimestampStr();
 
     if (nextStage === 'stock_checked') {
@@ -1471,7 +1471,7 @@ export const inventoryService = {
     return { success: true, order };
   },
 
-  cancelProductionOrder(branchId: string, orderId: string, reason: string, actor = 'David Kasambala') {
+  cancelProductionOrder(branchId: string, orderId: string, reason: string, actor = 'Branch Manager') {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
     const po = store.productionOrders.find((p) => p.id === orderId);
     if (!po) throw new HttpError(404, `Production order "${orderId}" not found.`, 'PRODUCTION_ORDER_NOT_FOUND');
@@ -1512,7 +1512,7 @@ export const inventoryService = {
       reason: params.reason,
       linkedOrderRef: params.linkedOrderRef,
       status: 'pending',
-      requestedBy: params.requestedBy || 'Executive Chef Juma',
+      requestedBy: params.requestedBy || 'Executive Chef',
       createdAt: nowTimestampStr(),
     };
     store.purchaseRequests.unshift(pr);
@@ -1571,7 +1571,7 @@ export const inventoryService = {
       quantity: Math.round(params.quantity),
       unit: ing.consumptionUnit,
       status: 'in_transit',
-      requestedBy: params.requestedBy || 'David Kasambala (Manager)',
+      requestedBy: params.requestedBy || 'Branch Manager',
       createdAt: nowTimestampStr(),
     };
     store.branchTransfers.unshift(bt);
@@ -1674,7 +1674,7 @@ export const inventoryService = {
       foodCostPercentage: Math.round(foodCostPercentage * 10) / 10,
       depositPaid: params.depositPaid || 0,
       notes: params.notes,
-      createdBy: 'David Kasambala (Manager)',
+      createdBy: 'Branch Manager',
       createdAt: nowStr,
       updatedAt: nowStr,
     };
@@ -1871,7 +1871,7 @@ export const inventoryService = {
         id: createId('amd'),
         summary: note || 'Amended event quantities',
         timestamp: nowStr,
-        actor: 'David Kasambala (Manager)',
+        actor: 'Branch Manager',
       },
       ...(c.amendments || []),
     ];
@@ -1987,7 +1987,7 @@ export const inventoryService = {
     return item;
   },
 
-  commitDailyReconciliation(branchId: string, staffName = 'David Kasambala (Manager)') {
+  commitDailyReconciliation(branchId: string, staffName = 'Branch Manager') {
     const store = storeRepo.getBranchStoreOrThrow(branchId);
     let totalVariance = 0;
     const newMovements: StockMovement[] = [];

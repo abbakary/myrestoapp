@@ -138,11 +138,29 @@ providerRoutes.post(
       email: requireString(body, 'email'),
       password: requireString(body, 'password', 4),
       role: requireEnum(body, 'role', ['provider_admin', 'tenant_owner', 'branch_manager']),
+      status: optionalEnum(body, 'status', ['active', 'pending', 'suspended']),
       organizationId: optionalString(body, 'organizationId'),
       branchId: optionalString(body, 'branchId'),
       phone: optionalString(body, 'phone'),
     });
     res.status(201).json({ success: true, account });
+  })
+);
+
+providerRoutes.patch(
+  '/provider/accounts/:accountId',
+  asyncHandler(async (req, res) => {
+    const body = asRecord(req.body);
+    const account = platformService.updateAccount(String(req.params.accountId), {
+      name: optionalString(body, 'name'),
+      email: optionalString(body, 'email'),
+      phone: optionalString(body, 'phone'),
+      role: optionalEnum(body, 'role', ['provider_admin', 'tenant_owner', 'branch_manager']),
+      status: optionalEnum(body, 'status', ['active', 'pending', 'suspended']),
+      organizationId: optionalString(body, 'organizationId'),
+      branchId: optionalString(body, 'branchId'),
+    });
+    res.json({ success: true, account });
   })
 );
 
@@ -160,7 +178,12 @@ providerRoutes.patch(
   asyncHandler(async (req, res) => {
     const body = asRecord(req.body);
     const role = requireEnum(body, 'role', ['provider_admin', 'tenant_owner', 'branch_manager']);
-    res.json(platformService.updateAccountRole(String(req.params.accountId), role));
+    res.json(
+      platformService.updateAccountRole(String(req.params.accountId), role, {
+        organizationId: optionalString(body, 'organizationId'),
+        branchId: optionalString(body, 'branchId'),
+      })
+    );
   })
 );
 
@@ -170,6 +193,13 @@ providerRoutes.patch(
     const body = asRecord(req.body);
     const newPassword = requireString(body, 'newPassword', 4);
     res.json(platformService.resetAccountPassword(String(req.params.accountId), newPassword));
+  })
+);
+
+providerRoutes.delete(
+  '/provider/accounts/:accountId',
+  asyncHandler(async (req, res) => {
+    res.json(platformService.deleteAccount(String(req.params.accountId)));
   })
 );
 

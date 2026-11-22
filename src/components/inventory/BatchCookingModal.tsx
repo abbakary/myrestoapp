@@ -40,6 +40,7 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
     resolveShortageViaBranchTransfer,
     confirmStockTransferReceipt,
     stockMovements,
+    activeOperator,
   } = useRestaurant();
 
   const baseYield = Math.max(1, recipe.batchYieldPlates || 1);
@@ -47,7 +48,7 @@ export const BatchCookingModal: React.FC<BatchCookingModalProps> = ({
 
   const [desiredOutput, setDesiredOutput] = useState<number>(baseYield);
   const [actualPlatesInput, setActualPlatesInput] = useState<number>(baseYield);
-  const [chefName, setChefName] = useState<string>('Executive Chef Juma');
+  const [chefName, setChefName] = useState<string>(activeOperator.name || 'Kitchen Chef');
   const [isManagerOverride, setIsManagerOverride] = useState<boolean>(false);
   const [overrideReason, setOverrideReason] = useState<string>('');
   const [resolutionNotice, setResolutionNotice] = useState<string | null>(null);

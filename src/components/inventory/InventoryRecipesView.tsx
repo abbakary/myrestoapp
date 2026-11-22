@@ -111,7 +111,11 @@ export const InventoryRecipesView: React.FC = () => {
     reviewApprovalRequest,
     submitDraftToKitchen,
     promoteCustomItemToMenu,
+    activeOperator,
   } = useRestaurant();
+
+  const managerActor = activeOperator.name || 'Branch Manager';
+  const chefActor = activeOperator.name || 'Executive Chef';
 
   const [activeTab, setActiveTab] = useState<
     | 'kpis_and_stock'
@@ -136,7 +140,7 @@ export const InventoryRecipesView: React.FC = () => {
   const [dateFilter, setDateFilter] = useState<'day' | 'week' | 'month' | 'all'>('week');
   const [movementTypeFilter, setMovementTypeFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedRecipeItem, setSelectedRecipeItem] = useState<string>('menu-wali-nyama');
+  const [selectedRecipeItem, setSelectedRecipeItem] = useState<string>(menuItems[0]?.id || '');
 
   // BOM Center Sub-tabs & Filters
   const [recipeSubTab, setRecipeSubTab] = useState<
@@ -144,7 +148,7 @@ export const InventoryRecipesView: React.FC = () => {
   >('library');
   const [recipeMethodFilter, setRecipeMethodFilter] = useState<'all' | ProductionMethod>('all');
   const [recipeStatusFilter, setRecipeStatusFilter] = useState<'all' | RecipeStatus>('all');
-  const [selectedRecipeId, setSelectedRecipeId] = useState<string>('rec-wali-nyama');
+  const [selectedRecipeId, setSelectedRecipeId] = useState<string>(recipes[0]?.id || '');
   const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [confirmReturnTransfers, setConfirmReturnTransfers] = useState(false);
   const [confirmReturnClosing, setConfirmReturnClosing] = useState(false);
@@ -164,7 +168,7 @@ export const InventoryRecipesView: React.FC = () => {
   const [transferQuantity, setTransferQuantity] = useState<number>(10000);
   const [transferReason, setTransferReason] = useState<string>('Daily operation prep requisition');
   const [transferShift, setTransferShift] = useState<string>('Lunch Rush Prep');
-  const [transferStaff, setTransferStaff] = useState<string>('David Kasambala (Manager)');
+  const [transferStaff, setTransferStaff] = useState<string>(managerActor);
   const [transferError, setTransferError] = useState<string | null>(null);
 
   // Stock Intake Form State
@@ -423,6 +427,10 @@ export const InventoryRecipesView: React.FC = () => {
     initialQty?: number
   ) => {
     const ing = ingredients.find((i) => i.id === ingId) || ingredients[0];
+    if (!ing) {
+      showActionBanner('error', 'No ingredients catalogued yet — add a raw ingredient first.');
+      return;
+    }
     setTransferIngredientId(ing.id);
     setTransferFrom(from);
     setTransferTo(to);
@@ -495,7 +503,7 @@ export const InventoryRecipesView: React.FC = () => {
       quantityUnits: Number(directQty),
       location: directLoc,
       reason: directReason.trim() || 'Direct kitchen consumption without BOM',
-      recordedBy: 'Executive Chef Juma',
+      recordedBy: chefActor,
     });
     if (ok) {
       setIsDirectConsumptionModalOpen(false);
@@ -593,7 +601,13 @@ export const InventoryRecipesView: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setIsIntakeModalOpen(true)}
+            onClick={() => {
+              if (ingredients.length === 0) {
+                showActionBanner('error', 'No ingredients catalogued yet — click Add Ingredient first.');
+                return;
+              }
+              setIsIntakeModalOpen(true);
+            }}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <PackagePlus className="w-4 h-4" />
@@ -602,7 +616,13 @@ export const InventoryRecipesView: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setIsDirectConsumptionModalOpen(true)}
+            onClick={() => {
+              if (ingredients.length === 0) {
+                showActionBanner('error', 'No ingredients catalogued yet — click Add Ingredient first.');
+                return;
+              }
+              setIsDirectConsumptionModalOpen(true);
+            }}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-neutral-800 bg-neutral-100 hover:bg-neutral-200 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Flame className="w-4 h-4 text-orange-600" />
@@ -611,7 +631,13 @@ export const InventoryRecipesView: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setIsWastageModalOpen(true)}
+            onClick={() => {
+              if (ingredients.length === 0) {
+                showActionBanner('error', 'No ingredients catalogued yet — click Add Ingredient first.');
+                return;
+              }
+              setIsWastageModalOpen(true);
+            }}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <AlertOctagon className="w-4 h-4" />
@@ -1551,7 +1577,7 @@ export const InventoryRecipesView: React.FC = () => {
               </div>
 
               <div className="text-xs font-semibold text-neutral-600 bg-neutral-100 px-3 py-1.5 rounded-xl">
-                Shift: Daily Evening Audit · Lead: David Kasambala (Manager)
+                Shift: Daily Evening Audit · Lead: {managerActor}
               </div>
             </div>
 
@@ -2078,7 +2104,7 @@ export const InventoryRecipesView: React.FC = () => {
                           value={activeRecipe.status || 'approved'}
                           onChange={(e) => {
                             const nextStatus = e.target.value as RecipeStatus;
-                            updateRecipeStatus(activeRecipe.id, nextStatus, 'Executive Chef Juma');
+                            updateRecipeStatus(activeRecipe.id, nextStatus, chefActor);
                             showActionBanner(
                               'success',
                               `Recipe ${activeRecipe.code || activeRecipe.name} status set to ${nextStatus.replace(/_/g, ' ')}.`
@@ -2644,7 +2670,7 @@ export const InventoryRecipesView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => {
-                      const res = commitDailyReconciliation('David Kasambala (Manager)');
+                      const res = commitDailyReconciliation(managerActor);
                       showActionBanner(
                         'success',
                         `Variance reconciliation committed (Net Variance Impact: ${formatMoney(res.totalVarianceCost)}). Approved recipes preserved.`
@@ -3255,14 +3281,14 @@ export const InventoryRecipesView: React.FC = () => {
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
-                          onClick={() => reviewApprovalRequest(req.id, false, 'David Kasambala (Manager)')}
+                          onClick={() => reviewApprovalRequest(req.id, false, managerActor)}
                           className="px-3.5 py-2 rounded-xl border border-rose-300 text-rose-700 hover:bg-rose-50 text-xs font-bold cursor-pointer"
                         >
                           Deny
                         </button>
                         <button
                           type="button"
-                          onClick={() => reviewApprovalRequest(req.id, true, 'David Kasambala (Manager)')}
+                          onClick={() => reviewApprovalRequest(req.id, true, managerActor)}
                           className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
                         >
                           Approve
@@ -3342,7 +3368,7 @@ export const InventoryRecipesView: React.FC = () => {
                           <div className="pt-2 border-t border-amber-200/70 flex justify-end">
                             <button
                               type="button"
-                              onClick={() => submitDraftToKitchen(draft.id, 'David Kasambala (Manager)')}
+                              onClick={() => submitDraftToKitchen(draft.id, managerActor)}
                               className="px-3.5 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer"
                             >
                               <Send className="w-3 h-3" />

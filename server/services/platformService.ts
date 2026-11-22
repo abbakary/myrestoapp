@@ -533,56 +533,204 @@ export const platformService = {
     email: string;
     password: string;
     role: SaasAccountRole;
+    status?: SaasAccountStatus;
     organizationId?: string;
     branchId?: string;
     phone?: string;
   }) {
     const state = storeRepo.getState();
     const cleanEmail = params.email.trim().toLowerCase();
-    if (!cleanEmail || !params.name.trim() || params.password.length < 4) {
-      throw new HttpError(422, 'Provide name, valid email, and password (min 4 chars).', 'VALIDATION_ERROR');
+    const cleanName = params.name.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) || !cleanName || params.password.length < 4) {
+      throw new HttpError(422, 'Provide full name, valid email address, and password (min 4 chars).', 'VALIDATION_ERROR');
     }
     if (state.saasAccounts.some((a) => a.email.toLowerCase() === cleanEmail)) {
       throw new HttpError(409, 'Email already registered on platform.', 'EMAIL_EXISTS');
     }
+
+    let resolvedOrgId: string | undefined;
+    let resolvedBranchId: string | undefined;
+    if (params.role !== 'provider_admin') {
+      resolvedOrgId = params.organizationId || state.organizations[0]?.id;
+      const org = resolvedOrgId ? state.organizations.find((o) => o.id === resolvedOrgId) : undefined;
+      if (!org) {
+        throw new HttpError(422, 'Selected organization does not exist.', 'ORGANIZATION_NOT_FOUND');
+      }
+      if (params.role === 'branch_manager') {
+        const orgBranches = state.allBranches.filter((b) => b.organizationId === org.id);
+        const branch = params.branchId
+          ? orgBranches.find((b) => b.id === params.branchId)
+          : orgBranches[0];
+        if (params.branchId && !branch) {
+          throw new HttpError(422, 'Selected branch does not belong to the chosen organization.', 'BRANCH_NOT_FOUND');
+        }
+        resolvedBranchId = branch?.id;
+      }
+    }
+
+    const initialStatus: SaasAccountStatus = params.status || 'active';
     const newAcc: SaasAccount = {
       id: params.id || createId('acc'),
-      name: params.name.trim(),
+      name: cleanName,
       email: cleanEmail,
       password: params.password,
       role: params.role,
-      status: 'active',
-      organizationId: params.role === 'provider_admin' ? undefined : params.organizationId,
-      branchId: params.role === 'branch_manager' ? params.branchId : undefined,
-      phone: params.phone?.trim(),
+      status: initialStatus,
+      organizationId: resolvedOrgId,
+      branchId: resolvedBranchId,
+      phone: params.phone?.trim() || undefined,
       lastLoginAt: 'Never',
       createdAt: todayDateStr(),
     };
     state.saasAccounts.unshift(newAcc);
-    recordProviderAuditInternal('ACCOUNT_CREATED', cleanEmail, `Created ${params.role} account for ${params.name.trim()}.`);
+    recordProviderAuditInternal(
+      'ACCOUNT_CREATED',
+      cleanEmail,
+      `Created ${initialStatus.toUpperCase()} ${params.role} account for ${cleanName}.`
+    );
     storeRepo.commit();
     return newAcc;
+  },
+
+  updateAccount(
+    accountId: string,
+    patch: {
+      name?: string;
+      email?: string;
+      phone?: string;
+      role?: SaasAccountRole;
+      status?: SaasAccountStatus;
+      organizationId?: string;
+      branchId?: string;
+    }
+  ) {
+    const state = storeRepo.getState();
+    const acc = state.saasAccounts.find((a) => a.id === accountId);
+    if (!acc) throw new HttpError(404, `Account "${accountId}" not found.`, 'ACCOUNT_NOT_FOUND');
+
+    const nextRole = patch.role ?? acc.role;
+    const nextStatus = patch.status ?? acc.status;
+
+    if (
+      acc.role === 'provider_admin' &&
+      acc.status === 'active' &&
+      (nextRole !== 'provider_admin' || nextStatus !== 'active')
+    ) {
+      const otherActiveProviders = state.saasAccounts.filter(
+        (a) => a.id !== acc.id && a.role === 'provider_admin' && a.status === 'active'
+      );
+      if (otherActiveProviders.length === 0) {
+        throw new HttpError(
+          409,
+          'Cannot demote or suspend the last active System Provider administrator.',
+          'LAST_PROVIDER_REQUIRED'
+        );
+      }
+    }
+
+    if (patch.name !== undefined) {
+      const cleanName = patch.name.trim();
+      if (!cleanName) {
+        throw new HttpError(422, 'Account holder name cannot be empty.', 'VALIDATION_ERROR');
+      }
+      acc.name = cleanName;
+    }
+
+    if (patch.email !== undefined) {
+      const cleanEmail = patch.email.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        throw new HttpError(422, 'Provide a valid email address.', 'VALIDATION_ERROR');
+      }
+      if (state.saasAccounts.some((a) => a.id !== acc.id && a.email.toLowerCase() === cleanEmail)) {
+        throw new HttpError(409, 'Another account already uses this email address.', 'EMAIL_EXISTS');
+      }
+      acc.email = cleanEmail;
+    }
+
+    if (patch.phone !== undefined) {
+      acc.phone = patch.phone.trim() || undefined;
+    }
+
+    acc.role = nextRole;
+    acc.status = nextStatus;
+
+    if (nextRole === 'provider_admin') {
+      acc.organizationId = undefined;
+      acc.branchId = undefined;
+    } else {
+      const candidateOrgId =
+        patch.organizationId !== undefined
+          ? patch.organizationId || undefined
+          : acc.organizationId || state.organizations[0]?.id;
+      if (candidateOrgId) {
+        const org = state.organizations.find((o) => o.id === candidateOrgId);
+        if (!org) {
+          throw new HttpError(422, 'Selected organization does not exist.', 'ORGANIZATION_NOT_FOUND');
+        }
+        acc.organizationId = org.id;
+        if (nextRole === 'branch_manager') {
+          const orgBranches = state.allBranches.filter((b) => b.organizationId === org.id);
+          const candidateBranchId =
+            patch.branchId !== undefined ? patch.branchId : acc.branchId;
+          const matchedBranch = candidateBranchId
+            ? orgBranches.find((b) => b.id === candidateBranchId)
+            : orgBranches[0];
+          if (candidateBranchId && !matchedBranch) {
+            throw new HttpError(422, 'Selected branch does not belong to the chosen organization.', 'BRANCH_NOT_FOUND');
+          }
+          acc.branchId = matchedBranch?.id;
+        } else {
+          acc.branchId = undefined;
+        }
+      } else {
+        acc.organizationId = undefined;
+        acc.branchId = undefined;
+      }
+    }
+
+    recordProviderAuditInternal(
+      'ACCOUNT_UPDATED',
+      acc.email,
+      `Updated profile/access: role=${acc.role}, status=${acc.status.toUpperCase()}${
+        acc.organizationId ? `, org=${acc.organizationId}` : ', scope=GLOBAL'
+      }${acc.branchId ? `, branch=${acc.branchId}` : ''}.`
+    );
+    storeRepo.commit();
+    return acc;
   },
 
   updateAccountStatus(accountId: string, status: SaasAccountStatus) {
     const state = storeRepo.getState();
     const acc = state.saasAccounts.find((a) => a.id === accountId);
     if (!acc) throw new HttpError(404, `Account "${accountId}" not found.`, 'ACCOUNT_NOT_FOUND');
+    if (acc.role === 'provider_admin' && acc.status === 'active' && status !== 'active') {
+      const otherActiveProviders = state.saasAccounts.filter(
+        (a) => a.id !== acc.id && a.role === 'provider_admin' && a.status === 'active'
+      );
+      if (otherActiveProviders.length === 0) {
+        throw new HttpError(
+          409,
+          'Cannot suspend the last active System Provider administrator.',
+          'LAST_PROVIDER_REQUIRED'
+        );
+      }
+    }
     acc.status = status;
     recordProviderAuditInternal('ACCOUNT_STATUS_CHANGED', acc.email, `Set user account status to ${status.toUpperCase()}.`);
     storeRepo.commit();
     return acc;
   },
 
-  updateAccountRole(accountId: string, role: SaasAccountRole) {
-    const state = storeRepo.getState();
-    const acc = state.saasAccounts.find((a) => a.id === accountId);
-    if (!acc) throw new HttpError(404, `Account "${accountId}" not found.`, 'ACCOUNT_NOT_FOUND');
-    acc.role = role;
-    acc.organizationId = role === 'provider_admin' ? undefined : acc.organizationId || state.organizations[0]?.id;
-    recordProviderAuditInternal('ACCOUNT_ROLE_CHANGED', acc.email, `Changed platform role to ${role}.`);
-    storeRepo.commit();
-    return acc;
+  updateAccountRole(
+    accountId: string,
+    role: SaasAccountRole,
+    scope?: { organizationId?: string; branchId?: string }
+  ) {
+    return this.updateAccount(accountId, {
+      role,
+      organizationId: scope?.organizationId,
+      branchId: scope?.branchId,
+    });
   },
 
   resetAccountPassword(accountId: string, newPassword: string) {
@@ -596,6 +744,33 @@ export const platformService = {
     recordProviderAuditInternal('ACCOUNT_PASSWORD_RESET', acc.email, 'System Provider issued new account password.');
     storeRepo.commit();
     return acc;
+  },
+
+  deleteAccount(accountId: string) {
+    const state = storeRepo.getState();
+    const idx = state.saasAccounts.findIndex((a) => a.id === accountId);
+    if (idx === -1) throw new HttpError(404, `Account "${accountId}" not found.`, 'ACCOUNT_NOT_FOUND');
+    const acc = state.saasAccounts[idx];
+    if (acc.role === 'provider_admin' && acc.status === 'active') {
+      const otherActiveProviders = state.saasAccounts.filter(
+        (a) => a.id !== acc.id && a.role === 'provider_admin' && a.status === 'active'
+      );
+      if (otherActiveProviders.length === 0) {
+        throw new HttpError(
+          409,
+          'Cannot delete the last active System Provider administrator.',
+          'LAST_PROVIDER_REQUIRED'
+        );
+      }
+    }
+    state.saasAccounts.splice(idx, 1);
+    recordProviderAuditInternal(
+      'ACCOUNT_DELETED',
+      acc.email,
+      `Revoked and removed ${acc.role} account (${acc.name}).`
+    );
+    storeRepo.commit();
+    return { success: true, deletedId: accountId };
   },
 
   convertLeadToTenant(

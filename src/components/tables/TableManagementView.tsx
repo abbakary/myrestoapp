@@ -63,7 +63,8 @@ export const TableManagementView: React.FC = () => {
   const availableCount = tables.filter((t) => t.status === 'available').length;
   const occupiedCount = tables.filter((t) => t.status === 'occupied').length;
   const billingCount = tables.filter((t) => t.status === 'billing').length;
-  const occupancyRate = Math.round(((tables.length - availableCount) / tables.length) * 100);
+  const occupancyRate =
+    tables.length > 0 ? Math.round(((tables.length - availableCount) / tables.length) * 100) : 0;
 
   const handleTableClick = (table: Table) => {
     if (table.status !== 'available') {
@@ -76,7 +77,7 @@ export const TableManagementView: React.FC = () => {
       setBlockedNotification({
         tableNumber: table.number,
         status: table.status,
-        orderNumber: linkedOrder?.orderNumber || '#F0027',
+        orderNumber: linkedOrder?.orderNumber || 'Unassigned',
         waiterName: waiter?.name || 'Assigned Staff',
       });
     } else {

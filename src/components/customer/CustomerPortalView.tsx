@@ -77,8 +77,8 @@ export const CustomerPortalView: React.FC = () => {
   const [deliveryAddress, setDeliveryAddress] = useState<string>('');
   const [tableNumber, setTableNumber] = useState<string>(() => {
     if (initialTableNumber) return initialTableNumber;
-    const openTable = tables.find((t) => t.status === 'available');
-    return openTable ? openTable.number : 'Table 03';
+    const openTable = tables.find((t) => t.status === 'available') || tables[0];
+    return openTable ? openTable.number : 'Table 01';
   });
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('mpesa');
   const [placedOrderIds, setPlacedOrderIds] = useState<string[]>([]);
@@ -275,9 +275,19 @@ export const CustomerPortalView: React.FC = () => {
     <div className="h-[100dvh] md:h-auto md:min-h-screen bg-neutral-50 text-neutral-900 flex flex-col overflow-hidden md:overflow-visible">
       {/* Compact Flutter-Style Mobile AppBar / Desktop Top Bar with Centered Shop Name */}
       <header className="shrink-0 md:sticky md:top-0 z-30 bg-white/95 backdrop-blur-md border-b border-neutral-200/80 pt-safe">
-        <div className="max-w-6xl mx-auto px-3 sm:px-6 h-14 grid grid-cols-[64px_1fr_64px] items-center gap-2">
-          {/* Left slot: compact service badge */}
-          <div className="flex items-center justify-start min-w-0">
+        <div className="max-w-6xl w-full mx-auto px-3 sm:px-6 h-14 grid grid-cols-[80px_1fr_80px] items-center gap-2">
+          {/* Left slot: back to ERP on mobile when not locked standalone, plus compact service badge */}
+          <div className="flex items-center justify-start gap-1.5 min-w-0">
+            {!lockedStandalone && (
+              <button
+                type="button"
+                onClick={() => setActiveRole('owner')}
+                className="md:hidden px-2 py-1 text-[11px] font-bold bg-neutral-900 text-white rounded-lg shrink-0 cursor-pointer"
+                title="Back to Main Dashboard"
+              >
+                ERP
+              </button>
+            )}
             <span className="text-[11px] font-semibold text-neutral-600 truncate">
               {serviceType === 'dine_in'
                 ? tableNumber
@@ -479,19 +489,39 @@ export const CustomerPortalView: React.FC = () => {
 
             {/* Menu Items List (Mobile-friendly horizontal card) / Grid (Desktop) */}
             {filteredItems.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-neutral-200 p-10 text-center space-y-2">
-                <p className="text-sm font-bold text-neutral-800">No dishes match your search</p>
-                <p className="text-xs text-neutral-500">Try clearing your search or selecting All categories.</p>
-                <button
-                  onClick={() => {
-                    setSelectedCategory('All');
-                    setSearchQuery('');
-                  }}
-                  className="mt-2 min-h-[44px] px-5 bg-neutral-900 text-white text-xs font-bold rounded-xl"
-                >
-                  Show All Dishes
-                </button>
-              </div>
+              availableItems.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-neutral-200 p-10 text-center space-y-2.5">
+                  <p className="text-sm font-bold text-neutral-800">
+                    {currentTenant.name} hasn&apos;t published menu items yet
+                  </p>
+                  <p className="text-xs text-neutral-500 max-w-md mx-auto">
+                    Add dishes and set selling prices in Inventory &amp; BOM to publish them to your customer menu.
+                  </p>
+                  {!lockedStandalone && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveRole('manager')}
+                      className="mt-2 min-h-[44px] px-5 bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold rounded-xl cursor-pointer"
+                    >
+                      Open Inventory &amp; Menu Builder
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="bg-white rounded-2xl border border-neutral-200 p-10 text-center space-y-2">
+                  <p className="text-sm font-bold text-neutral-800">No dishes match your search</p>
+                  <p className="text-xs text-neutral-500">Try clearing your search or selecting All categories.</p>
+                  <button
+                    onClick={() => {
+                      setSelectedCategory('All');
+                      setSearchQuery('');
+                    }}
+                    className="mt-2 min-h-[44px] px-5 bg-neutral-900 text-white text-xs font-bold rounded-xl cursor-pointer"
+                  >
+                    Show All Dishes
+                  </button>
+                </div>
+              )
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-5">
                 {filteredItems.map((item) => (
@@ -1259,7 +1289,7 @@ export const CustomerPortalView: React.FC = () => {
                     required
                     value={deliveryAddress}
                     onChange={(e) => setDeliveryAddress(e.target.value)}
-                    placeholder="e.g. Mikocheni B, Mwai Kibaki Rd, House 14"
+                    placeholder="Street address, building / floor, landmark"
                     className="w-full min-h-[44px] px-3 text-xs bg-white border border-neutral-200 rounded-xl"
                   />
                 </div>
